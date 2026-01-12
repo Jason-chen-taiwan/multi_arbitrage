@@ -31,13 +31,30 @@ def print_banner():
 def print_menu():
     """顯示主選單"""
     print("📋 可用功能：\n")
-    print("  1. 🔧 配置管理面板     - Web UI 管理交易所 API 配置")
-    print("  2. 🔍 實時套利監控     - 終端監控多交易所價格和套利機會")
-    print("  3. 🔥 套利 Dashboard   - Web UI 實時監控跨所套利 (推薦)")
-    print("  4. 🤖 做市商策略       - 運行自動做市商策略")
-    print("  5. 🧪 測試交易所連接   - 測試所有已配置的交易所")
-    print("  6. 📊 主控面板         - Web Dashboard (單交易所)")
+    print("  1. 🎯 統一 Dashboard   - 整合所有功能的 Web UI (強烈推薦)")
+    print("  2. 🔧 配置管理面板     - Web UI 管理交易所 API 配置")
+    print("  3. 🔍 實時套利監控     - 終端監控多交易所價格和套利機會")
+    print("  4. 🔥 套利 Dashboard   - Web UI 實時監控跨所套利")
+    print("  5. 🤖 做市商策略       - 運行自動做市商策略")
+    print("  6. 🧪 測試交易所連接   - 測試所有已配置的交易所")
+    print("  7. 📊 單交易所面板     - Web Dashboard (單交易所)")
     print("\n" + "-" * 80 + "\n")
+
+
+def run_unified_dashboard():
+    """啟動統一 Dashboard"""
+    print("\n🎯 啟動統一 Dashboard...\n")
+    print("💡 整合所有功能：配置管理、套利監控、交易所狀態")
+    from src.web.unified_dashboard import app
+    import uvicorn
+
+    print("📍 訪問地址：http://localhost:8888")
+    print("⚠️  按 Ctrl+C 停止服務\n")
+
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8888, log_level="info")
+    except KeyboardInterrupt:
+        print("\n\n👋 統一 Dashboard 已停止")
 
 
 def run_config_dashboard():
@@ -304,7 +321,7 @@ def main():
     parser.add_argument(
         'command',
         nargs='?',
-        choices=['config', 'monitor', 'arb', 'mm', 'test', 'dashboard'],
+        choices=['unified', 'config', 'monitor', 'arb', 'mm', 'test', 'dashboard'],
         help='要執行的功能'
     )
 
@@ -317,18 +334,19 @@ def main():
         print_menu()
 
         try:
-            choice = input("請選擇功能 (1-6) 或按 Ctrl+C 退出: ").strip()
+            choice = input("請選擇功能 (1-7) 或按 Ctrl+C 退出: ").strip()
         except KeyboardInterrupt:
             print("\n\n👋 再見！\n")
             return
 
         command_map = {
-            '1': 'config',
-            '2': 'monitor',
-            '3': 'arb',
-            '4': 'mm',
-            '5': 'test',
-            '6': 'dashboard'
+            '1': 'unified',
+            '2': 'config',
+            '3': 'monitor',
+            '4': 'arb',
+            '5': 'mm',
+            '6': 'test',
+            '7': 'dashboard'
         }
 
         args.command = command_map.get(choice)
@@ -339,6 +357,7 @@ def main():
 
     # 執行對應功能
     function_map = {
+        'unified': run_unified_dashboard,
         'config': run_config_dashboard,
         'monitor': run_arbitrage_monitor,
         'arb': run_arbitrage_dashboard,
