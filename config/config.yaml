@@ -1,0 +1,118 @@
+# StandX Market Maker Configuration
+
+exchange:
+  name: standx
+  chain: bsc # or solana
+  base_url: https://api.standx.com
+  perps_url: https://perps.standx.com
+
+  # WebSocket Configuration
+  ws_url: wss://perps.standx.com/ws
+  ws_reconnect_delay: 5
+  ws_max_retries: 10
+
+# Trading Configuration
+trading:
+  symbol: BTC-USD
+
+  # Market Making Parameters (Optimized for StandX Uptime Program)
+  base_spread: 0.0008 # 8 bps base spread (within 10 bps requirement)
+  min_spread: 0.0005 # 5 bps minimum spread
+  max_spread: 0.0010 # 10 bps maximum spread (StandX requirement)
+
+  # StandX Uptime Program Settings
+  uptime_mode: true # Enable uptime optimization mode
+  target_uptime: 0.70 # Target 70%+ for Boosted tier (1.0x multiplier)
+  spread_buffer: 0.0002 # 2 bps buffer to account for price movements
+
+  # Order Sizing (Optimized for Maker Hours)
+  order_size: 2.0 # Default to 2 BTC (max cap for BTC-USD)
+  min_order_size: 0.5 # Minimum 0.5 BTC for meaningful Maker Hours
+  max_order_size: 2.0 # 2 BTC cap per side (StandX requirement)
+
+  # Dynamic sizing based on capital
+  use_dynamic_sizing: true # Adjust size based on available balance
+  capital_utilization: 0.8 # Use 80% of available capital
+
+  # Inventory Management
+  target_position: 0.0 # Target position (neutral)
+  max_position: 0.5 # Maximum position size
+  inventory_skew_factor: 0.5 # Position adjustment coefficient
+
+  # Order Management (Uptime Optimized)
+  max_open_orders: 2 # Keep it simple: 1 bid + 1 ask
+  order_refresh_interval: 30 # 30 seconds to maintain stability
+  cancel_all_on_stop: true # Cancel all orders on shutdown
+  min_uptime_per_hour: 0.70 # Maintain 70%+ uptime (42+ min/hour)
+
+  # Order Persistence
+  maintain_orders: true # Keep orders active continuously
+  replace_filled_immediately: true # Replace filled orders ASAP
+
+  # Price Configuration
+  num_levels: 1 # Single level for uptime program
+  level_spacing: 0.0000 # No multi-level for uptime mode
+
+# Strategy Configuration
+strategy:
+  name: simple_mm # simple_mm or adaptive_mm
+
+  # Adaptive Strategy Parameters
+  volatility_window: 20 # Window for volatility calculation
+  volatility_multiplier: 2.0 # Spread adjustment based on volatility
+
+  # Market Conditions
+  min_market_spread: 0.0002 # Minimum market spread to trade
+  max_market_spread: 0.01 # Maximum market spread to trade
+
+  # Execution
+  use_post_only: true # Only place maker orders
+  time_in_force: gtc # Good-til-canceled
+
+# Risk Management
+risk:
+  # Position Limits
+  max_position_value: 10000 # Maximum position value in USD
+  max_leverage: 10 # Maximum leverage
+
+  # Loss Limits
+  max_daily_loss: 1000 # Maximum daily loss in USD
+  max_trade_loss: 100 # Maximum loss per trade
+
+  # Drawdown Protection
+  max_drawdown: 0.2 # 20% maximum drawdown
+  stop_on_max_dd: true # Stop trading on max drawdown
+
+  # Emergency Controls
+  emergency_cancel_threshold: 0.05 # Cancel all if price moves 5%
+  circuit_breaker_cooldown: 300 # Seconds before restarting
+
+# Monitoring & Logging
+monitoring:
+  enable_dashboard: true
+  dashboard_port: 8080
+
+  # Metrics
+  metrics_interval: 10 # Seconds between metric updates
+  save_metrics: true
+  metrics_file: logs/metrics.json
+
+  # Logging
+  log_level: INFO # DEBUG, INFO, WARNING, ERROR
+  log_file: logs/market_maker.log
+  log_rotation: midnight
+  log_retention_days: 30
+
+  # Alerts
+  enable_alerts: false
+  alert_webhook: null # Webhook URL for alerts
+  alert_on_error: true
+  alert_on_max_loss: true
+
+# Performance Tuning
+performance:
+  use_async: true
+  api_rate_limit: 100 # Requests per second
+  order_batch_size: 5 # Orders per batch
+  cache_market_data: true
+  cache_ttl: 1 # Seconds

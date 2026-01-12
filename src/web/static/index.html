@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StandX Market Maker Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <header class="header">
+        <h1>📊 StandX Market Maker Dashboard</h1>
+        <div class="status-indicator">
+          <span class="status-dot" id="connectionStatus"></span>
+          <span id="connectionText">連接中...</span>
+        </div>
+      </header>
+
+      <!-- Summary Cards -->
+      <div class="summary-cards">
+        <div class="card">
+          <div class="card-title">總 PnL</div>
+          <div class="card-value" id="totalPnl">$0.00</div>
+          <div class="card-subtitle" id="pnlChange">--</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">運行時間</div>
+          <div class="card-value" id="runtime">0.0h</div>
+          <div class="card-subtitle" id="runtimeDetail">--</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">當前倉位</div>
+          <div class="card-value" id="position">0.0000 BTC</div>
+          <div class="card-subtitle" id="positionValue">--</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">成交率</div>
+          <div class="card-value" id="fillRate">0%</div>
+          <div class="card-subtitle" id="fillRateDetail">--</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">正常運行時間</div>
+          <div class="card-value" id="uptime">0%</div>
+          <div class="card-subtitle" id="uptimeTier">--</div>
+        </div>
+      </div>
+
+      <!-- Main Content Grid -->
+      <div class="content-grid">
+        <!-- Performance Chart -->
+        <div class="panel chart-panel">
+          <h2>📈 PnL 趨勢</h2>
+          <canvas id="pnlChart"></canvas>
+        </div>
+
+        <!-- Position Chart -->
+        <div class="panel chart-panel">
+          <h2>📍 倉位變化</h2>
+          <canvas id="positionChart"></canvas>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="panel">
+          <h2>💰 Performance Metrics</h2>
+          <div class="metrics-list">
+            <div class="metric-row">
+              <span class="metric-label">已實現 PnL</span>
+              <span class="metric-value" id="realizedPnl">$0.00</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">未實現 PnL</span>
+              <span class="metric-value" id="unrealizedPnl">$0.00</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">累計成交量</span>
+              <span class="metric-value" id="totalVolume">0.0000 BTC</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">時均 PnL</span>
+              <span class="metric-value" id="hourlyPnl">$0.00/hr</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Order Statistics -->
+        <div class="panel">
+          <h2>📋 Order Statistics</h2>
+          <div class="metrics-list">
+            <div class="metric-row">
+              <span class="metric-label">總訂單數</span>
+              <span class="metric-value" id="totalOrders">0</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">成交訂單</span>
+              <span class="metric-value" id="filledOrders">0</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">取消訂單</span>
+              <span class="metric-value" id="cancelledOrders">0</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">平均價差</span>
+              <span class="metric-value" id="avgSpread">0.00 bps</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">庫存周轉率</span>
+              <span class="metric-value" id="turnover">0.00 次/hr</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Uptime Program Status -->
+        <div class="panel uptime-panel">
+          <h2>⏱️ Uptime Program Status</h2>
+          <div class="uptime-progress">
+            <div class="progress-bar">
+              <div
+                class="progress-fill"
+                id="uptimeProgress"
+                style="width: 0%"
+              ></div>
+            </div>
+            <div class="progress-label">
+              <span id="uptimePercentage">0%</span>
+              <span id="uptimeTarget">目標: 70%</span>
+            </div>
+          </div>
+          <div class="metrics-list">
+            <div class="metric-row">
+              <span class="metric-label">獎勵層級</span>
+              <span class="metric-value" id="rewardTier">⚪ Inactive</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">符合資格</span>
+              <span class="metric-value" id="qualifiedChecks">0/0</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">預估 Maker Hours</span>
+              <span class="metric-value" id="makerHours">0.00/hr</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">月度預估</span>
+              <span class="metric-value" id="monthlyHours">0 hrs</span>
+            </div>
+            <div class="metric-row">
+              <span class="metric-label">費率層級</span>
+              <span class="metric-value" id="feeTier">--</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <footer class="footer">
+        <p>最後更新: <span id="lastUpdate">--</span></p>
+        <p>
+          StandX Market Maker v1.0.0 |
+          <a href="https://docs.standx.com" target="_blank">API 文檔</a>
+        </p>
+      </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
