@@ -6,13 +6,15 @@ This module provides a factory function to create exchange adapters based on con
 from typing import Dict, Any, Type
 from .base_adapter import BasePerpAdapter
 from .standx_adapter import StandXAdapter
+from .grvt_adapter import GRVTAdapter
 
 # 注冊所有可用的適配器
 _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
     "standx": StandXAdapter,
+    "grvt": GRVTAdapter,
     # 未來可以添加更多交易所適配器
-    # "nado": NadoAdapter,
-    # "grvt": GrvtAdapter,
+    # "var": VARAdapter,
+    # "paradex": ParadexAdapter,
 }
 
 

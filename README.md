@@ -1,6 +1,12 @@
-# StandX 自動化做市商系統
+# 多交易所永續合約交易系統
 
-一個專業的自動化做市商（Market Maker）系統，針對 StandX 永續合約交易所設計，提供雙邊掛單、價差管理、庫存控制和風險管理功能。
+一個專業的自動化做市商（Market Maker）系統，支持多個永續合約交易所，提供雙邊掛單、價差管理、庫存控制和風險管理功能。
+
+## 支持的交易所
+
+- ✅ **StandX** - 完整支持（包括 Uptime Program 優化）
+- ✅ **GRVT** - 適配器已實現（需要配置）
+- 🔄 **其他交易所** - 易於擴展（參見[添加新交易所指南](docs/ADDING_NEW_EXCHANGES.md)）
 
 ## 系統特點
 
@@ -18,10 +24,12 @@
 
 ### 核心功能
 
+- ✅ **多交易所支持**：統一適配器接口，輕鬆添加新交易所
 - ✅ **雙邊做市**：同時在買賣兩側提供流動性
 - ✅ **動態價差管理**：根據市場波動率自動調整價差（符合 10 bps 要求）
 - ✅ **庫存控制**：智能管理持倉偏移，避免單邊風險
 - ✅ **風險管理**：實時監控倉位、PnL 和風險指標
+- ✅ **跨交易所套利**：同時連接多個交易所，尋找套利機會
 - ✅ **正常運行時間優化**：自動維持 70%+ 正常運行時間以獲得最大獎勵
 - ✅ **WebSocket 實時更新**：即時接收訂單狀態和市場數據
 
@@ -35,9 +43,60 @@
    - 70%+ 正常運行時間維護
    - 自動 Maker Hours 追蹤
 
+## 多交易所架構
+
+系統使用 **適配器模式（Adapter Pattern）** 來支持多個交易所，使得添加新交易所變得簡單：
+
+```text
+         Strategy Layer
+              │
+              ▼
+    BasePerpAdapter (Interface)
+              │
+      ┌───────┴───────┬─────────┐
+      ▼               ▼         ▼
+   StandX          GRVT       其他...
+   Adapter        Adapter     Adapter
+```
+
+### 快速測試多交易所
+
+```bash
+# 測試所有已配置的交易所並比較價格
+python scripts/test_multi_exchange.py
+```
+
+輸出示例：
+
+```text
+📊 PRICE COMPARISON SUMMARY
+Symbol: BTC-USD
+--------------------------------------------------------------------------------
+Exchange        Best Bid        Best Ask          Spread     Spread %
+--------------------------------------------------------------------------------
+STANDX          $95,123.50      $95,145.20         $21.70       0.0228%
+GRVT            $95,125.80      $95,142.90         $17.10       0.0180%
+
+💰 ARBITRAGE OPPORTUNITIES
+STANDX ↔ GRVT:
+  ✅ Buy on STANDX @ $95,145.20
+     Sell on GRVT @ $95,125.80
+     Profit: $-19.40 (-0.0204%)
+```
+
+### 添加新交易所
+
+只需 3 步即可添加新交易所支持：
+
+1. 創建適配器類（繼承 `BasePerpAdapter`）
+2. 在 Factory 中註冊
+3. 添加環境變量配置
+
+詳細指南：📖 [添加新交易所指南](docs/ADDING_NEW_EXCHANGES.md)
+
 ## 架構設計
 
-```
+```text
 arbitrage/
 ├── src/
 │   ├── auth/              # 認證模組
@@ -131,6 +190,24 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # 編輯 .env 填入您的私鑰和配置
+```
+
+環境變數配置示例：
+
+```bash
+# 選擇交易所 (standx 或 grvt)
+EXCHANGE_NAME=standx
+
+# StandX 配置
+WALLET_PRIVATE_KEY=your_private_key_here
+WALLET_ADDRESS=0x...
+CHAIN=bsc
+
+# GRVT 配置 (可選)
+GRVT_API_KEY=your_api_key
+GRVT_API_SECRET=your_api_secret
+GRVT_BASE_URL=https://api.grvt.io
+GRVT_TESTNET=false
 ```
 
 ### 3. 配置策略參數
