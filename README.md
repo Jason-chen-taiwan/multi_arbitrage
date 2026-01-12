@@ -290,9 +290,10 @@ chmod +x start.sh
 
 # 或直接啟動特定功能
 ./start.sh config      # 配置管理面板
-./start.sh monitor     # 實時套利監控
+./start.sh arb         # 套利監控 Dashboard (推薦)
+./start.sh monitor     # 實時套利監控 (終端版)
 ./start.sh test        # 測試交易所連接
-./start.sh dashboard   # 多交易所主控面板
+./start.sh dashboard   # 單交易所主控面板
 ```
 
 start.sh 腳本會自動：
@@ -364,20 +365,62 @@ python arbitrage.py dashboard
 視覺化管理所有交易所 API 配置，無需手動編輯文件。
 
 ```bash
+./start.sh config
+# 或
 python arbitrage.py config
 ```
 
 **訪問**: <http://localhost:8001>
 
-### 🔍 實時套利監控
+**功能**:
 
-自動監控多個交易所的價格差異，檢測套利機會。
+- 視覺化配置所有 DEX/CEX 交易所
+- 安全的憑證遮罩顯示
+- 一鍵保存/刪除配置
+- Testnet 模式切換
+
+### 🔥 套利監控 Dashboard（推薦）
+
+**Web UI 實時監控跨交易所套利機會** - 最直觀的監控方式！
 
 ```bash
+./start.sh arb
+# 或
+python arbitrage.py arb
+```
+
+**訪問**: <http://localhost:8002>
+
+**功能特色**:
+
+- 🎨 **現代化深色主題介面** - 專業金融 UI 設計
+- 📊 **實時價格對比** - 並排顯示所有交易所價格
+- 💰 **套利機會卡片** - 清晰顯示買賣雙方和利潤
+- 📈 **統計儀表板** - 運行時間、更新次數、機會總數
+- ⚡ **1秒刷新** - 超低延遲實時更新
+- 🔄 **WebSocket 連接** - 高效的實時數據推送
+- 📱 **響應式設計** - 支援桌面和移動設備
+
+**顯示內容**:
+
+- 各交易所的最佳買價/賣價
+- 訂單簿深度（買盤/賣盤數量）
+- 價差百分比
+- 當前套利機會（包含預期利潤）
+- 可執行數量
+- 實時統計數據
+
+### 🔍 實時套利監控（終端版）
+
+終端版套利監控，適合伺服器環境或喜歡命令行的用戶。
+
+```bash
+./start.sh monitor
+# 或
 python arbitrage.py monitor
 ```
 
-功能：
+**功能**:
 
 - 並行監控多交易所 BTC/ETH 價格
 - 實時訂單簿深度分析
@@ -390,14 +433,18 @@ python arbitrage.py monitor
 快速測試所有已配置交易所的連接狀態。
 
 ```bash
+./start.sh test
+# 或
 python arbitrage.py test
 ```
 
-### 📊 多交易所主控面板
+### 📊 單交易所主控面板
 
-Web Dashboard 實時監控所有交易所狀態。
+Web Dashboard 監控單個交易所的詳細狀態（帳戶餘額、持倉、訂單）。
 
 ```bash
+./start.sh dashboard
+# 或
 python arbitrage.py dashboard
 ```
 

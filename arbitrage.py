@@ -32,11 +32,11 @@ def print_menu():
     """顯示主選單"""
     print("📋 可用功能：\n")
     print("  1. 🔧 配置管理面板     - Web UI 管理交易所 API 配置")
-    print("  2. 🔍 實時套利監控     - 監控多交易所價格並檢測套利機會")
-    print("  3. 🤖 做市商策略       - 運行自動做市商策略")
-    print("  4. 🧪 測試交易所連接   - 測試所有已配置的交易所")
-    print("  5. 📊 主控面板         - Web Dashboard (多交易所)")
-    print("  6. 📈 StandX Dashboard - StandX 專用監控面板")
+    print("  2. 🔍 實時套利監控     - 終端監控多交易所價格和套利機會")
+    print("  3. 🔥 套利 Dashboard   - Web UI 實時監控跨所套利 (推薦)")
+    print("  4. 🤖 做市商策略       - 運行自動做市商策略")
+    print("  5. 🧪 測試交易所連接   - 測試所有已配置的交易所")
+    print("  6. 📊 主控面板         - Web Dashboard (單交易所)")
     print("\n" + "-" * 80 + "\n")
 
 
@@ -67,9 +67,24 @@ def run_config_dashboard():
         print("\n\n👋 配置面板已停止")
 
 
+def run_arbitrage_dashboard():
+    """啟動套利 Web Dashboard"""
+    print("\n🔥 啟動套利 Web Dashboard...\n")
+    from src.web.arbitrage_dashboard import app
+    import uvicorn
+
+    print("📍 訪問地址：http://localhost:8002")
+    print("⚠️  按 Ctrl+C 停止服務\n")
+
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8002, log_level="info")
+    except KeyboardInterrupt:
+        print("\n\n👋 套利 Dashboard 已停止")
+
+
 def run_arbitrage_monitor():
-    """啟動套利監控系統"""
-    print("\n🔍 啟動實時套利監控系統...\n")
+    """啟動套利監控系統（終端版）"""
+    print("\n🔍 啟動實時套利監控系統（終端版）...\n")
 
     from dotenv import load_dotenv
     from src.adapters.factory import create_adapter
@@ -277,15 +292,6 @@ def run_multi_dashboard():
         print("\n\n👋 主控面板已停止")
 
 
-def run_standx_dashboard():
-    """啟動 StandX 專用面板"""
-    print("\n📈 啟動 StandX Dashboard...\n")
-    print("💡 功能開發中，敬請期待！")
-    print("   計劃功能：")
-    print("   - StandX 專用監控")
-    print("   - Uptime Program 追蹤")
-    print("   - Maker Hours 統計")
-    print("   - 獎勵計算器\n")
 
 
 def main():
@@ -298,7 +304,7 @@ def main():
     parser.add_argument(
         'command',
         nargs='?',
-        choices=['config', 'monitor', 'mm', 'test', 'dashboard', 'standx'],
+        choices=['config', 'monitor', 'arb', 'mm', 'test', 'dashboard'],
         help='要執行的功能'
     )
 
@@ -319,10 +325,10 @@ def main():
         command_map = {
             '1': 'config',
             '2': 'monitor',
-            '3': 'mm',
-            '4': 'test',
-            '5': 'dashboard',
-            '6': 'standx'
+            '3': 'arb',
+            '4': 'mm',
+            '5': 'test',
+            '6': 'dashboard'
         }
 
         args.command = command_map.get(choice)
@@ -335,10 +341,10 @@ def main():
     function_map = {
         'config': run_config_dashboard,
         'monitor': run_arbitrage_monitor,
+        'arb': run_arbitrage_dashboard,
         'mm': run_market_maker,
         'test': run_test_exchanges,
-        'dashboard': run_multi_dashboard,
-        'standx': run_standx_dashboard
+        'dashboard': run_multi_dashboard
     }
 
     try:
