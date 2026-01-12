@@ -6,8 +6,10 @@ perpetual futures exchanges. All exchange-specific adapters should inherit
 from BasePerpAdapter and implement the required methods.
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from decimal import Decimal
+from datetime import datetime
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -45,6 +47,46 @@ class OrderStatus(Enum):
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     EXPIRED = "expired"
+
+
+@dataclass
+class Orderbook:
+    """訂單簿數據結構"""
+    symbol: str
+    bids: List[Tuple[Decimal, Decimal]]  # [(price, size), ...]
+    asks: List[Tuple[Decimal, Decimal]]
+    timestamp: datetime
+
+    @property
+    def best_bid(self) -> Optional[Decimal]:
+        """獲取最佳買價"""
+        return self.bids[0][0] if self.bids else None
+
+    @property
+    def best_ask(self) -> Optional[Decimal]:
+        """獲取最佳賣價"""
+        return self.asks[0][0] if self.asks else None
+
+    @property
+    def mid_price(self) -> Optional[Decimal]:
+        """計算中間價"""
+        if self.best_bid and self.best_ask:
+            return (self.best_bid + self.best_ask) / 2
+        return None
+
+    @property
+    def spread(self) -> Optional[Decimal]:
+        """計算價差"""
+        if self.best_bid and self.best_ask:
+            return self.best_ask - self.best_bid
+        return None
+
+    @property
+    def spread_pct(self) -> Optional[Decimal]:
+        """計算價差百分比"""
+        if self.spread and self.mid_price and self.mid_price > 0:
+            return (self.spread / self.mid_price) * 100
+        return None
 
 
 class Position:
@@ -303,18 +345,18 @@ class BasePerpAdapter(ABC):
     async def get_orderbook(
         self,
         symbol: str,
-        depth: int = 20,
-    ) -> Dict[str, Any]:
+        limit: int = 20,
+    ) -> Orderbook:
         """
         查詢訂單簿
-        
+
         Args:
             symbol: 交易對符號
-            depth: 訂單簿深度
-            
+            limit: 訂單簿深度
+
         Returns:
-            Dict[str, Any]: 訂單簿數據，包含 bids 和 asks
-            
+            Orderbook: 訂單簿數據
+
         Raises:
             Exception: 查詢失敗時拋出異常
         """

@@ -107,6 +107,105 @@ STANDX ↔ GRVT:
 
 詳細指南：📖 [添加新交易所指南](docs/ADDING_NEW_EXCHANGES.md)
 
+## 🔍 實時套利監控系統
+
+系統提供完整的 **跨交易所實時監控和套利檢測** 功能：
+
+### 核心功能
+
+- ✅ **實時價格監控**：並行監控多個交易所的 BTC/ETH 價格
+- ✅ **訂單簿深度分析**：實時獲取最佳買賣價和深度
+- ✅ **自動套利檢測**：智能檢測跨交易所套利機會
+- ✅ **利潤計算**：考慮交易費用後的淨利潤
+- ✅ **統計報告**：實時顯示市場數據和套利機會
+
+### 啟動監控
+
+```bash
+# 使用統一啟動介面（推薦）
+python arbitrage.py monitor
+
+# 或直接運行監控腳本
+python scripts/monitor_arbitrage.py
+```
+
+監控系統會：
+
+1. 自動連接所有已配置的交易所（從 .env 讀取）
+2. 實時獲取 BTC 和 ETH 永續合約價格
+3. 每 2 秒更新一次價格數據
+4. 自動檢測套利機會（利潤閾值：0.1%）
+5. 每 10 秒顯示統計報告
+
+### 輸出示例
+
+```text
+================================================================================
+💰 ARBITRAGE OPPORTUNITIES DETECTED: 2
+================================================================================
+
+🔥 BTC/USDT:USDT Arbitrage:
+  Buy:  BINANCE     @ $ 95,123.50 (size: 1.5)
+  Sell: OKX         @ $ 95,245.20 (size: 1.2)
+  💰 Profit: $  121.70 (0.1280%)
+  📊 Max Qty: 1.2
+
+🔥 ETH/USDT:USDT Arbitrage:
+  Buy:  BITGET      @ $  3,245.80 (size: 10.0)
+  Sell: BYBIT       @ $  3,251.50 (size: 8.5)
+  💰 Profit: $    5.70 (0.1756%)
+  📊 Max Qty: 8.5
+================================================================================
+
+================================================================================
+📊 MONITOR STATISTICS
+================================================================================
+⏱️  Runtime: 2026-01-12 15:30:45
+📈 Total Updates: 1,234
+💰 Total Opportunities Found: 45
+
+📊 Exchange Status:
+  BINANCE         - Symbols: 2/2, Failures: 0
+  OKX             - Symbols: 2/2, Failures: 0
+  BITGET          - Symbols: 2/2, Failures: 1
+  BYBIT           - Symbols: 2/2, Failures: 0
+
+💵 Current Prices:
+
+  BTC/USDT:USDT:
+    BINANCE         - Bid: $ 95,123.50 | Ask: $ 95,145.20 | Spread: 0.0228%
+    OKX             - Bid: $ 95,125.80 | Ask: $ 95,142.90 | Spread: 0.0180%
+    BITGET          - Bid: $ 95,120.30 | Ask: $ 95,148.60 | Spread: 0.0298%
+    BYBIT           - Bid: $ 95,124.70 | Ask: $ 95,144.10 | Spread: 0.0204%
+
+  ETH/USDT:USDT:
+    BINANCE         - Bid: $  3,245.80 | Ask: $  3,247.50 | Spread: 0.0524%
+    OKX             - Bid: $  3,246.20 | Ask: $  3,247.10 | Spread: 0.0277%
+================================================================================
+```
+
+### 配置選項
+
+編輯 [scripts/monitor_arbitrage.py](scripts/monitor_arbitrage.py:42-44) 修改監控參數：
+
+```python
+# 配置要監控的交易對
+symbols_config = {
+    'cex': ['BTC/USDT:USDT', 'ETH/USDT:USDT'],  # CEX 符號
+    'dex': ['BTC-USD', 'ETH-USD']  # DEX 符號
+}
+
+# 創建監控器
+monitor = MultiExchangeMonitor(
+    adapters=adapters,
+    symbols=symbols,
+    update_interval=2.0,  # 更新間隔（秒）
+    min_profit_pct=0.1    # 最小套利利潤（%）
+)
+```
+
+詳細指南：📖 [套利監控指南](docs/ARBITRAGE_MONITORING_GUIDE.md)
+
 ## 架構設計
 
 ```text
@@ -178,54 +277,135 @@ elif inventory_skew < 0:  # 空頭過多
 - **訂單數量限制**：控制同時掛單數量
 - **價格保護**：避免在不利價格成交
 
-## 快速開始
+## 🚀 一鍵啟動
 
-### 1. 環境設置（推薦使用虛擬環境）
+**最簡單的方式** - 自動處理虛擬環境和依賴：
 
 ```bash
-# 賦予腳本執行權限
-chmod +x setup.sh run.sh
+# 首次使用（賦予執行權限）
+chmod +x start.sh
 
-# 自動設置虛擬環境並安裝依賴
-./setup.sh
+# 互動式選單（推薦）
+./start.sh
+
+# 或直接啟動特定功能
+./start.sh config      # 配置管理面板
+./start.sh monitor     # 實時套利監控
+./start.sh test        # 測試交易所連接
+./start.sh dashboard   # 多交易所主控面板
 ```
 
-這會創建隔離的 Python 虛擬環境，不影響系統全域套件。
+start.sh 腳本會自動：
 
-**手動安裝（不推薦）**：
+- ✅ 檢查並創建虛擬環境
+- ✅ 安裝缺失的依賴
+- ✅ 檢查並創建 .env 文件
+- ✅ 啟動系統
+
+### 手動啟動（進階用戶）
+
+如果您想手動管理環境：
 
 ```bash
+# 1. 安裝依賴
 pip install -r requirements.txt
+
+# 2. 啟動系統
+python arbitrage.py              # 互動式選單
+python arbitrage.py config       # 配置管理面板
+python arbitrage.py monitor      # 實時套利監控
+python arbitrage.py test         # 測試交易所連接
+python arbitrage.py dashboard    # 多交易所主控面板
 ```
 
-### 2. 配置環境變數
+### 3. 配置交易所
+
+#### 🌐 使用 Web 配置面板（推薦）
+
+```bash
+# 啟動配置面板
+python arbitrage.py config
+```
+
+訪問 <http://localhost:8001>，在 Web UI 中輕鬆配置：
+
+- ✅ **視覺化配置**：無需手動編輯 .env
+- ✅ **自動驗證**：確保配置正確性
+- ✅ **安全遮罩**：憑證自動隱藏敏感部分
+- ✅ **一鍵操作**：保存/刪除配置
+- ✅ **支援所有交易所**：DEX (StandX, GRVT) + CEX (Binance, OKX, Bitget, Bybit)
+
+#### 📝 或手動編輯 .env
 
 ```bash
 cp .env.example .env
-# 編輯 .env 填入您的私鑰和配置
+# 編輯 .env 填入您的配置
 ```
 
-環境變數配置示例：
+### 4. 開始交易
+
+配置完成後，選擇您要使用的功能：
 
 ```bash
-# 選擇交易所 (standx 或 grvt)
-EXCHANGE_NAME=standx
+# 實時監控套利機會
+python arbitrage.py monitor
 
-# StandX 配置
-WALLET_PRIVATE_KEY=your_private_key_here
-WALLET_ADDRESS=0x...
-CHAIN=bsc
+# 測試所有交易所連接
+python arbitrage.py test
 
-# GRVT 配置 (可選)
-GRVT_API_KEY=your_api_key
-GRVT_API_SECRET=your_api_secret
-GRVT_BASE_URL=https://api.grvt.io
-GRVT_TESTNET=false
+# 查看多交易所主控面板
+python arbitrage.py dashboard
 ```
 
-### 3. 配置策略參數
+## 📋 系統功能詳解
 
-#### 標準做市策略
+### 🔧 配置管理面板
+
+視覺化管理所有交易所 API 配置，無需手動編輯文件。
+
+```bash
+python arbitrage.py config
+```
+
+**訪問**: <http://localhost:8001>
+
+### 🔍 實時套利監控
+
+自動監控多個交易所的價格差異，檢測套利機會。
+
+```bash
+python arbitrage.py monitor
+```
+
+功能：
+
+- 並行監控多交易所 BTC/ETH 價格
+- 實時訂單簿深度分析
+- 自動檢測套利機會（考慮手續費）
+- 每 2 秒更新價格數據
+- 每 10 秒顯示統計報告
+
+### 🧪 測試交易所連接
+
+快速測試所有已配置交易所的連接狀態。
+
+```bash
+python arbitrage.py test
+```
+
+### 📊 多交易所主控面板
+
+Web Dashboard 實時監控所有交易所狀態。
+
+```bash
+python arbitrage.py dashboard
+```
+
+**訪問**: <http://localhost:8000>
+
+## 策略配置
+
+### 標準做市策略
 
 編輯 `config/config.yaml`：
 
