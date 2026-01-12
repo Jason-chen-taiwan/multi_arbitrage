@@ -7,12 +7,22 @@ from typing import Dict, Any, Type
 from .base_adapter import BasePerpAdapter
 from .standx_adapter import StandXAdapter
 from .grvt_adapter import GRVTAdapter
+from .ccxt_adapter import CCXTAdapter
 
-# 注冊所有可用的適配器
+# DEX 交易所（需要自定義適配器）
+DEX_EXCHANGES = ["standx", "grvt"]
+
+# CEX 交易所（使用 CCXT 統一適配器）
+CEX_EXCHANGES = [
+    "binance", "okx", "bitget", "bybit", "gateio",
+    "huobi", "kucoin", "mexc", "coinbase", "kraken"
+]
+
+# 注冊 DEX 適配器
 _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
     "standx": StandXAdapter,
     "grvt": GRVTAdapter,
-    # 未來可以添加更多交易所適配器
+    # 未來可以添加更多 DEX 適配器
     # "var": VARAdapter,
     # "paradex": ParadexAdapter,
 }
@@ -21,17 +31,18 @@ _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
 def create_adapter(config: Dict[str, Any]) -> BasePerpAdapter:
     """
     根據配置創建適配器實例
-    
+
     Args:
         config: 配置字典，必須包含 "exchange_name" 字段
-        
+
     Returns:
         BasePerpAdapter: 適配器實例
-        
+
     Raises:
         ValueError: 如果交易所名稱不支持或配置無效
-        
+
     Example:
+        >>> # DEX 示例（StandX）
         >>> config = {
         ...     "exchange_name": "standx",
         ...     "private_key": "0x...",
@@ -39,23 +50,41 @@ def create_adapter(config: Dict[str, Any]) -> BasePerpAdapter:
         ... }
         >>> adapter = create_adapter(config)
         >>> await adapter.connect()
+
+        >>> # CEX 示例（Binance）
+        >>> config = {
+        ...     "exchange_name": "binance",
+        ...     "api_key": "your_api_key",
+        ...     "api_secret": "your_api_secret"
+        ... }
+        >>> adapter = create_adapter(config)
+        >>> await adapter.connect()
     """
     exchange_name = config.get("exchange_name")
-    
+
     if not exchange_name:
         raise ValueError("配置中必須包含 'exchange_name' 字段")
-    
+
     exchange_name = exchange_name.lower()
-    
-    if exchange_name not in _ADAPTER_REGISTRY:
-        available = ", ".join(_ADAPTER_REGISTRY.keys())
+
+    # 檢查是否是 DEX（使用自定義適配器）
+    if exchange_name in _ADAPTER_REGISTRY:
+        adapter_class = _ADAPTER_REGISTRY[exchange_name]
+        return adapter_class(config)
+
+    # 檢查是否是 CEX（使用 CCXT 適配器）
+    elif exchange_name in CEX_EXCHANGES:
+        return CCXTAdapter(config)
+
+    # 不支持的交易所
+    else:
+        all_exchanges = list(_ADAPTER_REGISTRY.keys()) + CEX_EXCHANGES
+        available = ", ".join(sorted(all_exchanges))
         raise ValueError(
-            f"不支持的交易所: {exchange_name}。"
-            f"可用的交易所: {available}"
+            f"不支持的交易所: {exchange_name}。\n"
+            f"可用的 DEX: {', '.join(DEX_EXCHANGES)}\n"
+            f"可用的 CEX: {', '.join(CEX_EXCHANGES)}"
         )
-    
-    adapter_class = _ADAPTER_REGISTRY[exchange_name]
-    return adapter_class(config)
 
 
 def register_adapter(exchange_name: str, adapter_class: Type[BasePerpAdapter]):
@@ -78,11 +107,19 @@ def register_adapter(exchange_name: str, adapter_class: Type[BasePerpAdapter]):
     _ADAPTER_REGISTRY[exchange_name.lower()] = adapter_class
 
 
-def get_available_exchanges() -> list:
+def get_available_exchanges() -> Dict[str, list]:
     """
     獲取所有可用的交易所列表
-    
+
     Returns:
-        list: 交易所名稱列表
+        Dict[str, list]: 包含 DEX 和 CEX 列表的字典
+            - "dex": DEX 交易所列表
+            - "cex": CEX 交易所列表
+            - "all": 所有交易所列表
     """
-    return list(_ADAPTER_REGISTRY.keys())
+    all_exchanges = list(_ADAPTER_REGISTRY.keys()) + CEX_EXCHANGES
+    return {
+        "dex": list(_ADAPTER_REGISTRY.keys()),
+        "cex": CEX_EXCHANGES,
+        "all": sorted(all_exchanges)
+    }

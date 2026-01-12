@@ -4,9 +4,22 @@
 
 ## 支持的交易所
 
+### 去中心化交易所（DEX）
+
 - ✅ **StandX** - 完整支持（包括 Uptime Program 優化）
 - ✅ **GRVT** - 適配器已實現（需要配置）
-- 🔄 **其他交易所** - 易於擴展（參見[添加新交易所指南](docs/ADDING_NEW_EXCHANGES.md)）
+- 🔄 **其他 DEX** - 易於擴展（參見[添加新交易所指南](docs/ADDING_NEW_EXCHANGES.md)）
+
+### 中心化交易所（CEX）- 通過 CCXT
+
+- ✅ **Binance** - 全球最大交易量，最高 125x 槓桿
+- ✅ **OKX** - 綜合衍生品平台，最高 125x 槓桿
+- ✅ **Bitget** - 跟單交易領先，最高 125x 槓桿
+- ✅ **Bybit** - 專業衍生品，最高 100x 槓桿
+- ✅ **Gate.io** - 多樣化產品，最高 100x 槓桿
+- ✅ **其他 100+ CEX** - 通過 [CCXT](https://github.com/ccxt/ccxt) 支持
+
+詳見：📖 [CEX 集成指南](docs/CEX_INTEGRATION_GUIDE.md)
 
 ## 系統特點
 
