@@ -277,7 +277,7 @@ elif inventory_skew < 0:  # 空頭過多
 - **訂單數量限制**：控制同時掛單數量
 - **價格保護**：避免在不利價格成交
 
-## 🚀 一鍵啟動
+## 🚀 快速開始
 
 **最簡單的方式** - 自動處理虛擬環境和依賴：
 
@@ -289,11 +289,10 @@ chmod +x start.sh
 ./start.sh
 
 # 或直接啟動特定功能
-./start.sh config      # 配置管理面板
-./start.sh arb         # 套利監控 Dashboard (推薦)
-./start.sh monitor     # 實時套利監控 (終端版)
+./start.sh dashboard   # Web UI 整合介面（推薦）
+./start.sh monitor     # 終端監控（適合伺服器）
 ./start.sh test        # 測試交易所連接
-./start.sh dashboard   # 單交易所主控面板
+./start.sh mm          # 做市商策略
 ```
 
 start.sh 腳本會自動：
@@ -313,22 +312,22 @@ pip install -r requirements.txt
 
 # 2. 啟動系統
 python arbitrage.py              # 互動式選單
-python arbitrage.py config       # 配置管理面板
-python arbitrage.py monitor      # 實時套利監控
+python arbitrage.py dashboard    # Web UI 整合介面（推薦）
+python arbitrage.py monitor      # 終端監控
 python arbitrage.py test         # 測試交易所連接
-python arbitrage.py dashboard    # 多交易所主控面板
+python arbitrage.py mm           # 做市商策略
 ```
 
-### 3. 配置交易所
+### 配置交易所
 
-#### 🌐 使用 Web 配置面板（推薦）
+#### 🌐 使用 Web Dashboard 配置（推薦）
 
 ```bash
-# 啟動配置面板
-python arbitrage.py config
+# 啟動整合 Dashboard
+python arbitrage.py dashboard
 ```
 
-訪問 <http://localhost:8001>，在 Web UI 中輕鬆配置：
+訪問 <http://localhost:8888>，點擊「⚙️ 配置管理」頁面：
 
 - ✅ **視覺化配置**：無需手動編輯 .env
 - ✅ **自動驗證**：確保配置正確性
@@ -343,76 +342,61 @@ cp .env.example .env
 # 編輯 .env 填入您的配置
 ```
 
-### 4. 開始交易
+### 開始使用
 
-配置完成後，選擇您要使用的功能：
+配置完成後，Dashboard 提供 4 個功能頁面：
 
-```bash
-# 實時監控套利機會
-python arbitrage.py monitor
-
-# 測試所有交易所連接
-python arbitrage.py test
-
-# 查看多交易所主控面板
-python arbitrage.py dashboard
-```
+- **📊 總覽** - 實時統計和套利機會預覽
+- **💰 套利監控** - 詳細的跨交易所套利數據
+- **🏦 交易所狀態** - 所有交易所價格對比
+- **⚙️ 配置管理** - 管理交易所 API 憑證
 
 ## 📋 系統功能詳解
 
-### 🔧 配置管理面板
+### 🎯 整合 Web Dashboard（推薦）
 
-視覺化管理所有交易所 API 配置，無需手動編輯文件。
+**一站式 Web UI** - 所有功能整合在一個介面中！
 
 ```bash
-./start.sh config
+./start.sh dashboard
 # 或
-python arbitrage.py config
+python arbitrage.py dashboard
 ```
 
-**訪問**: <http://localhost:8001>
+**訪問**: <http://localhost:8888>
 
-**功能**:
+**4 大功能頁面**:
 
+#### 📊 系統總覽
+- 實時統計數據（運行時間、更新次數、套利機會總數）
+- 各交易所狀態摘要
+- 最新套利機會預覽
+
+#### 💰 套利監控
+- 🎨 **現代化深色主題** - 專業金融 UI 設計
+- 📊 **實時價格對比** - 並排顯示所有交易所價格
+- 💰 **套利機會卡片** - 清晰顯示買賣雙方和利潤
+- 📈 **詳細市場數據** - 訂單簿深度、價差百分比
+- ⚡ **1秒刷新** - 超低延遲實時更新
+- 🔄 **WebSocket 連接** - 高效的實時數據推送
+
+#### 🏦 交易所狀態
+- 所有交易所的實時價格對比表
+- 最佳買價/賣價顯示
+- 訂單簿深度（買盤/賣盤數量）
+- 價差百分比
+- 交易所連接狀態
+
+#### ⚙️ 配置管理
 - 視覺化配置所有 DEX/CEX 交易所
 - 安全的憑證遮罩顯示
 - 一鍵保存/刪除配置
 - Testnet 模式切換
+- 無需手動編輯 .env 文件
 
-### 🔥 套利監控 Dashboard（推薦）
+### 🔍 終端監控（適合伺服器）
 
-**Web UI 實時監控跨交易所套利機會** - 最直觀的監控方式！
-
-```bash
-./start.sh arb
-# 或
-python arbitrage.py arb
-```
-
-**訪問**: <http://localhost:8002>
-
-**功能特色**:
-
-- 🎨 **現代化深色主題介面** - 專業金融 UI 設計
-- 📊 **實時價格對比** - 並排顯示所有交易所價格
-- 💰 **套利機會卡片** - 清晰顯示買賣雙方和利潤
-- 📈 **統計儀表板** - 運行時間、更新次數、機會總數
-- ⚡ **1秒刷新** - 超低延遲實時更新
-- 🔄 **WebSocket 連接** - 高效的實時數據推送
-- 📱 **響應式設計** - 支援桌面和移動設備
-
-**顯示內容**:
-
-- 各交易所的最佳買價/賣價
-- 訂單簿深度（買盤/賣盤數量）
-- 價差百分比
-- 當前套利機會（包含預期利潤）
-- 可執行數量
-- 實時統計數據
-
-### 🔍 實時套利監控（終端版）
-
-終端版套利監控，適合伺服器環境或喜歡命令行的用戶。
+命令行版套利監控，適合伺服器環境或喜歡命令行的用戶。
 
 ```bash
 ./start.sh monitor
@@ -437,18 +421,6 @@ python arbitrage.py monitor
 # 或
 python arbitrage.py test
 ```
-
-### 📊 單交易所主控面板
-
-Web Dashboard 監控單個交易所的詳細狀態（帳戶餘額、持倉、訂單）。
-
-```bash
-./start.sh dashboard
-# 或
-python arbitrage.py dashboard
-```
-
-**訪問**: <http://localhost:8000>
 
 ## 策略配置
 

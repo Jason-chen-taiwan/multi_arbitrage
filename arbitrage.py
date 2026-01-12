@@ -31,75 +31,36 @@ def print_banner():
 def print_menu():
     """顯示主選單"""
     print("📋 可用功能：\n")
-    print("  1. 🎯 統一 Dashboard   - 整合所有功能的 Web UI (強烈推薦)")
-    print("  2. 🔧 配置管理面板     - Web UI 管理交易所 API 配置")
-    print("  3. 🔍 實時套利監控     - 終端監控多交易所價格和套利機會")
-    print("  4. 🔥 套利 Dashboard   - Web UI 實時監控跨所套利")
-    print("  5. 🤖 做市商策略       - 運行自動做市商策略")
-    print("  6. 🧪 測試交易所連接   - 測試所有已配置的交易所")
-    print("  7. 📊 單交易所面板     - Web Dashboard (單交易所)")
+    print("  1. 🎯 Dashboard        - Web UI 整合介面（推薦）")
+    print("  2. 🔍 終端監控         - 命令行版本（適合伺服器）")
+    print("  3. 🧪 測試連接         - 測試交易所連接狀態")
+    print("  4. 🤖 做市商策略       - 運行自動做市商")
     print("\n" + "-" * 80 + "\n")
 
 
-def run_unified_dashboard():
-    """啟動統一 Dashboard"""
-    print("\n🎯 啟動統一 Dashboard...\n")
-    print("💡 整合所有功能：配置管理、套利監控、交易所狀態")
+def run_dashboard():
+    """啟動 Dashboard"""
+    print("\n🎯 啟動 Dashboard...\n")
+    print("=" * 60)
+    print("功能包含：")
+    print("  📊 系統總覽 - 實時統計和套利機會")
+    print("  💰 套利監控 - 跨交易所套利詳情")
+    print("  🏦 交易所狀態 - 所有交易所價格")
+    print("  ⚙️  配置管理 - 管理 API 憑證")
+    print("=" * 60)
     from src.web.unified_dashboard import app
     import uvicorn
 
-    print("📍 訪問地址：http://localhost:8888")
+    print("\n📍 訪問地址：http://localhost:8888")
     print("⚠️  按 Ctrl+C 停止服務\n")
 
     try:
         uvicorn.run(app, host="127.0.0.1", port=8888, log_level="info")
     except KeyboardInterrupt:
-        print("\n\n👋 統一 Dashboard 已停止")
+        print("\n\n👋 Dashboard 已停止")
 
 
-def run_config_dashboard():
-    """啟動配置管理面板"""
-    print("\n🔧 啟動配置管理面板...\n")
-    from src.web.config_dashboard import app, config_manager
-    import uvicorn
-
-    # 顯示當前配置狀態
-    configs = config_manager.get_all_configs()
-    dex_count = len(configs['dex'])
-    cex_count = len(configs['cex'])
-
-    print(f"📊 當前配置狀態：")
-    print(f"  DEX 交易所: {dex_count} 個已配置")
-    print(f"  CEX 交易所: {cex_count} 個已配置")
-
-    if dex_count + cex_count == 0:
-        print("\n💡 提示：尚未配置任何交易所，請在 Web 面板中添加配置")
-
-    print("\n📍 訪問地址：http://localhost:8001")
-    print("⚠️  按 Ctrl+C 停止服務\n")
-
-    try:
-        uvicorn.run(app, host="127.0.0.1", port=8001, log_level="info")
-    except KeyboardInterrupt:
-        print("\n\n👋 配置面板已停止")
-
-
-def run_arbitrage_dashboard():
-    """啟動套利 Web Dashboard"""
-    print("\n🔥 啟動套利 Web Dashboard...\n")
-    from src.web.arbitrage_dashboard import app
-    import uvicorn
-
-    print("📍 訪問地址：http://localhost:8002")
-    print("⚠️  按 Ctrl+C 停止服務\n")
-
-    try:
-        uvicorn.run(app, host="127.0.0.1", port=8002, log_level="info")
-    except KeyboardInterrupt:
-        print("\n\n👋 套利 Dashboard 已停止")
-
-
-def run_arbitrage_monitor():
+def run_monitor():
     """啟動套利監控系統（終端版）"""
     print("\n🔍 啟動實時套利監控系統（終端版）...\n")
 
@@ -294,23 +255,6 @@ def run_test_exchanges():
     print("\n✅ 測試完成\n")
 
 
-def run_multi_dashboard():
-    """啟動多交易所主控面板"""
-    print("\n📊 啟動多交易所主控面板...\n")
-    from src.web.adapter_dashboard import app
-    import uvicorn
-
-    print("📍 訪問地址：http://localhost:8000")
-    print("⚠️  按 Ctrl+C 停止服務\n")
-
-    try:
-        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
-    except KeyboardInterrupt:
-        print("\n\n👋 主控面板已停止")
-
-
-
-
 def main():
     """主函數"""
     parser = argparse.ArgumentParser(
@@ -321,7 +265,7 @@ def main():
     parser.add_argument(
         'command',
         nargs='?',
-        choices=['unified', 'config', 'monitor', 'arb', 'mm', 'test', 'dashboard'],
+        choices=['dashboard', 'monitor', 'test', 'mm'],
         help='要執行的功能'
     )
 
@@ -340,13 +284,10 @@ def main():
             return
 
         command_map = {
-            '1': 'unified',
-            '2': 'config',
-            '3': 'monitor',
-            '4': 'arb',
-            '5': 'mm',
-            '6': 'test',
-            '7': 'dashboard'
+            '1': 'dashboard',
+            '2': 'monitor',
+            '3': 'test',
+            '4': 'mm'
         }
 
         args.command = command_map.get(choice)
@@ -357,13 +298,10 @@ def main():
 
     # 執行對應功能
     function_map = {
-        'unified': run_unified_dashboard,
-        'config': run_config_dashboard,
-        'monitor': run_arbitrage_monitor,
-        'arb': run_arbitrage_dashboard,
-        'mm': run_market_maker,
+        'dashboard': run_dashboard,
+        'monitor': run_monitor,
         'test': run_test_exchanges,
-        'dashboard': run_multi_dashboard
+        'mm': run_market_maker
     }
 
     try:

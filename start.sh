@@ -37,7 +37,7 @@ if [ ! -f ".env" ]; then
         echo -e "${BLUE}   正在從 .env.example 創建 .env...${NC}"
         cp .env.example .env
         echo -e "${GREEN}✅ .env 文件已創建${NC}"
-        echo -e "${YELLOW}💡 提示：請運行 'python arbitrage.py config' 配置交易所${NC}"
+        echo -e "${YELLOW}💡 提示：請運行 'python arbitrage.py dashboard' 在 Web UI 中配置交易所${NC}"
     fi
 fi
 
