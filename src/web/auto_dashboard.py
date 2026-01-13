@@ -1083,10 +1083,10 @@ async def root():
                         <div class="sim-grid">
                             <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0秒</div><div class="sim-label">運行時間</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">符合率</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0</div><div class="sim-label">買撤/重掛</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0</div><div class="sim-label">賣撤/重掛</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0/0</div><div class="sim-label">買撤/隊列/重掛</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0/0</div><div class="sim-label">賣撤/隊列/重掛</div></div>
                         </div>
-                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=價格太近 / 重掛=價格太遠</p>
+                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=bps太近 / 隊列=排第1檔 / 重掛=bps太遠</p>
                     </div>
 
                     <!-- 訂單操作歷史 -->
@@ -1357,6 +1357,9 @@ async def root():
                 rebalanceDistanceBps: 12,
                 uptimeMaxDistanceBps: 10,
 
+                // 隊列位置風控：排在前 N 檔時撤單
+                queuePositionLimit: 1,  // 排在第1檔（最佳價）時撤單
+
                 // 模擬掛單 (null = 無單)
                 bidOrder: null,
                 askOrder: null,
@@ -1372,6 +1375,8 @@ async def root():
                 askCancels: 0,
                 bidRebalances: 0,
                 askRebalances: 0,
+                bidQueueCancels: 0,   // 因隊列位置撤單
+                askQueueCancels: 0,
 
                 // 歷史記錄 (最多保留 50 條)
                 history: [],
@@ -1410,8 +1415,23 @@ async def root():
                     return order;
                 },
 
+                // 計算訂單在 orderbook 中的隊列位置
+                getQueuePosition(side, orderPrice, ob) {
+                    if (!ob || !orderPrice) return null;
+
+                    if (side === 'bid') {
+                        // 買單：找第一個價格 < orderPrice 的位置
+                        const pos = ob.bids.findIndex(b => b[0] < orderPrice);
+                        return pos === -1 ? ob.bids.length + 1 : pos + 1;
+                    } else {
+                        // 賣單：找第一個價格 > orderPrice 的位置
+                        const pos = ob.asks.findIndex(a => a[0] > orderPrice);
+                        return pos === -1 ? ob.asks.length + 1 : pos + 1;
+                    }
+                },
+
                 // 檢查並處理訂單 (基於時間的 Uptime 計算)
-                tick(midPrice) {
+                tick(midPrice, ob) {
                     const now = Date.now();
                     let bidStatus = 'none';
                     let askStatus = 'none';
@@ -1424,8 +1444,17 @@ async def root():
                     // 處理買單
                     if (this.bidOrder) {
                         const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
+                        const queuePos = this.getQueuePosition('bid', this.bidOrder.price, ob);
 
-                        if (distBps < this.cancelDistanceBps) {
+                        // 優先檢查隊列位置風控
+                        if (queuePos && queuePos <= this.queuePositionLimit) {
+                            const oldPrice = this.bidOrder.price;
+                            bidStatus = 'queue_cancel';
+                            this.bidOrder = null;
+                            this.bidQueueCancels++;
+                            this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '隊列風控 (第' + queuePos + '檔，距離 ' + distBps.toFixed(2) + ' bps)');
+                        } else if (distBps < this.cancelDistanceBps) {
                             const oldPrice = this.bidOrder.price;
                             bidStatus = 'cancel';
                             this.bidOrder = null;
@@ -1449,8 +1478,17 @@ async def root():
                     // 處理賣單
                     if (this.askOrder) {
                         const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
+                        const queuePos = this.getQueuePosition('ask', this.askOrder.price, ob);
 
-                        if (distBps < this.cancelDistanceBps) {
+                        // 優先檢查隊列位置風控
+                        if (queuePos && queuePos <= this.queuePositionLimit) {
+                            const oldPrice = this.askOrder.price;
+                            askStatus = 'queue_cancel';
+                            this.askOrder = null;
+                            this.askQueueCancels++;
+                            this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '隊列風控 (第' + queuePos + '檔，距離 ' + distBps.toFixed(2) + ' bps)');
+                        } else if (distBps < this.cancelDistanceBps) {
                             const oldPrice = this.askOrder.price;
                             askStatus = 'cancel';
                             this.askOrder = null;
@@ -1473,14 +1511,14 @@ async def root():
 
                     // 沒有訂單則下單，並立即檢查是否合格
                     if (!this.bidOrder) {
-                        const reason = bidStatus === 'cancel' ? '撤單後重掛' : (bidStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        const reason = (bidStatus === 'cancel' || bidStatus === 'queue_cancel') ? '撤單後重掛' : (bidStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
                         this.placeOrder('bid', midPrice, reason);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         }
                     }
                     if (!this.askOrder) {
-                        const reason = askStatus === 'cancel' ? '撤單後重掛' : (askStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        const reason = (askStatus === 'cancel' || askStatus === 'queue_cancel') ? '撤單後重掛' : (askStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
                         this.placeOrder('ask', midPrice, reason);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
@@ -1516,6 +1554,8 @@ async def root():
                     this.askCancels = 0;
                     this.bidRebalances = 0;
                     this.askRebalances = 0;
+                    this.bidQueueCancels = 0;
+                    this.askQueueCancels = 0;
                     this.history = [];
                 },
 
@@ -1655,8 +1695,11 @@ async def root():
                 const runtime = Math.floor((Date.now() - mmSim.startTime) / 60000);
                 document.getElementById('mmRuntime').textContent = runtime + 'm';
 
+                // 取得 orderbook 用於隊列位置風控
+                const ob = data.orderbooks?.STANDX?.['BTC-USD'];
+
                 // ===== 使用 mmSim 模擬訂單生命週期 =====
-                const simResult = mmSim.tick(midPrice);
+                const simResult = mmSim.tick(midPrice, ob);
 
                 // 顯示實際掛單價格（不是理論價格）
                 const bidOrder = mmSim.bidOrder;
@@ -1675,7 +1718,9 @@ async def root():
                     // 狀態指示
                     let bidStatusText = '';
                     if (simResult.bidStatus === 'cancel') {
-                        bidStatusText = '⚡ 撤單 (太近)';
+                        bidStatusText = '⚡ 撤單 (bps太近)';
+                    } else if (simResult.bidStatus === 'queue_cancel') {
+                        bidStatusText = '🚨 撤單 (隊列風控)';
                     } else if (simResult.bidStatus === 'rebalance') {
                         bidStatusText = '🔄 重掛 (太遠)';
                     } else if (bidInRange) {
@@ -1696,7 +1741,9 @@ async def root():
 
                     let askStatusText = '';
                     if (simResult.askStatus === 'cancel') {
-                        askStatusText = '⚡ 撤單 (太近)';
+                        askStatusText = '⚡ 撤單 (bps太近)';
+                    } else if (simResult.askStatus === 'queue_cancel') {
+                        askStatusText = '🚨 撤單 (隊列風控)';
                     } else if (simResult.askStatus === 'rebalance') {
                         askStatusText = '🔄 重掛 (太遠)';
                     } else if (askInRange) {
@@ -1716,7 +1763,7 @@ async def root():
                 spreadDisplay.className = spreadBps <= 10 ? 'text-green' : (spreadBps <= 15 ? 'text-yellow' : 'text-red');
 
                 // ===== 訂單簿顯示 =====
-                const ob = data.orderbooks?.STANDX?.['BTC-USD'];
+                // ob 已在上方取得 (用於隊列位置風控)
                 // 使用 mmSim 的實際掛單價格
                 const simBidPrice = bidOrder ? bidOrder.price : null;
                 const simAskPrice = askOrder ? askOrder.price : null;
@@ -1784,8 +1831,8 @@ async def root():
                 document.getElementById('mmTotalQuotes').textContent = runningTimeStr;
                 document.getElementById('mmQualifiedRate').textContent = uptimePct.toFixed(1) + '%';
                 // 撤單次數和重掛次數
-                document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidRebalances;
-                document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askRebalances;
+                document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidQueueCancels + '/' + mmSim.bidRebalances;
+                document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askQueueCancels + '/' + mmSim.askRebalances;
 
                 // 更新歷史記錄顯示
                 updateHistoryDisplay();
