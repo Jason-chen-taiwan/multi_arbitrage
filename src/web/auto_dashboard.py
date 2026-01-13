@@ -921,29 +921,97 @@ async def root():
 
                     <!-- 控制面板 -->
                     <div class="card" style="grid-column: 1 / -1;">
-                        <div class="card-title">執行控制</div>
-                        <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <label style="font-size: 12px; color: #9ca3af;">訂單大小:</label>
-                                <input type="number" id="mmOrderSize" value="0.001" step="0.001" min="0.001" max="0.1" style="width: 80px; padding: 6px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb;">
-                                <span style="font-size: 12px; color: #9ca3af;">BTC</span>
+                        <div class="card-title">策略配置 <span id="mmConfigStatus" style="font-size: 10px; color: #9ca3af; margin-left: 10px;"></span></div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                            <!-- 報價參數 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">報價參數</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">掛單距離</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmOrderDistance" value="8" step="1" min="1" max="20" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">bps</span>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">撤單距離</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmCancelDistance" value="3" step="1" min="1" max="10" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">bps</span>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">重掛距離</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmRebalanceDistance" value="12" step="1" min="10" max="30" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">bps</span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <label style="font-size: 12px; color: #9ca3af;">報價距離:</label>
-                                <input type="number" id="mmOrderDistance" value="8" step="1" min="5" max="20" style="width: 60px; padding: 6px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb;">
-                                <span style="font-size: 12px; color: #9ca3af;">bps</span>
+                            <!-- 倉位參數 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">倉位參數</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">訂單大小</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmOrderSize" value="0.001" step="0.001" min="0.001" max="0.1" style="width: 60px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">BTC</span>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">最大持倉</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmMaxPosition" value="0.01" step="0.001" min="0.001" max="1" style="width: 60px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">BTC</span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="toggle-group">
-                                <span style="font-size: 12px; color: #9ca3af;">模擬模式</span>
-                                <div class="toggle active" id="mmDryRunToggle" onclick="toggleMMDryRun()"></div>
+                            <!-- 波動率控制 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">波動率控制</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">觀察窗口</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmVolatilityWindow" value="5" step="1" min="1" max="60" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">秒</span>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">閾值</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmVolatilityThreshold" value="5" step="0.5" min="1" max="20" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">bps</span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div style="margin-left: auto; font-size: 11px; color: #9ca3af;">
-                                StandX: <span id="mmStandxPos" style="color: #e4e6eb;">0</span> BTC |
-                                Binance: <span id="mmBinancePos" style="color: #e4e6eb;">0</span> BTC |
-                                淨敞口: <span id="mmNetPos" style="color: #10b981;">0</span> |
-                                StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">0</span> |
-                                Binance USDT: $<span id="mmBinanceUsdt" style="color: #e4e6eb;">0</span>
+                            <!-- 執行控制 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">執行控制</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">模擬模式</label>
+                                        <div class="toggle active" id="mmDryRunToggle" onclick="toggleMMDryRun()" style="transform: scale(0.8);"></div>
+                                    </div>
+                                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                                        <button class="btn btn-primary" onclick="saveMMConfig()" style="flex: 1; font-size: 11px; padding: 6px;">保存配置</button>
+                                        <button class="btn" onclick="loadMMConfig()" style="flex: 1; font-size: 11px; padding: 6px; background: #2a3347;">重載</button>
+                                    </div>
+                                </div>
                             </div>
+                        </div>
+                        <!-- 倉位狀態 -->
+                        <div style="display: flex; gap: 15px; font-size: 11px; color: #9ca3af; padding-top: 10px; border-top: 1px solid #2a3347;">
+                            <span>StandX: <span id="mmStandxPos" style="color: #e4e6eb;">0</span> BTC</span>
+                            <span>Binance: <span id="mmBinancePos" style="color: #e4e6eb;">0</span> BTC</span>
+                            <span>淨敞口: <span id="mmNetPos" style="color: #10b981;">0</span></span>
+                            <span>StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">0</span></span>
+                            <span>Binance USDT: $<span id="mmBinanceUsdt" style="color: #e4e6eb;">0</span></span>
                         </div>
                     </div>
 
@@ -1109,31 +1177,110 @@ async def root():
 
             async function loadMMConfig() {
                 try {
+                    document.getElementById('mmConfigStatus').textContent = '加載中...';
                     const res = await fetch('/api/mm/config');
                     mmConfig = await res.json();
                     console.log('Loaded MM config:', mmConfig);
+
                     // 更新 mmSim 配置
-                    if (mmConfig.quote) {
-                        mmSim.orderDistanceBps = mmConfig.quote.order_distance_bps;
-                        mmSim.cancelDistanceBps = mmConfig.quote.cancel_distance_bps;
-                        mmSim.rebalanceDistanceBps = mmConfig.quote.rebalance_distance_bps;
-                    }
-                    if (mmConfig.uptime) {
-                        mmSim.uptimeMaxDistanceBps = mmConfig.uptime.max_distance_bps;
-                    }
-                    // 更新 UI 顯示
+                    mmSim.updateConfig(mmConfig);
+
+                    // 更新 UI 輸入框
                     updateMMConfigDisplay();
+
+                    document.getElementById('mmConfigStatus').textContent = '已加載';
+                    setTimeout(() => {
+                        document.getElementById('mmConfigStatus').textContent = '';
+                    }, 2000);
                 } catch (e) {
                     console.error('Failed to load MM config:', e);
+                    document.getElementById('mmConfigStatus').textContent = '加載失敗';
+                }
+            }
+
+            async function saveMMConfig() {
+                try {
+                    document.getElementById('mmConfigStatus').textContent = '保存中...';
+
+                    // 從輸入框收集配置
+                    const config = {
+                        quote: {
+                            order_distance_bps: parseInt(document.getElementById('mmOrderDistance').value),
+                            cancel_distance_bps: parseInt(document.getElementById('mmCancelDistance').value),
+                            rebalance_distance_bps: parseInt(document.getElementById('mmRebalanceDistance').value),
+                        },
+                        position: {
+                            order_size_btc: parseFloat(document.getElementById('mmOrderSize').value),
+                            max_position_btc: parseFloat(document.getElementById('mmMaxPosition').value),
+                        },
+                        volatility: {
+                            window_sec: parseInt(document.getElementById('mmVolatilityWindow').value),
+                            threshold_bps: parseFloat(document.getElementById('mmVolatilityThreshold').value),
+                        },
+                        execution: {
+                            dry_run: mmDryRun,
+                        }
+                    };
+
+                    const res = await fetch('/api/mm/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(config)
+                    });
+
+                    const result = await res.json();
+                    if (result.success) {
+                        mmConfig = result.config;
+                        mmSim.updateConfig(mmConfig);
+                        document.getElementById('mmConfigStatus').textContent = '已保存';
+                        document.getElementById('mmConfigStatus').style.color = '#10b981';
+                    } else {
+                        document.getElementById('mmConfigStatus').textContent = '保存失敗: ' + result.error;
+                        document.getElementById('mmConfigStatus').style.color = '#ef4444';
+                    }
+
+                    setTimeout(() => {
+                        document.getElementById('mmConfigStatus').textContent = '';
+                        document.getElementById('mmConfigStatus').style.color = '#9ca3af';
+                    }, 3000);
+                } catch (e) {
+                    console.error('Failed to save MM config:', e);
+                    document.getElementById('mmConfigStatus').textContent = '保存失敗';
+                    document.getElementById('mmConfigStatus').style.color = '#ef4444';
                 }
             }
 
             function updateMMConfigDisplay() {
                 if (!mmConfig) return;
-                // 更新輸入框默認值
-                const orderDistInput = document.getElementById('mmOrderDistance');
-                if (orderDistInput && mmConfig.quote) {
-                    orderDistInput.value = mmConfig.quote.order_distance_bps;
+
+                // 報價參數
+                if (mmConfig.quote) {
+                    document.getElementById('mmOrderDistance').value = mmConfig.quote.order_distance_bps;
+                    document.getElementById('mmCancelDistance').value = mmConfig.quote.cancel_distance_bps;
+                    document.getElementById('mmRebalanceDistance').value = mmConfig.quote.rebalance_distance_bps;
+                }
+
+                // 倉位參數
+                if (mmConfig.position) {
+                    document.getElementById('mmOrderSize').value = mmConfig.position.order_size_btc;
+                    document.getElementById('mmMaxPosition').value = mmConfig.position.max_position_btc;
+                }
+
+                // 波動率參數
+                if (mmConfig.volatility) {
+                    document.getElementById('mmVolatilityWindow').value = mmConfig.volatility.window_sec;
+                    document.getElementById('mmVolatilityThreshold').value = mmConfig.volatility.threshold_bps;
+                }
+
+                // 執行參數
+                if (mmConfig.execution) {
+                    mmDryRun = mmConfig.execution.dry_run;
+                    const toggle = document.getElementById('mmDryRunToggle');
+                    if (mmDryRun) {
+                        toggle.classList.add('active');
+                    } else {
+                        toggle.classList.remove('active');
+                    }
                 }
             }
 
