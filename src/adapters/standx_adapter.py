@@ -18,14 +18,11 @@ from ..auth import AsyncStandXAuth
 
 
 class StandXAdapter(BasePerpAdapter):
-    """StandX 交易所適配器實現"""
+    """
+    StandX 交易所適配器實現
 
-    # StandX 使用 BTC-USD 格式（這也是統一格式）
-    SYMBOL_MAP = {
-        'BTC-USD': 'BTC-USD',
-        'ETH-USD': 'ETH-USD',
-        'SOL-USD': 'SOL-USD',
-    }
+    Symbol 映射由 SymbolManager 統一管理 (config/symbols.yaml)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         """

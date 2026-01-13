@@ -12,6 +12,8 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 
+from src.utils.symbol_manager import SymbolManager, get_symbol_manager
+
 
 class OrderSide(Enum):
     """訂單方向"""
@@ -190,17 +192,9 @@ class BasePerpAdapter(ABC):
 
     所有交易所適配器都應該繼承此類並實現所有抽象方法。
     這樣可以確保不同交易所的接口統一，方便策略編寫。
+
+    Symbol 映射由 SymbolManager 統一管理，配置位於 config/symbols.yaml
     """
-
-    # Symbol 格式映射（統一格式 -> 交易所格式）
-    # 子類應覆蓋此映射
-    SYMBOL_MAP: Dict[str, str] = {
-        'BTC-USD': 'BTC-USD',
-        'ETH-USD': 'ETH-USD',
-    }
-
-    # 反向映射（自動生成）
-    REVERSE_SYMBOL_MAP: Dict[str, str] = {}
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -211,8 +205,8 @@ class BasePerpAdapter(ABC):
         """
         self.config = config
         self.exchange_name = config.get("exchange_name", "unknown")
-        # 生成反向映射
-        self.REVERSE_SYMBOL_MAP = {v: k for k, v in self.SYMBOL_MAP.items()}
+        # 使用 SymbolManager 管理 symbol 映射
+        self._symbol_manager = get_symbol_manager()
 
     def normalize_symbol(self, symbol: str) -> str:
         """
@@ -224,7 +218,7 @@ class BasePerpAdapter(ABC):
         Returns:
             str: 交易所格式的 symbol
         """
-        return self.SYMBOL_MAP.get(symbol, symbol)
+        return self._symbol_manager.to_exchange(symbol, self.exchange_name)
 
     def denormalize_symbol(self, symbol: str) -> str:
         """
@@ -236,7 +230,23 @@ class BasePerpAdapter(ABC):
         Returns:
             str: 統一格式的 symbol (如 'BTC-USD')
         """
-        return self.REVERSE_SYMBOL_MAP.get(symbol, symbol)
+        return self._symbol_manager.to_unified(symbol, self.exchange_name)
+
+    def get_tick_size(self, symbol: str) -> Decimal:
+        """獲取 symbol 的 tick size"""
+        return self._symbol_manager.get_tick_size(symbol)
+
+    def get_min_quantity(self, symbol: str) -> Decimal:
+        """獲取 symbol 的最小訂單量"""
+        return self._symbol_manager.get_min_quantity(symbol)
+
+    def get_price_precision(self, symbol: str) -> int:
+        """獲取 symbol 的價格精度"""
+        return self._symbol_manager.get_price_precision(symbol)
+
+    def get_quantity_precision(self, symbol: str) -> int:
+        """獲取 symbol 的數量精度"""
+        return self._symbol_manager.get_quantity_precision(symbol)
     
     @abstractmethod
     async def connect(self) -> bool:

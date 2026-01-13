@@ -33,14 +33,8 @@ class CCXTAdapter(BasePerpAdapter):
     CCXT 適配器基類
 
     使用 CCXT 庫提供統一的接口訪問多個中心化交易所。
+    Symbol 映射由 SymbolManager 統一管理 (config/symbols.yaml)
     """
-
-    # CEX 使用 CCXT 格式的 symbol
-    SYMBOL_MAP = {
-        'BTC-USD': 'BTC/USDT:USDT',
-        'ETH-USD': 'ETH/USDT:USDT',
-        'SOL-USD': 'SOL/USDT:USDT',
-    }
 
     def __init__(self, config: Dict[str, Any]):
         """
