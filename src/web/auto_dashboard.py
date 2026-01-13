@@ -387,6 +387,7 @@ async def broadcast_data():
                     'timestamp': datetime.now().isoformat(),
                     'system_status': system_status,
                     'market_data': {},
+                    'orderbooks': {},
                     'opportunities': [],
                     'stats': serialize_for_json(dict(monitor.stats)) if monitor else {},
                     'executor_stats': serialize_for_json(executor.get_stats()) if executor else {}
@@ -403,6 +404,24 @@ async def broadcast_data():
                             'ask_size': float(market.ask_size),
                             'spread_pct': float(market.spread_pct)
                         }
+
+                # 獲取 StandX 訂單簿深度
+                if 'STANDX' in adapters:
+                    try:
+                        standx = adapters['STANDX']
+                        ob = await standx.get_orderbook('BTC-USD')
+                        # ob 是 Orderbook dataclass，用屬性而非字典訪問
+                        if ob and ob.bids and ob.asks:
+                            bids = [[float(b[0]), float(b[1])] for b in ob.bids[:10]]
+                            asks = [[float(a[0]), float(a[1])] for a in ob.asks[:10]]
+                            data['orderbooks']['STANDX'] = {
+                                'BTC-USD': {
+                                    'bids': bids,
+                                    'asks': asks
+                                }
+                            }
+                    except Exception as e:
+                        logger.warning(f"獲取 StandX 訂單簿失敗: {e}")
 
                 # Debug: 打印發送的數據
                 if data['market_data']:
@@ -426,9 +445,8 @@ async def broadcast_data():
                 for client in connected_clients:
                     try:
                         await client.send_json(data)
-                        logger.info(f"✅ 數據已發送給客戶端")
                     except Exception as e:
-                        logger.error(f"❌ 發送失敗: {e}")
+                        logger.debug(f"發送失敗: {e}")
                         disconnected.append(client)
 
                 # 移除斷開的客戶端
@@ -460,377 +478,536 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # 註冊模組路由
-from src.web.modules.market_maker import register_routes as register_mm_routes
-register_mm_routes(app, lambda: adapters)
+from src.web.modules.orderbook_monitor import register_routes as register_orderbook_routes
+from src.web.modules.strategy_analyzer import register_routes as register_strategy_routes
+register_orderbook_routes(app, lambda: adapters)
+register_strategy_routes(app, lambda: adapters)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """首頁"""
+    """首頁 - 帶分頁切換"""
     return """
     <!DOCTYPE html>
     <html lang="zh-TW">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>自動化套利控制台</title>
+        <title>交易控制台</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                background: #0f1419;
+                font-family: 'SF Mono', -apple-system, BlinkMacSystemFont, monospace;
+                background: #0a0e14;
                 color: #e4e6eb;
+                min-height: 100vh;
+            }
+
+            /* ===== 頂部導航 ===== */
+            .top-nav {
+                background: #1a1f2e;
+                border-bottom: 1px solid #2a3347;
+                padding: 0 20px;
+                display: flex;
+                align-items: center;
+                height: 50px;
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                z-index: 1000;
+            }
+            .nav-logo {
+                font-size: 18px;
+                font-weight: 700;
+                color: #667eea;
+                margin-right: 40px;
+            }
+            .nav-tabs {
+                display: flex;
+                gap: 5px;
+            }
+            .nav-tab {
+                padding: 12px 24px;
+                background: transparent;
+                border: none;
+                color: #9ca3af;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                border-bottom: 2px solid transparent;
+                transition: all 0.2s;
+            }
+            .nav-tab:hover {
+                color: #e4e6eb;
+                background: #2a3347;
+            }
+            .nav-tab.active {
+                color: #667eea;
+                border-bottom-color: #667eea;
+            }
+            .nav-status {
+                margin-left: auto;
+                display: flex;
+                align-items: center;
+                gap: 15px;
+                font-size: 12px;
+            }
+            .status-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: #10b981;
+            }
+            .status-dot.offline { background: #ef4444; }
+
+            /* ===== 主內容區 ===== */
+            .main-content {
+                margin-top: 50px;
                 padding: 20px;
             }
-            .container { max-width: 1400px; margin: 0 auto; }
-            .header {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                padding: 30px;
-                border-radius: 12px;
-                margin-bottom: 20px;
-                text-align: center;
-            }
-            .header h1 { font-size: 32px; margin-bottom: 10px; }
-            .header p { opacity: 0.9; font-size: 16px; }
+            .page { display: none; }
+            .page.active { display: block; }
 
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }
+            /* ===== 通用樣式 ===== */
             .card {
                 background: #1a1f2e;
                 border: 1px solid #2a3347;
-                border-radius: 12px;
-                padding: 20px;
+                border-radius: 8px;
+                padding: 15px;
             }
-            .card h2 { font-size: 18px; margin-bottom: 15px; color: #667eea; }
-            .stat { display: flex; justify-content: space-between; margin-bottom: 10px; padding: 10px; background: #0f1419; border-radius: 8px; }
-            .stat-label { color: #9ca3af; }
-            .stat-value { font-weight: 600; color: #10b981; }
-
-            .section { background: #1a1f2e; border: 1px solid #2a3347; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-            .section h2 { font-size: 20px; margin-bottom: 15px; }
-
-            table { width: 100%; border-collapse: collapse; }
-            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a3347; }
-            th { color: #9ca3af; font-weight: 600; }
-
-            .status-badge {
-                display: inline-block;
-                padding: 4px 12px;
-                border-radius: 12px;
-                font-size: 12px;
-                font-weight: 600;
+            .card-title {
+                font-size: 13px;
+                color: #667eea;
+                margin-bottom: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
-            .status-online { background: #10b981; color: #fff; }
-            .status-offline { background: #ef4444; color: #fff; }
+            .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+            .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+            .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px; }
+            .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2a334755; }
+            .stat-row:last-child { border-bottom: none; }
+            .stat-label { color: #9ca3af; font-size: 12px; }
+            .stat-value { font-weight: 600; font-size: 13px; }
+            .text-green { color: #10b981; }
+            .text-red { color: #ef4444; }
+            .text-yellow { color: #f59e0b; }
+
+            /* ===== 套利頁面 ===== */
+            .arb-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 20px;
+            }
+            .arb-title { font-size: 24px; font-weight: 700; }
+            .arb-controls { display: flex; gap: 15px; align-items: center; }
+            .toggle-group { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+            .toggle {
+                width: 44px; height: 22px;
+                background: #2a3347;
+                border-radius: 11px;
+                position: relative;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            .toggle.active { background: #10b981; }
+            .toggle::after {
+                content: '';
+                position: absolute;
+                width: 18px; height: 18px;
+                background: white;
+                border-radius: 50%;
+                top: 2px; left: 2px;
+                transition: transform 0.2s;
+            }
+            .toggle.active::after { transform: translateX(22px); }
 
             .opportunity-card {
                 background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-                padding: 20px;
-                border-radius: 12px;
-                margin-bottom: 15px;
-                color: white;
-            }
-            .opportunity-card h3 { margin-bottom: 10px; }
-            .opportunity-details { display: flex; justify-content: space-between; align-items: center; }
-            .profit { font-size: 24px; font-weight: 700; }
-
-            .btn {
-                padding: 10px 20px;
-                border: none;
+                padding: 15px;
                 border-radius: 8px;
-                font-size: 14px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all 0.3s;
-            }
-            .btn-primary {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                margin-bottom: 10px;
                 color: white;
             }
-            .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+            .opp-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+            .opp-symbol { font-size: 16px; font-weight: 700; }
+            .opp-profit { font-size: 20px; font-weight: 700; }
+            .opp-details { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; font-size: 12px; }
 
-            .control-panel {
-                display: flex;
-                gap: 15px;
-                flex-wrap: wrap;
-                margin-bottom: 20px;
-            }
+            .price-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+            .price-table th { color: #9ca3af; font-weight: 600; text-align: left; padding: 10px; border-bottom: 1px solid #2a3347; }
+            .price-table td { padding: 10px; border-bottom: 1px solid #2a334755; }
+            .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+            .badge-online { background: #10b98133; color: #10b981; }
+            .badge-dex { background: #10b981; color: white; }
+            .badge-cex { background: #3b82f6; color: white; }
 
-            .toggle-switch {
-                position: relative;
-                display: inline-block;
-                width: 50px;
-                height: 24px;
-            }
-            .toggle-switch input { opacity: 0; width: 0; height: 0; }
-            .slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0; left: 0; right: 0; bottom: 0;
-                background-color: #ccc;
-                transition: .4s;
-                border-radius: 24px;
-            }
-            .slider:before {
-                position: absolute;
-                content: "";
-                height: 16px;
-                width: 16px;
-                left: 4px;
-                bottom: 4px;
-                background-color: white;
-                transition: .4s;
-                border-radius: 50%;
-            }
-            input:checked + .slider { background-color: #10b981; }
-            input:checked + .slider:before { transform: translateX(26px); }
-
-            .config-form {
+            /* ===== 做市商頁面 ===== */
+            .mm-grid {
                 display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                grid-template-rows: auto auto;
                 gap: 15px;
-                margin-top: 20px;
             }
-            .form-group { display: flex; flex-direction: column; }
-            .form-group label { margin-bottom: 5px; color: #9ca3af; font-size: 14px; }
-            .form-group input, .form-group select {
-                padding: 10px;
-                background: #0f1419;
+            .mm-header-bar {
+                grid-column: 1 / -1;
+                background: linear-gradient(135deg, #1a1f2e 0%, #0f1419 100%);
                 border: 1px solid #2a3347;
                 border-radius: 8px;
-                color: #e4e6eb;
-                font-size: 14px;
+                padding: 15px 20px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
             }
-            .form-group input:focus, .form-group select:focus {
-                outline: none;
-                border-color: #667eea;
-            }
+            .mm-title { font-size: 20px; font-weight: 700; color: #667eea; }
+            .mm-stats { display: flex; gap: 40px; }
+            .mm-stat { text-align: center; }
+            .mm-stat-value { font-size: 22px; font-weight: 700; }
+            .mm-stat-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; }
 
+            /* 訂單簿 */
+            .orderbook { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+            .ob-side { font-size: 12px; }
+            .ob-header { display: grid; grid-template-columns: 1fr 1fr; padding: 5px; color: #9ca3af; font-size: 10px; border-bottom: 1px solid #2a3347; }
+            .ob-row { display: grid; grid-template-columns: 1fr 1fr; padding: 3px 5px; position: relative; }
+            .ob-row .bg { position: absolute; top: 0; bottom: 0; opacity: 0.15; }
+            .ob-row.bid .bg { background: #10b981; right: 0; }
+            .ob-row.ask .bg { background: #ef4444; left: 0; }
+            .ob-price-bid { color: #10b981; }
+            .ob-price-ask { color: #ef4444; }
+            .ob-size { text-align: right; color: #9ca3af; }
+            .spread-bar { background: #0f1419; padding: 8px; border-radius: 4px; text-align: center; margin-top: 8px; font-size: 13px; }
+
+            /* Uptime 圓圈 */
+            .uptime-circle {
+                width: 100px; height: 100px;
+                border-radius: 50%;
+                border: 6px solid #2a3347;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                margin: 0 auto 15px;
+            }
+            .uptime-circle.boosted { border-color: #10b981; }
+            .uptime-circle.standard { border-color: #f59e0b; }
+            .uptime-pct { font-size: 24px; font-weight: 700; }
+            .uptime-tier { font-size: 10px; text-transform: uppercase; }
+            .tier-boosted { color: #10b981; }
+            .tier-standard { color: #f59e0b; }
+            .tier-inactive { color: #ef4444; }
+
+            /* 建議報價 */
+            .quote-box { background: #0f1419; border-radius: 6px; padding: 12px; margin-bottom: 8px; }
+            .quote-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; }
+            .quote-price { font-size: 16px; font-weight: 600; }
+            .quote-bid { color: #10b981; }
+            .quote-ask { color: #ef4444; }
+
+            /* 深度條 */
+            .depth-bar { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin: 10px 0; }
+            .depth-bid { background: #10b981; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; font-size: 10px; font-weight: 600; }
+            .depth-ask { background: #ef4444; display: flex; align-items: center; padding-left: 6px; font-size: 10px; font-weight: 600; }
+
+            /* 風險標籤 */
+            .risk-row { display: flex; justify-content: space-between; padding: 8px; background: #0f1419; border-radius: 4px; margin-bottom: 6px; font-size: 12px; }
+            .risk-badge { padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+            .risk-low { background: #10b98133; color: #10b981; }
+            .risk-medium { background: #f59e0b33; color: #f59e0b; }
+            .risk-high { background: #ef444433; color: #ef4444; }
+
+            /* 模擬統計 */
+            .sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+            .sim-stat { background: #0f1419; border-radius: 6px; padding: 10px; text-align: center; }
+            .sim-value { font-size: 18px; font-weight: 700; }
+            .sim-label { font-size: 9px; color: #9ca3af; text-transform: uppercase; margin-top: 2px; }
+
+            /* 進度條 */
+            .progress-bar { background: #0f1419; border-radius: 4px; height: 20px; position: relative; overflow: hidden; margin-bottom: 8px; }
+            .progress-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+            .progress-fill.mm1 { background: linear-gradient(90deg, #667eea, #764ba2); }
+            .progress-fill.mm2 { background: linear-gradient(90deg, #10b981, #059669); }
+            .progress-text { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; font-weight: 600; }
+            .progress-label { font-size: 10px; color: #9ca3af; margin-bottom: 4px; }
+
+            /* ===== 設定頁面 ===== */
+            .settings-section { margin-bottom: 30px; }
+            .settings-title { font-size: 18px; margin-bottom: 15px; }
             .exchange-card {
                 background: #0f1419;
                 border: 1px solid #2a3347;
                 border-radius: 8px;
                 padding: 15px;
-                margin-bottom: 15px;
+                margin-bottom: 10px;
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
             }
-            .exchange-card:hover {
-                border-color: #667eea;
-            }
-            .exchange-info {
-                display: flex;
-                align-items: center;
-                gap: 15px;
-            }
-            .exchange-name {
-                font-size: 18px;
-                font-weight: 600;
-                color: #e4e6eb;
-            }
-            .exchange-type {
-                display: inline-block;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            .exchange-type.dex {
-                background: #10b981;
-                color: white;
-            }
-            .exchange-type.cex {
-                background: #3b82f6;
-                color: white;
-            }
-            .exchange-details {
-                font-size: 12px;
-                color: #9ca3af;
-                margin-top: 5px;
-            }
-            .btn-delete {
-                background: #ef4444;
-                color: white;
-                padding: 8px 16px;
-                border: none;
+            .exchange-info { display: flex; align-items: center; gap: 12px; }
+            .exchange-name { font-size: 16px; font-weight: 600; }
+            .exchange-details { font-size: 11px; color: #9ca3af; margin-top: 3px; }
+            .btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+            .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+            .btn-danger { background: #ef4444; color: white; }
+            .btn:hover { transform: translateY(-1px); }
+
+            .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+            .form-group { display: flex; flex-direction: column; }
+            .form-group label { font-size: 12px; color: #9ca3af; margin-bottom: 5px; }
+            .form-group input, .form-group select {
+                padding: 10px;
+                background: #0f1419;
+                border: 1px solid #2a3347;
                 border-radius: 6px;
-                cursor: pointer;
-                font-size: 14px;
-                font-weight: 600;
-                transition: all 0.3s;
+                color: #e4e6eb;
+                font-size: 13px;
             }
-            .btn-delete:hover {
-                background: #dc2626;
-            }
+            .form-group input:focus, .form-group select:focus { outline: none; border-color: #667eea; }
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header">
-                <h1>🤖 自動化套利控制台</h1>
-                <p>啟動即監控 · 配置即生效</p>
+        <!-- 頂部導航 -->
+        <nav class="top-nav">
+            <div class="nav-logo">Trading Console</div>
+            <div class="nav-tabs">
+                <button class="nav-tab active" onclick="switchPage('arbitrage')">套利監控</button>
+                <button class="nav-tab" onclick="switchPage('marketmaker')">做市商</button>
+                <button class="nav-tab" onclick="switchPage('settings')">設定</button>
             </div>
-
-            <div class="control-panel">
-                <div class="card" style="flex: 1;">
-                    <h2>系統控制</h2>
-                    <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
-                        <label>自動執行</label>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="autoExecuteToggle" onchange="toggleAutoExecute()">
-                            <span class="slider"></span>
-                        </label>
-                        <span id="autoExecuteStatus">關閉</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <label>實際交易</label>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="liveTradeToggle" onchange="toggleLiveTrade()">
-                            <span class="slider"></span>
-                        </label>
-                        <span id="liveTradeStatus">模擬模式</span>
-                    </div>
-                </div>
+            <div class="nav-status">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">連接中...</span>
+                <span style="color: #9ca3af;">|</span>
+                <span id="uptimeDisplay">0h 0m</span>
             </div>
+        </nav>
 
-            <div class="grid">
-                <div class="card">
-                    <h2>系統狀態</h2>
-                    <div class="stat">
-                        <span class="stat-label">運行狀態</span>
-                        <span class="stat-value" id="systemStatus">啟動中...</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">交易所數量</span>
-                        <span class="stat-value" id="exchangeCount">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">運行時間</span>
-                        <span class="stat-value" id="uptime">-</span>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h2>監控統計</h2>
-                    <div class="stat">
-                        <span class="stat-label">更新次數</span>
-                        <span class="stat-value" id="totalUpdates">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">套利機會</span>
-                        <span class="stat-value" id="totalOpportunities">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">當前機會</span>
-                        <span class="stat-value" id="currentOpportunities">0</span>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h2>執行統計</h2>
-                    <div class="stat">
-                        <span class="stat-label">執行次數</span>
-                        <span class="stat-value" id="totalAttempts">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">成功率</span>
-                        <span class="stat-value" id="successRate">0%</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">總利潤</span>
-                        <span class="stat-value" id="totalProfit">$0.00</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="section">
-                <h2>💰 實時套利機會</h2>
-                <div id="opportunitiesContainer">
-                    <p style="color: #9ca3af; text-align: center; padding: 40px;">等待套利機會...</p>
-                </div>
-            </div>
-
-            <!-- 動態模組載入區 -->
-            <div id="modulesContainer"></div>
-
-            <div class="section">
-                <h2>🏦 交易所價格</h2>
-                <table id="pricesTable">
-                    <thead>
-                        <tr>
-                            <th>交易所</th>
-                            <th>BTC 買價</th>
-                            <th>BTC 賣價</th>
-                            <th>ETH 買價</th>
-                            <th>ETH 賣價</th>
-                            <th>狀態</th>
-                        </tr>
-                    </thead>
-                    <tbody id="pricesTableBody">
-                        <tr>
-                            <td colspan="6" style="text-align: center; color: #9ca3af;">載入中...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="section">
-                <h2>📋 已配置交易所</h2>
-                <p style="color: #9ca3af; margin-bottom: 15px;">當前系統中已配置的交易所</p>
-                <div id="configuredExchanges">
-                    <p style="color: #9ca3af; text-align: center; padding: 20px;">載入中...</p>
-                </div>
-            </div>
-
-            <div class="section">
-                <h2>⚙️ 添加新交易所</h2>
-                <p style="color: #9ca3af; margin-bottom: 15px;">添加交易所後自動開始監控</p>
-
-                <div class="config-form">
-                    <div class="form-group">
-                        <label>交易所類型</label>
-                        <select id="exchangeType" onchange="updateExchangeOptions()">
-                            <option value="cex">CEX (中心化交易所)</option>
-                            <option value="dex">DEX (去中心化交易所)</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>選擇交易所</label>
-                        <select id="exchangeName">
-                            <option value="binance">Binance</option>
-                            <option value="okx">OKX</option>
-                            <option value="bitget">Bitget</option>
-                            <option value="bybit">Bybit</option>
-                        </select>
-                    </div>
-
-                    <div id="cexFields">
-                        <div class="form-group">
-                            <label>API Key</label>
-                            <input type="text" id="apiKey" placeholder="輸入 API Key">
+        <div class="main-content">
+            <!-- ==================== 套利頁面 ==================== -->
+            <div id="page-arbitrage" class="page active">
+                <div class="arb-header">
+                    <div class="arb-title">套利監控</div>
+                    <div class="arb-controls">
+                        <div class="toggle-group">
+                            <span>自動執行</span>
+                            <div class="toggle" id="autoExecToggle" onclick="toggleAutoExec()"></div>
                         </div>
-                        <div class="form-group">
-                            <label>API Secret</label>
-                            <input type="password" id="apiSecret" placeholder="輸入 API Secret">
+                        <div class="toggle-group">
+                            <span>實盤模式</span>
+                            <div class="toggle" id="liveToggle" onclick="toggleLive()"></div>
                         </div>
-                        <div class="form-group" id="passphraseField" style="display: none;">
-                            <label>Passphrase</label>
-                            <input type="password" id="passphrase" placeholder="輸入 Passphrase (OKX/Bitget)">
+                    </div>
+                </div>
+
+                <div class="grid-3" style="margin-bottom: 20px;">
+                    <div class="card">
+                        <div class="card-title">系統狀態</div>
+                        <div class="stat-row"><span class="stat-label">運行狀態</span><span class="stat-value text-green" id="arbStatus">運行中</span></div>
+                        <div class="stat-row"><span class="stat-label">交易所數量</span><span class="stat-value" id="arbExchangeCount">0</span></div>
+                        <div class="stat-row"><span class="stat-label">更新次數</span><span class="stat-value" id="arbUpdates">0</span></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">套利統計</div>
+                        <div class="stat-row"><span class="stat-label">發現機會</span><span class="stat-value" id="arbOppsFound">0</span></div>
+                        <div class="stat-row"><span class="stat-label">當前機會</span><span class="stat-value text-green" id="arbCurrentOpps">0</span></div>
+                        <div class="stat-row"><span class="stat-label">執行次數</span><span class="stat-value" id="arbExecCount">0</span></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">收益統計</div>
+                        <div class="stat-row"><span class="stat-label">成功率</span><span class="stat-value" id="arbSuccessRate">0%</span></div>
+                        <div class="stat-row"><span class="stat-label">總利潤</span><span class="stat-value text-green" id="arbProfit">$0.00</span></div>
+                        <div class="stat-row"><span class="stat-label">模式</span><span class="stat-value" id="arbMode">模擬</span></div>
+                    </div>
+                </div>
+
+                <div class="grid-2" style="gap: 20px;">
+                    <div class="card">
+                        <div class="card-title">實時套利機會</div>
+                        <div id="arbOpportunities">
+                            <p style="color: #9ca3af; text-align: center; padding: 30px;">等待套利機會...</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">交易所價格</div>
+                        <table class="price-table">
+                            <thead>
+                                <tr><th>交易所</th><th>BTC Bid</th><th>BTC Ask</th><th>狀態</th></tr>
+                            </thead>
+                            <tbody id="arbPriceTable">
+                                <tr><td colspan="4" style="text-align: center; color: #9ca3af;">載入中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 做市商頁面 ==================== -->
+            <div id="page-marketmaker" class="page">
+                <div class="mm-grid">
+                    <div class="mm-header-bar">
+                        <div class="mm-title">StandX 做市商</div>
+                        <div class="mm-stats">
+                            <div class="mm-stat">
+                                <div class="mm-stat-value" id="mmMidPrice">-</div>
+                                <div class="mm-stat-label">BTC-USD 中間價</div>
+                            </div>
+                            <div class="mm-stat">
+                                <div class="mm-stat-value text-green" id="mmSpread">-</div>
+                                <div class="mm-stat-label">價差 (bps)</div>
+                            </div>
+                            <div class="mm-stat">
+                                <div class="mm-stat-value" id="mmRuntime">0m</div>
+                                <div class="mm-stat-label">運行時間</div>
+                            </div>
                         </div>
                     </div>
 
-                    <div id="dexFields" style="display: none;">
-                        <div class="form-group">
-                            <label>Private Key</label>
-                            <input type="password" id="privateKey" placeholder="輸入錢包私鑰">
+                    <!-- 訂單簿 -->
+                    <div class="card">
+                        <div class="card-title">訂單簿深度</div>
+                        <div class="orderbook">
+                            <div class="ob-side">
+                                <div class="ob-header"><span>買價</span><span style="text-align:right">數量</span></div>
+                                <div id="mmBidRows"></div>
+                            </div>
+                            <div class="ob-side">
+                                <div class="ob-header"><span>賣價</span><span style="text-align:right">數量</span></div>
+                                <div id="mmAskRows"></div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label>Wallet Address</label>
-                            <input type="text" id="walletAddress" placeholder="輸入錢包地址">
-                        </div>
+                        <div class="spread-bar">Spread: <span id="mmSpreadDisplay" class="text-green">- bps</span></div>
                     </div>
 
-                    <button class="btn btn-primary" onclick="saveConfig()">保存並開始監控</button>
+                    <!-- Uptime -->
+                    <div class="card">
+                        <div class="card-title">Uptime Program 狀態</div>
+                        <div class="uptime-circle" id="mmUptimeCircle">
+                            <div class="uptime-pct" id="mmUptimePct">0%</div>
+                            <div class="uptime-tier tier-inactive" id="mmUptimeTier">INACTIVE</div>
+                        </div>
+                        <div class="stat-row"><span class="stat-label">Boosted (≥70%)</span><span class="stat-value">1.0x</span></div>
+                        <div class="stat-row"><span class="stat-label">Standard (≥50%)</span><span class="stat-value">0.5x</span></div>
+                        <div class="stat-row"><span class="stat-label">當前乘數</span><span class="stat-value" id="mmMultiplier">0x</span></div>
+                    </div>
+
+                    <!-- 建議報價 -->
+                    <div class="card">
+                        <div class="card-title">建議報價 (8 bps)</div>
+                        <div class="quote-box">
+                            <div class="quote-label">建議買價</div>
+                            <div class="quote-price quote-bid" id="mmSuggestedBid">-</div>
+                        </div>
+                        <div class="quote-box">
+                            <div class="quote-label">建議賣價</div>
+                            <div class="quote-price quote-ask" id="mmSuggestedAsk">-</div>
+                        </div>
+                        <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;">符合 Uptime 10 bps 要求</p>
+                    </div>
+
+                    <!-- 深度分析 -->
+                    <div class="card">
+                        <div class="card-title">深度分析</div>
+                        <div class="depth-bar">
+                            <div class="depth-bid" id="mmDepthBid" style="width:50%">0 BTC</div>
+                            <div class="depth-ask" id="mmDepthAsk" style="width:50%">0 BTC</div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #9ca3af; margin-bottom: 15px;">
+                            <span>買方深度</span><span id="mmImbalance">平衡: 0%</span><span>賣方深度</span>
+                        </div>
+                        <div class="card-title" style="margin-top: 10px;">成交風險</div>
+                        <div class="risk-row"><span>買單風險</span><span class="risk-badge risk-low" id="mmBidRisk">LOW</span></div>
+                        <div class="risk-row"><span>賣單風險</span><span class="risk-badge risk-low" id="mmAskRisk">LOW</span></div>
+                    </div>
+
+                    <!-- 模擬統計 -->
+                    <div class="card">
+                        <div class="card-title">模擬統計</div>
+                        <div class="sim-grid">
+                            <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0</div><div class="sim-label">總報價</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">符合率</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0%</div><div class="sim-label">買成交率</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0%</div><div class="sim-label">賣成交率</div></div>
+                        </div>
+                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">模擬 2 BTC 下單統計</p>
+                    </div>
+
+                    <!-- Maker Hours -->
+                    <div class="card">
+                        <div class="card-title">Maker Hours 預估</div>
+                        <div class="progress-label">MM1 目標 (360h/月)</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill mm1" id="mmMM1Progress" style="width:0%"></div>
+                            <span class="progress-text" id="mmMM1Text">0%</span>
+                        </div>
+                        <div class="progress-label">MM2 目標 (504h/月)</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill mm2" id="mmMM2Progress" style="width:0%"></div>
+                            <span class="progress-text" id="mmMM2Text">0%</span>
+                        </div>
+                        <div class="stat-row" style="margin-top: 10px;"><span class="stat-label">每小時</span><span class="stat-value" id="mmHoursPerHour">0</span></div>
+                        <div class="stat-row"><span class="stat-label">每月預估</span><span class="stat-value" id="mmHoursPerMonth">0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 設定頁面 ==================== -->
+            <div id="page-settings" class="page">
+                <div class="settings-section">
+                    <div class="settings-title">已配置交易所</div>
+                    <div id="configuredExchanges">
+                        <p style="color: #9ca3af;">載入中...</p>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <div class="settings-title">添加新交易所</div>
+                    <div class="card" style="padding: 20px;">
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label>交易所類型</label>
+                                <select id="exchangeType" onchange="updateExchangeOptions()">
+                                    <option value="cex">CEX (中心化)</option>
+                                    <option value="dex">DEX (去中心化)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>選擇交易所</label>
+                                <select id="exchangeName">
+                                    <option value="binance">Binance</option>
+                                    <option value="okx">OKX</option>
+                                    <option value="bitget">Bitget</option>
+                                    <option value="bybit">Bybit</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="cexFields" class="form-grid" style="margin-top: 15px;">
+                            <div class="form-group">
+                                <label>API Key</label>
+                                <input type="text" id="apiKey" placeholder="輸入 API Key">
+                            </div>
+                            <div class="form-group">
+                                <label>API Secret</label>
+                                <input type="password" id="apiSecret" placeholder="輸入 API Secret">
+                            </div>
+                            <div class="form-group" id="passphraseField" style="display: none;">
+                                <label>Passphrase</label>
+                                <input type="password" id="passphrase" placeholder="OKX/Bitget 需要">
+                            </div>
+                        </div>
+                        <div id="dexFields" class="form-grid" style="margin-top: 15px; display: none;">
+                            <div class="form-group">
+                                <label>Private Key</label>
+                                <input type="password" id="privateKey" placeholder="錢包私鑰">
+                            </div>
+                            <div class="form-group">
+                                <label>Wallet Address</label>
+                                <input type="text" id="walletAddress" placeholder="錢包地址">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" style="margin-top: 20px;" onclick="saveConfig()">保存並開始監控</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -838,163 +1015,261 @@ async def root():
         <script>
             let ws = null;
             let systemStartTime = null;
+            let mmStats = { total: 0, qualified: 0, bidFill: 0, askFill: 0, startTime: Date.now() };
 
+            // ===== 分頁切換 =====
+            function switchPage(page) {
+                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+                document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+                document.getElementById('page-' + page).classList.add('active');
+                event.target.classList.add('active');
+            }
+
+            // ===== WebSocket 連接 =====
             function connect() {
                 ws = new WebSocket('ws://localhost:8888/ws');
-
                 ws.onopen = () => {
-                    console.log('WebSocket 已連接');
+                    document.getElementById('statusDot').classList.remove('offline');
+                    document.getElementById('statusText').textContent = '已連接';
                 };
-
+                ws.onclose = () => {
+                    document.getElementById('statusDot').classList.add('offline');
+                    document.getElementById('statusText').textContent = '已斷開';
+                    setTimeout(connect, 3000);
+                };
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
-                    // Debug: 打印市場數據結構
-                    if (data.market_data) {
-                        console.log('Market Data:', data.market_data);
-                    }
-                    updateUI(data);
-                };
-
-                ws.onerror = (error) => {
-                    console.error('WebSocket error:', error);
-                };
-
-                ws.onclose = () => {
-                    console.log('WebSocket 已斷開，3秒後重連...');
-                    setTimeout(connect, 3000);
+                    updateArbitragePage(data);
+                    updateMarketMakerPage(data);
                 };
             }
 
-            function updateUI(data) {
-                // 系統狀態
-                document.getElementById('systemStatus').textContent = data.system_status.running ? '運行中' : '已停止';
-                document.getElementById('exchangeCount').textContent = Object.keys(data.market_data).length;
-
+            // ===== 套利頁面更新 =====
+            function updateArbitragePage(data) {
                 if (data.system_status.started_at && !systemStartTime) {
                     systemStartTime = new Date(data.system_status.started_at);
                 }
-
                 if (systemStartTime) {
-                    const uptime = Math.floor((new Date() - systemStartTime) / 1000);
-                    const hours = Math.floor(uptime / 3600);
-                    const minutes = Math.floor((uptime % 3600) / 60);
-                    const seconds = uptime % 60;
-                    document.getElementById('uptime').textContent = `${hours}h ${minutes}m ${seconds}s`;
+                    const uptime = Math.floor((Date.now() - systemStartTime) / 1000);
+                    const h = Math.floor(uptime / 3600);
+                    const m = Math.floor((uptime % 3600) / 60);
+                    document.getElementById('uptimeDisplay').textContent = h + 'h ' + m + 'm';
                 }
 
-                // 監控統計
-                document.getElementById('totalUpdates').textContent = data.stats.total_updates || 0;
-                document.getElementById('totalOpportunities').textContent = data.stats.total_opportunities || 0;
-                document.getElementById('currentOpportunities').textContent = data.opportunities.length;
+                document.getElementById('arbStatus').textContent = data.system_status.running ? '運行中' : '已停止';
+                document.getElementById('arbExchangeCount').textContent = Object.keys(data.market_data).length;
+                document.getElementById('arbUpdates').textContent = data.stats.total_updates || 0;
+                document.getElementById('arbOppsFound').textContent = data.stats.total_opportunities || 0;
+                document.getElementById('arbCurrentOpps').textContent = data.opportunities.length;
+                document.getElementById('arbExecCount').textContent = data.executor_stats.total_attempts || 0;
 
-                // 執行統計
-                const execStats = data.executor_stats;
-                document.getElementById('totalAttempts').textContent = execStats.total_attempts || 0;
-
-                const successRate = execStats.total_attempts > 0
-                    ? ((execStats.successful_executions / execStats.total_attempts) * 100).toFixed(1)
+                const rate = data.executor_stats.total_attempts > 0
+                    ? ((data.executor_stats.successful_executions / data.executor_stats.total_attempts) * 100).toFixed(1)
                     : 0;
-                document.getElementById('successRate').textContent = successRate + '%';
-
-                const profit = execStats.total_profit - (execStats.total_loss || 0);
-                document.getElementById('totalProfit').textContent = '$' + profit.toFixed(2);
+                document.getElementById('arbSuccessRate').textContent = rate + '%';
+                document.getElementById('arbProfit').textContent = '$' + (data.executor_stats.total_profit || 0).toFixed(2);
+                document.getElementById('arbMode').textContent = data.system_status.dry_run ? '模擬' : '實盤';
 
                 // 套利機會
-                updateOpportunities(data.opportunities);
-
-                // 價格表
-                updatePrices(data.market_data);
-            }
-
-            function updateOpportunities(opportunities) {
-                const container = document.getElementById('opportunitiesContainer');
-
-                if (opportunities.length === 0) {
-                    container.innerHTML = '<p style="color: #9ca3af; text-align: center; padding: 40px;">等待套利機會...</p>';
-                    return;
-                }
-
-                container.innerHTML = opportunities.map(opp => `
-                    <div class="opportunity-card">
-                        <h3>🔥 ${opp.symbol}</h3>
-                        <div class="opportunity-details">
-                            <div>
-                                <div>買入: ${opp.buy_exchange} @ $${opp.buy_price.toFixed(2)}</div>
-                                <div>賣出: ${opp.sell_exchange} @ $${opp.sell_price.toFixed(2)}</div>
-                                <div>數量: ${opp.max_quantity.toFixed(4)}</div>
+                const oppContainer = document.getElementById('arbOpportunities');
+                if (data.opportunities.length === 0) {
+                    oppContainer.innerHTML = '<p style="color: #9ca3af; text-align: center; padding: 30px;">等待套利機會...</p>';
+                } else {
+                    oppContainer.innerHTML = data.opportunities.map(o => `
+                        <div class="opportunity-card">
+                            <div class="opp-header">
+                                <span class="opp-symbol">${o.symbol}</span>
+                                <span class="opp-profit">+$${o.profit.toFixed(2)} (${o.profit_pct.toFixed(2)}%)</span>
                             </div>
-                            <div class="profit">
-                                +$${opp.profit.toFixed(2)}<br>
-                                <span style="font-size: 16px;">(${opp.profit_pct.toFixed(2)}%)</span>
+                            <div class="opp-details">
+                                <div>買: ${o.buy_exchange} @ $${o.buy_price.toFixed(2)}</div>
+                                <div>賣: ${o.sell_exchange} @ $${o.sell_price.toFixed(2)}</div>
+                                <div>數量: ${o.max_quantity.toFixed(4)}</div>
                             </div>
                         </div>
-                    </div>
-                `).join('');
-            }
-
-            function updatePrices(marketData) {
-                const tbody = document.getElementById('pricesTableBody');
-                const exchanges = Object.keys(marketData);
-
-                if (exchanges.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #9ca3af;">無數據</td></tr>';
-                    return;
+                    `).join('');
                 }
 
-                tbody.innerHTML = exchanges.map(exchange => {
-                    const data = marketData[exchange];
-
-                    // 嘗試所有可能的 BTC symbol 名稱
-                    const btc = data['BTC/USDT:USDT'] || data['BTC-USD'] || data['BTCUSDT'] || {};
-                    // 嘗試所有可能的 ETH symbol 名稱
-                    const eth = data['ETH/USDT:USDT'] || data['ETH-USD'] || data['ETHUSDT'] || {};
-
-                    // Debug: 如果沒找到數據，顯示可用的 symbols
-                    const availableSymbols = Object.keys(data).join(', ');
-                    console.log(`${exchange} available symbols:`, availableSymbols);
-
-                    return `
-                        <tr>
-                            <td>${exchange}</td>
+                // 價格表
+                const tbody = document.getElementById('arbPriceTable');
+                const exchanges = Object.keys(data.market_data);
+                if (exchanges.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="color: #9ca3af;">無數據</td></tr>';
+                } else {
+                    tbody.innerHTML = exchanges.map(ex => {
+                        const d = data.market_data[ex];
+                        const btc = d['BTC/USDT:USDT'] || d['BTC-USD'] || {};
+                        return `<tr>
+                            <td>${ex}</td>
                             <td>${btc.best_bid ? '$' + btc.best_bid.toFixed(2) : '-'}</td>
                             <td>${btc.best_ask ? '$' + btc.best_ask.toFixed(2) : '-'}</td>
-                            <td>${eth.best_bid ? '$' + eth.best_bid.toFixed(2) : '-'}</td>
-                            <td>${eth.best_ask ? '$' + eth.best_ask.toFixed(2) : '-'}</td>
-                            <td><span class="status-badge status-online">在線</span></td>
-                        </tr>
-                    `;
-                }).join('');
+                            <td><span class="badge badge-online">在線</span></td>
+                        </tr>`;
+                    }).join('');
+                }
             }
 
+            // ===== 做市商頁面更新 =====
+            function updateMarketMakerPage(data) {
+                // 從 StandX 數據更新
+                const standx = data.market_data['STANDX'];
+                if (!standx) return;
+
+                const btc = standx['BTC-USD'];
+                if (!btc) return;
+
+                const midPrice = (btc.best_bid + btc.best_ask) / 2;
+                const spreadBps = ((btc.best_ask - btc.best_bid) / midPrice * 10000);
+
+                // Header
+                document.getElementById('mmMidPrice').textContent = '$' + midPrice.toLocaleString(undefined, {maximumFractionDigits: 2});
+                const spreadEl = document.getElementById('mmSpread');
+                spreadEl.textContent = spreadBps.toFixed(1);
+                spreadEl.className = 'mm-stat-value ' + (spreadBps <= 10 ? 'text-green' : (spreadBps <= 15 ? 'text-yellow' : 'text-red'));
+
+                const runtime = Math.floor((Date.now() - mmStats.startTime) / 60000);
+                document.getElementById('mmRuntime').textContent = runtime + 'm';
+
+                // 模擬統計更新
+                mmStats.total++;
+                if (spreadBps <= 10) mmStats.qualified++;
+
+                // 建議報價 (8 bps)
+                const halfSpread = midPrice * (8 / 10000) / 2;
+                const sugBid = midPrice - halfSpread;
+                const sugAsk = midPrice + halfSpread;
+                document.getElementById('mmSuggestedBid').textContent = '$' + sugBid.toLocaleString(undefined, {maximumFractionDigits: 2});
+                document.getElementById('mmSuggestedAsk').textContent = '$' + sugAsk.toLocaleString(undefined, {maximumFractionDigits: 2});
+
+                // 成交風險分析
+                const bidDistance = ((btc.best_bid - sugBid) / sugBid * 10000);
+                const askDistance = ((sugAsk - btc.best_ask) / sugAsk * 10000);
+
+                if (sugBid >= btc.best_ask) mmStats.bidFill++;
+                if (sugAsk <= btc.best_bid) mmStats.askFill++;
+
+                const bidRisk = bidDistance < 2 ? 'high' : (bidDistance < 5 ? 'medium' : 'low');
+                const askRisk = askDistance < 2 ? 'high' : (askDistance < 5 ? 'medium' : 'low');
+                document.getElementById('mmBidRisk').textContent = bidRisk.toUpperCase();
+                document.getElementById('mmBidRisk').className = 'risk-badge risk-' + bidRisk;
+                document.getElementById('mmAskRisk').textContent = askRisk.toUpperCase();
+                document.getElementById('mmAskRisk').className = 'risk-badge risk-' + askRisk;
+
+                // Spread display
+                const spreadDisplay = document.getElementById('mmSpreadDisplay');
+                spreadDisplay.textContent = spreadBps.toFixed(1) + ' bps';
+                spreadDisplay.className = spreadBps <= 10 ? 'text-green' : (spreadBps <= 15 ? 'text-yellow' : 'text-red');
+
+                // ===== 訂單簿顯示 =====
+                const ob = data.orderbooks?.STANDX?.['BTC-USD'];
+                if (ob && ob.bids && ob.asks) {
+                    const maxSize = Math.max(...ob.bids.map(b => b[1]), ...ob.asks.map(a => a[1]));
+
+                    document.getElementById('mmBidRows').innerHTML = ob.bids.slice(0, 8).map(b => {
+                        const pct = (b[1] / maxSize * 100).toFixed(0);
+                        return '<div class="ob-row bid"><div class="bg" style="width:' + pct + '%"></div><span class="ob-price-bid">' + b[0].toLocaleString(undefined, {minimumFractionDigits: 2}) + '</span><span class="ob-size">' + b[1].toFixed(4) + '</span></div>';
+                    }).join('');
+
+                    document.getElementById('mmAskRows').innerHTML = ob.asks.slice(0, 8).map(a => {
+                        const pct = (a[1] / maxSize * 100).toFixed(0);
+                        return '<div class="ob-row ask"><div class="bg" style="width:' + pct + '%"></div><span class="ob-price-ask">' + a[0].toLocaleString(undefined, {minimumFractionDigits: 2}) + '</span><span class="ob-size">' + a[1].toFixed(4) + '</span></div>';
+                    }).join('');
+
+                    // 計算實際深度
+                    var bidDepth = ob.bids.slice(0, 5).reduce((sum, b) => sum + b[1], 0);
+                    var askDepth = ob.asks.slice(0, 5).reduce((sum, a) => sum + a[1], 0);
+                } else {
+                    var bidDepth = btc.bid_size || 0;
+                    var askDepth = btc.ask_size || 0;
+                }
+
+                // Uptime
+                const uptimePct = mmStats.total > 0 ? (mmStats.qualified / mmStats.total * 100) : 0;
+                document.getElementById('mmUptimePct').textContent = uptimePct.toFixed(1) + '%';
+
+                const tier = uptimePct >= 70 ? 'boosted' : (uptimePct >= 50 ? 'standard' : 'inactive');
+                const multiplier = uptimePct >= 70 ? 1.0 : (uptimePct >= 50 ? 0.5 : 0);
+                document.getElementById('mmUptimeCircle').className = 'uptime-circle ' + tier;
+                document.getElementById('mmUptimeTier').textContent = tier.toUpperCase();
+                document.getElementById('mmUptimeTier').className = 'uptime-tier tier-' + tier;
+                document.getElementById('mmMultiplier').textContent = multiplier + 'x';
+
+                // 模擬統計顯示
+                document.getElementById('mmTotalQuotes').textContent = mmStats.total;
+                document.getElementById('mmQualifiedRate').textContent = uptimePct.toFixed(1) + '%';
+                document.getElementById('mmBidFillRate').textContent = (mmStats.total > 0 ? mmStats.bidFill / mmStats.total * 100 : 0).toFixed(1) + '%';
+                document.getElementById('mmAskFillRate').textContent = (mmStats.total > 0 ? mmStats.askFill / mmStats.total * 100 : 0).toFixed(1) + '%';
+
+                // Maker Hours
+                const orderSize = 2.0;
+                const makerHoursPerHour = (orderSize / 2) * multiplier;
+                const makerHoursPerMonth = makerHoursPerHour * 720;
+                const mm1Progress = Math.min((makerHoursPerMonth / 360) * 100, 100);
+                const mm2Progress = Math.min((makerHoursPerMonth / 504) * 100, 100);
+
+                document.getElementById('mmMM1Progress').style.width = mm1Progress + '%';
+                document.getElementById('mmMM1Text').textContent = mm1Progress.toFixed(0) + '%';
+                document.getElementById('mmMM2Progress').style.width = mm2Progress + '%';
+                document.getElementById('mmMM2Text').textContent = mm2Progress.toFixed(0) + '%';
+                document.getElementById('mmHoursPerHour').textContent = makerHoursPerHour.toFixed(2);
+                document.getElementById('mmHoursPerMonth').textContent = makerHoursPerMonth.toFixed(0);
+
+                // 深度顯示
+                const totalDepth = bidDepth + askDepth || 1;
+                const bidPct = (bidDepth / totalDepth * 100);
+                document.getElementById('mmDepthBid').style.width = bidPct + '%';
+                document.getElementById('mmDepthBid').textContent = bidDepth.toFixed(2) + ' BTC';
+                document.getElementById('mmDepthAsk').style.width = (100 - bidPct) + '%';
+                document.getElementById('mmDepthAsk').textContent = askDepth.toFixed(2) + ' BTC';
+                const imbalance = ((bidDepth - askDepth) / totalDepth * 100);
+                document.getElementById('mmImbalance').textContent = '偏移: ' + (imbalance > 0 ? '+' : '') + imbalance.toFixed(1) + '%';
+            }
+
+            // ===== 控制開關 =====
+            async function toggleAutoExec() {
+                const toggle = document.getElementById('autoExecToggle');
+                toggle.classList.toggle('active');
+                const enabled = toggle.classList.contains('active');
+                await fetch('/api/control/auto-execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+            }
+
+            async function toggleLive() {
+                const toggle = document.getElementById('liveToggle');
+                if (!toggle.classList.contains('active')) {
+                    if (!confirm('⚠️ 確定啟用實盤模式？將使用真實資金！')) return;
+                }
+                toggle.classList.toggle('active');
+                const enabled = toggle.classList.contains('active');
+                await fetch('/api/control/live-trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+            }
+
+            // ===== 設定頁面 =====
             function updateExchangeOptions() {
                 const type = document.getElementById('exchangeType').value;
                 const nameSelect = document.getElementById('exchangeName');
                 const cexFields = document.getElementById('cexFields');
                 const dexFields = document.getElementById('dexFields');
-                const passphraseField = document.getElementById('passphraseField');
 
                 if (type === 'cex') {
-                    cexFields.style.display = 'block';
+                    cexFields.style.display = 'grid';
                     dexFields.style.display = 'none';
-                    nameSelect.innerHTML = `
-                        <option value="binance">Binance</option>
-                        <option value="okx">OKX</option>
-                        <option value="bitget">Bitget</option>
-                        <option value="bybit">Bybit</option>
-                    `;
+                    nameSelect.innerHTML = '<option value="binance">Binance</option><option value="okx">OKX</option><option value="bitget">Bitget</option><option value="bybit">Bybit</option>';
                 } else {
                     cexFields.style.display = 'none';
-                    dexFields.style.display = 'block';
-                    nameSelect.innerHTML = `
-                        <option value="standx">StandX</option>
-                        <option value="grvt">GRVT</option>
-                    `;
+                    dexFields.style.display = 'grid';
+                    nameSelect.innerHTML = '<option value="standx">StandX</option><option value="grvt">GRVT</option>';
                 }
-
-                // 更新 passphrase 顯示
                 nameSelect.onchange = () => {
                     const name = nameSelect.value;
-                    passphraseField.style.display = (name === 'okx' || name === 'bitget') ? 'block' : 'none';
+                    document.getElementById('passphraseField').style.display = (name === 'okx' || name === 'bitget') ? 'block' : 'none';
                 };
                 nameSelect.onchange();
             }
@@ -1002,223 +1277,76 @@ async def root():
             async function saveConfig() {
                 const type = document.getElementById('exchangeType').value;
                 const name = document.getElementById('exchangeName').value;
-
                 const config = {};
 
                 if (type === 'cex') {
                     config.api_key = document.getElementById('apiKey').value;
                     config.api_secret = document.getElementById('apiSecret').value;
-                    if (name === 'okx' || name === 'bitget') {
-                        config.passphrase = document.getElementById('passphrase').value;
-                    }
+                    if (name === 'okx' || name === 'bitget') config.passphrase = document.getElementById('passphrase').value;
                 } else {
                     config.private_key = document.getElementById('privateKey').value;
                     config.address = document.getElementById('walletAddress').value;
                 }
 
-                try {
-                    const response = await fetch('/api/config/save', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            exchange_name: name,
-                            exchange_type: type,
-                            config: config
-                        })
-                    });
-
-                    const result = await response.json();
-                    if (result.success) {
-                        alert('✅ 配置已保存並開始監控！');
-                        // 清空表單
-                        document.getElementById('apiKey').value = '';
-                        document.getElementById('apiSecret').value = '';
-                        document.getElementById('passphrase').value = '';
-                        document.getElementById('privateKey').value = '';
-                        document.getElementById('walletAddress').value = '';
-                        // 刷新配置列表
-                        loadConfiguredExchanges();
-                    } else {
-                        alert('❌ 保存失敗: ' + result.error);
-                    }
-                } catch (error) {
-                    alert('❌ 保存失敗: ' + error.message);
-                }
-            }
-
-            async function toggleAutoExecute() {
-                const enabled = document.getElementById('autoExecuteToggle').checked;
-                try {
-                    const response = await fetch('/api/control/auto-execute', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ enabled })
-                    });
-                    const result = await response.json();
-                    document.getElementById('autoExecuteStatus').textContent = enabled ? '開啟' : '關閉';
-                } catch (error) {
-                    console.error(error);
-                }
-            }
-
-            async function toggleLiveTrade() {
-                const enabled = document.getElementById('liveTradeToggle').checked;
-                if (enabled) {
-                    if (!confirm('⚠️ 警告：您即將啟用實際交易模式！這將使用真實資金。確定繼續嗎？')) {
-                        document.getElementById('liveTradeToggle').checked = false;
-                        return;
-                    }
-                }
-                try {
-                    const response = await fetch('/api/control/live-trade', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ enabled })
-                    });
-                    const result = await response.json();
-                    document.getElementById('liveTradeStatus').textContent = enabled ? '實際交易' : '模擬模式';
-                } catch (error) {
-                    console.error(error);
+                const res = await fetch('/api/config/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ exchange_name: name, exchange_type: type, config })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('✅ 已保存！');
+                    document.querySelectorAll('#cexFields input, #dexFields input').forEach(i => i.value = '');
+                    loadConfiguredExchanges();
+                } else {
+                    alert('❌ 失敗: ' + result.error);
                 }
             }
 
             async function loadConfiguredExchanges() {
-                try {
-                    const response = await fetch('/api/config/list');
-                    const data = await response.json();
-                    displayConfiguredExchanges(data);
-                } catch (error) {
-                    console.error('載入配置失敗:', error);
-                }
-            }
-
-            function displayConfiguredExchanges(configs) {
+                const res = await fetch('/api/config/list');
+                const configs = await res.json();
                 const container = document.getElementById('configuredExchanges');
 
-                const allExchanges = [];
-
-                // DEX
-                for (const [key, config] of Object.entries(configs.dex || {})) {
-                    allExchanges.push({
-                        name: key,
-                        displayName: config.name,
-                        type: 'dex',
-                        testnet: config.testnet,
-                        details: config.private_key_masked || config.api_key_masked
-                    });
+                const all = [];
+                for (const [k, v] of Object.entries(configs.dex || {})) {
+                    all.push({ name: k, display: v.name, type: 'dex', key: v.private_key_masked || v.api_key_masked });
+                }
+                for (const [k, v] of Object.entries(configs.cex || {})) {
+                    all.push({ name: k, display: v.name, type: 'cex', key: v.api_key_masked });
                 }
 
-                // CEX
-                for (const [key, config] of Object.entries(configs.cex || {})) {
-                    allExchanges.push({
-                        name: key,
-                        displayName: config.name,
-                        type: 'cex',
-                        testnet: config.testnet,
-                        details: config.api_key_masked
-                    });
-                }
-
-                if (allExchanges.length === 0) {
-                    container.innerHTML = `
-                        <p style="color: #9ca3af; text-align: center; padding: 20px;">
-                            尚未配置任何交易所<br>
-                            <span style="font-size: 14px;">請在下方添加交易所</span>
-                        </p>
-                    `;
+                if (all.length === 0) {
+                    container.innerHTML = '<p style="color: #9ca3af;">尚未配置交易所</p>';
                     return;
                 }
 
-                container.innerHTML = allExchanges.map(ex => `
+                container.innerHTML = all.map(ex => `
                     <div class="exchange-card">
                         <div class="exchange-info">
                             <div>
-                                <div style="display: flex; align-items: center; gap: 10px;">
-                                    <span class="exchange-name">${ex.displayName}</span>
-                                    <span class="exchange-type ${ex.type}">${ex.type.toUpperCase()}</span>
-                                    ${ex.testnet ? '<span class="status-badge" style="background: #f59e0b;">測試網</span>' : ''}
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <span class="exchange-name">${ex.display}</span>
+                                    <span class="badge badge-${ex.type}">${ex.type.toUpperCase()}</span>
                                 </div>
-                                <div class="exchange-details">
-                                    Key: ${ex.details}
-                                </div>
+                                <div class="exchange-details">Key: ${ex.key}</div>
                             </div>
                         </div>
-                        <button class="btn-delete" onclick="deleteExchange('${ex.name}', '${ex.type}')">移除</button>
+                        <button class="btn btn-danger" onclick="deleteExchange('${ex.name}', '${ex.type}')">移除</button>
                     </div>
                 `).join('');
             }
 
             async function deleteExchange(name, type) {
-                if (!confirm(`確定要移除 ${name.toUpperCase()} 嗎？`)) {
-                    return;
-                }
-
-                try {
-                    const response = await fetch('/api/config/delete', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            exchange_name: name,
-                            exchange_type: type
-                        })
-                    });
-
-                    const result = await response.json();
-                    if (result.success) {
-                        alert('✅ 已移除！');
-                        loadConfiguredExchanges();
-                    } else {
-                        alert('❌ 移除失敗: ' + result.error);
-                    }
-                } catch (error) {
-                    alert('❌ 移除失敗: ' + error.message);
-                }
-            }
-
-            // ==================== 模組動態載入系統 ====================
-            async function loadMarketMakerModule() {
-                try {
-                    console.log('Loading market maker module...');
-
-                    // 載入 HTML
-                    const htmlRes = await fetch('/api/mm/html');
-                    if (!htmlRes.ok) {
-                        console.error('Failed to load module HTML');
-                        return false;
-                    }
-                    const html = await htmlRes.text();
-
-                    // 注入 HTML
-                    const container = document.getElementById('modulesContainer');
-                    container.innerHTML = html;
-                    console.log('Module HTML injected');
-
-                    // 載入 JavaScript
-                    const jsRes = await fetch('/api/mm/js');
-                    if (!jsRes.ok) {
-                        console.error('Failed to load module JS');
-                        return false;
-                    }
-                    const js = await jsRes.text();
-
-                    // 執行 JavaScript
-                    const script = document.createElement('script');
-                    script.textContent = js;
-                    document.body.appendChild(script);
-                    console.log('Module JS executed');
-
-                    // 初始化模組
-                    if (typeof MarketMaker !== 'undefined') {
-                        MarketMaker.init();
-                        console.log('MarketMaker initialized successfully');
-                    } else {
-                        console.error('MarketMaker not defined');
-                    }
-
-                    return true;
-                } catch (error) {
-                    console.error('Failed to load market maker module:', error);
-                    return false;
+                if (!confirm('確定移除 ' + name.toUpperCase() + '？')) return;
+                const res = await fetch('/api/config/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ exchange_name: name, exchange_type: type })
+                });
+                if ((await res.json()).success) {
+                    alert('✅ 已移除');
+                    loadConfiguredExchanges();
                 }
             }
 
@@ -1226,12 +1354,6 @@ async def root():
             connect();
             updateExchangeOptions();
             loadConfiguredExchanges();
-
-            // 載入做市商模組
-            loadMarketMakerModule();
-
-            // 定期刷新配置列表
-            setInterval(loadConfiguredExchanges, 10000);
         </script>
     </body>
     </html>
