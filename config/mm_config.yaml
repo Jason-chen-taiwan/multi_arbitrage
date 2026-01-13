@@ -10,11 +10,11 @@ symbols:
 quote:
   # 掛單距離 mark price (bps)
   # 需要 < 10 bps 才符合 StandX uptime 要求
-  order_distance_bps: 8
+  order_distance_bps: 9
 
   # 價格靠近時撤單距離 (bps)
   # 防止訂單被成交
-  cancel_distance_bps: 3
+  cancel_distance_bps: 5
 
   # 價格遠離時重掛距離 (bps)
   # 超出 uptime 要求後重新掛單
