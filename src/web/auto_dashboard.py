@@ -1064,8 +1064,8 @@ async def root():
                             <div class="quote-status" id="mmAskStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
                         <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;" id="mmStrategyDesc">
-                            策略：mid * (1 ± 8/10000)<br/>
-                            撤單: 3 bps | 隊列: 前3檔 | 重掛: 12 bps
+                            策略：mid * (1 ± 9/10000)<br/>
+                            撤單: 5 bps | 隊列: 前3檔 | 重掛: 12 bps
                         </p>
                     </div>
 
@@ -1369,8 +1369,8 @@ async def root():
             // ===== 做市商模擬狀態 =====
             const mmSim = {
                 // 配置 (從 API 加載後更新)
-                orderDistanceBps: 8,
-                cancelDistanceBps: 3,
+                orderDistanceBps: 9,
+                cancelDistanceBps: 5,
                 rebalanceDistanceBps: 12,
                 uptimeMaxDistanceBps: 10,
 

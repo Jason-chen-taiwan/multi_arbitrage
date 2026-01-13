@@ -18,8 +18,8 @@ import yaml
 @dataclass
 class QuoteConfig:
     """報價配置"""
-    order_distance_bps: int = 8
-    cancel_distance_bps: int = 3
+    order_distance_bps: int = 9
+    cancel_distance_bps: int = 5
     rebalance_distance_bps: int = 12
     queue_position_limit: int = 3  # 排在前 N 檔時撤單
 
