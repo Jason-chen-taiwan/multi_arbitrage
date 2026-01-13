@@ -948,6 +948,13 @@ async def root():
                                             <span style="font-size: 10px; color: #6b7280;">bps</span>
                                         </div>
                                     </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">隊列風控</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmQueuePositionLimit" value="3" step="1" min="1" max="10" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">檔</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <!-- 倉位參數 -->
@@ -1058,7 +1065,7 @@ async def root():
                         </div>
                         <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;" id="mmStrategyDesc">
                             策略：mid * (1 ± 8/10000)<br/>
-                            撤單: 3 bps | 重掛: 12 bps
+                            撤單: 3 bps | 隊列: 前3檔 | 重掛: 12 bps
                         </p>
                     </div>
 
@@ -1216,6 +1223,7 @@ async def root():
                             order_distance_bps: parseInt(document.getElementById('mmOrderDistance').value),
                             cancel_distance_bps: parseInt(document.getElementById('mmCancelDistance').value),
                             rebalance_distance_bps: parseInt(document.getElementById('mmRebalanceDistance').value),
+                            queue_position_limit: parseInt(document.getElementById('mmQueuePositionLimit').value),
                         },
                         position: {
                             order_size_btc: parseFloat(document.getElementById('mmOrderSize').value),
@@ -1315,6 +1323,7 @@ async def root():
                     document.getElementById('mmOrderDistance').value = mmConfig.quote.order_distance_bps;
                     document.getElementById('mmCancelDistance').value = mmConfig.quote.cancel_distance_bps;
                     document.getElementById('mmRebalanceDistance').value = mmConfig.quote.rebalance_distance_bps;
+                    document.getElementById('mmQueuePositionLimit').value = mmConfig.quote.queue_position_limit || 3;
                 }
 
                 // 倉位參數
@@ -1345,7 +1354,7 @@ async def root():
                     const q = mmConfig.quote;
                     document.getElementById('mmStrategyDesc').innerHTML =
                         '策略：mid * (1 ± ' + q.order_distance_bps + '/10000)<br/>' +
-                        '撤單: ' + q.cancel_distance_bps + ' bps | 重掛: ' + q.rebalance_distance_bps + ' bps';
+                        '撤單: ' + q.cancel_distance_bps + ' bps | 隊列: 前' + (q.queue_position_limit || 3) + '檔 | 重掛: ' + q.rebalance_distance_bps + ' bps';
                 }
             }
 
@@ -1575,6 +1584,7 @@ async def root():
                         this.orderDistanceBps = config.quote.order_distance_bps;
                         this.cancelDistanceBps = config.quote.cancel_distance_bps;
                         this.rebalanceDistanceBps = config.quote.rebalance_distance_bps;
+                        this.queuePositionLimit = config.quote.queue_position_limit || 3;
                     }
                     if (config.uptime) {
                         this.uptimeMaxDistanceBps = config.uptime.max_distance_bps;

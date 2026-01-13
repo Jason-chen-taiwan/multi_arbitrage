@@ -20,6 +20,10 @@ quote:
   # 超出 uptime 要求後重新掛單
   rebalance_distance_bps: 12
 
+  # 隊列位置風控：排在前 N 檔時撤單
+  # 避免訂單排到最佳價附近被成交
+  queue_position_limit: 3
+
 # 倉位參數
 position:
   # 單邊訂單量 (BTC)

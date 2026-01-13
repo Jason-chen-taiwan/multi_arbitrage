@@ -21,6 +21,7 @@ class QuoteConfig:
     order_distance_bps: int = 8
     cancel_distance_bps: int = 3
     rebalance_distance_bps: int = 12
+    queue_position_limit: int = 3  # 排在前 N 檔時撤單
 
 
 @dataclass
