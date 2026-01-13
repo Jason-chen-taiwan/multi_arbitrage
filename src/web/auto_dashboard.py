@@ -1086,7 +1086,7 @@ async def root():
                             <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0/0</div><div class="sim-label">買撤/隊列/重掛</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0/0</div><div class="sim-label">賣撤/隊列/重掛</div></div>
                         </div>
-                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=bps太近 / 隊列=排第1檔 / 重掛=bps太遠</p>
+                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=bps太近 / 隊列=排前3檔 / 重掛=bps太遠</p>
                     </div>
 
                     <!-- 訂單操作歷史 -->
@@ -1358,7 +1358,7 @@ async def root():
                 uptimeMaxDistanceBps: 10,
 
                 // 隊列位置風控：排在前 N 檔時撤單
-                queuePositionLimit: 1,  // 排在第1檔（最佳價）時撤單
+                queuePositionLimit: 3,  // 排在前3檔時撤單（成交風險高）
 
                 // 模擬掛單 (null = 無單)
                 bidOrder: null,
