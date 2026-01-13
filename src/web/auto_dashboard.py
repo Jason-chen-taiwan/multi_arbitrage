@@ -1361,9 +1361,20 @@ async def root():
                         }
                     }
 
-                    // 沒有訂單則下單
-                    if (!this.bidOrder) this.placeOrder('bid', midPrice);
-                    if (!this.askOrder) this.placeOrder('ask', midPrice);
+                    // 沒有訂單則下單，並立即檢查是否合格
+                    if (!this.bidOrder) {
+                        this.placeOrder('bid', midPrice);
+                        // 新下的單距離 = orderDistanceBps，如果 <= uptimeMaxDistanceBps 則合格
+                        if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
+                            bidStatus = 'qualified';
+                        }
+                    }
+                    if (!this.askOrder) {
+                        this.placeOrder('ask', midPrice);
+                        if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
+                            askStatus = 'qualified';
+                        }
+                    }
 
                     // 統計合格 tick (雙邊都符合)
                     if (bidStatus === 'qualified' && askStatus === 'qualified') {
@@ -1583,6 +1594,10 @@ async def root():
 
                 // ===== 訂單簿顯示 =====
                 const ob = data.orderbooks?.STANDX?.['BTC-USD'];
+                // 使用 mmSim 的實際掛單價格
+                const simBidPrice = bidOrder ? bidOrder.price : null;
+                const simAskPrice = askOrder ? askOrder.price : null;
+
                 if (ob && ob.bids && ob.asks) {
                     const maxSize = Math.max(...ob.bids.map(b => b[1]), ...ob.asks.map(a => a[1]));
 
@@ -1596,20 +1611,26 @@ async def root():
                         return '<div class="ob-row ask"><div class="bg" style="width:' + pct + '%"></div><span class="ob-price-ask">' + a[0].toLocaleString(undefined, {minimumFractionDigits: 2}) + '</span><span class="ob-size">' + a[1].toFixed(4) + '</span></div>';
                     }).join('');
 
-                    // 計算建議報價會排在第幾檔
-                    // 買單：找第一個價格 < sugBid 的位置
-                    let bidPos = ob.bids.findIndex(b => b[0] < sugBid);
-                    bidPos = bidPos === -1 ? ob.bids.length + 1 : bidPos + 1;
-                    // 賣單：找第一個價格 > sugAsk 的位置
-                    let askPos = ob.asks.findIndex(a => a[0] > sugAsk);
-                    askPos = askPos === -1 ? ob.asks.length + 1 : askPos + 1;
+                    // 計算模擬掛單會排在第幾檔
+                    if (simBidPrice) {
+                        let bidPos = ob.bids.findIndex(b => b[0] < simBidPrice);
+                        bidPos = bidPos === -1 ? ob.bids.length + 1 : bidPos + 1;
+                        const bidPosText = bidPos === 1 ? '最佳價 (第1檔)' : '第 ' + bidPos + ' 檔';
+                        document.getElementById('mmBidPosition').textContent = bidPosText;
+                        document.getElementById('mmBidPosition').style.color = bidPos <= 2 ? '#10b981' : '#9ca3af';
+                    } else {
+                        document.getElementById('mmBidPosition').textContent = '-';
+                    }
 
-                    const bidPosText = bidPos === 1 ? '最佳價 (第1檔)' : '第 ' + bidPos + ' 檔';
-                    const askPosText = askPos === 1 ? '最佳價 (第1檔)' : '第 ' + askPos + ' 檔';
-                    document.getElementById('mmBidPosition').textContent = bidPosText;
-                    document.getElementById('mmBidPosition').style.color = bidPos <= 2 ? '#10b981' : '#9ca3af';
-                    document.getElementById('mmAskPosition').textContent = askPosText;
-                    document.getElementById('mmAskPosition').style.color = askPos <= 2 ? '#10b981' : '#9ca3af';
+                    if (simAskPrice) {
+                        let askPos = ob.asks.findIndex(a => a[0] > simAskPrice);
+                        askPos = askPos === -1 ? ob.asks.length + 1 : askPos + 1;
+                        const askPosText = askPos === 1 ? '最佳價 (第1檔)' : '第 ' + askPos + ' 檔';
+                        document.getElementById('mmAskPosition').textContent = askPosText;
+                        document.getElementById('mmAskPosition').style.color = askPos <= 2 ? '#10b981' : '#9ca3af';
+                    } else {
+                        document.getElementById('mmAskPosition').textContent = '-';
+                    }
 
                     // 計算實際深度
                     var bidDepth = ob.bids.slice(0, 5).reduce((sum, b) => sum + b[1], 0);
@@ -1639,19 +1660,21 @@ async def root():
                 document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askRebalances;
 
-                // Maker Hours
-                const orderSize = 2.0;
-                const makerHoursPerHour = (orderSize / 2) * multiplier;
-                const makerHoursPerMonth = makerHoursPerHour * 720;
-                const mm1Progress = Math.min((makerHoursPerMonth / 360) * 100, 100);
-                const mm2Progress = Math.min((makerHoursPerMonth / 504) * 100, 100);
+                // Maker Hours - 使用配置中的訂單大小
+                // StandX 規則：Maker Hours = min(bid_size, ask_size, 2) / 2 * multiplier
+                const configOrderSize = mmConfig?.position?.order_size_btc || 0.001;
+                const effectiveOrderSize = Math.min(configOrderSize, 2.0);  // 單邊最多 2 BTC
+                const makerHoursPerHour = (effectiveOrderSize / 2) * multiplier;
+                const makerHoursPerMonth = makerHoursPerHour * 720;  // 30 天 * 24 小時
+                const mm1Progress = Math.min((makerHoursPerMonth / 360) * 100, 100);  // MM1 需要 360 hours
+                const mm2Progress = Math.min((makerHoursPerMonth / 504) * 100, 100);  // MM2 需要 504 hours
 
                 document.getElementById('mmMM1Progress').style.width = mm1Progress + '%';
                 document.getElementById('mmMM1Text').textContent = mm1Progress.toFixed(0) + '%';
                 document.getElementById('mmMM2Progress').style.width = mm2Progress + '%';
                 document.getElementById('mmMM2Text').textContent = mm2Progress.toFixed(0) + '%';
-                document.getElementById('mmHoursPerHour').textContent = makerHoursPerHour.toFixed(2);
-                document.getElementById('mmHoursPerMonth').textContent = makerHoursPerMonth.toFixed(0);
+                document.getElementById('mmHoursPerHour').textContent = makerHoursPerHour.toFixed(4);
+                document.getElementById('mmHoursPerMonth').textContent = makerHoursPerMonth.toFixed(2);
 
                 // 深度顯示
                 const totalDepth = bidDepth + askDepth || 1;
