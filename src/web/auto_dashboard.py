@@ -48,7 +48,7 @@ mm_status = {
     'status': 'stopped',
     'dry_run': True,
     'order_size_btc': 0.001,
-    'order_distance_bps': 8,
+    'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
 }
 
 env_file = Path(__file__).parent.parent.parent / ".env"
@@ -1064,8 +1064,7 @@ async def root():
                             <div class="quote-status" id="mmAskStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
                         <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;" id="mmStrategyDesc">
-                            策略：mid * (1 ± 9/10000)<br/>
-                            撤單: 5 bps | 隊列: 前3檔 | 重掛: 12 bps
+                            載入配置中...
                         </p>
                     </div>
 
@@ -1331,7 +1330,7 @@ async def root():
                     document.getElementById('mmOrderDistance').value = mmConfig.quote.order_distance_bps;
                     document.getElementById('mmCancelDistance').value = mmConfig.quote.cancel_distance_bps;
                     document.getElementById('mmRebalanceDistance').value = mmConfig.quote.rebalance_distance_bps;
-                    document.getElementById('mmQueuePositionLimit').value = mmConfig.quote.queue_position_limit || 3;
+                    document.getElementById('mmQueuePositionLimit').value = mmConfig.quote.queue_position_limit;
                 }
 
                 // 倉位參數
@@ -1362,20 +1361,18 @@ async def root():
                     const q = mmConfig.quote;
                     document.getElementById('mmStrategyDesc').innerHTML =
                         '策略：mid * (1 ± ' + q.order_distance_bps + '/10000)<br/>' +
-                        '撤單: ' + q.cancel_distance_bps + ' bps | 隊列: 前' + (q.queue_position_limit || 3) + '檔 | 重掛: ' + q.rebalance_distance_bps + ' bps';
+                        '撤單: ' + q.cancel_distance_bps + ' bps | 隊列: 前' + q.queue_position_limit + '檔 | 重掛: ' + q.rebalance_distance_bps + ' bps';
                 }
             }
 
             // ===== 做市商模擬狀態 =====
             const mmSim = {
-                // 配置 (從 API 加載後更新)
-                orderDistanceBps: 9,
-                cancelDistanceBps: 5,
-                rebalanceDistanceBps: 12,
-                uptimeMaxDistanceBps: 10,
-
-                // 隊列位置風控：排在前 N 檔時撤單
-                queuePositionLimit: 3,  // 排在前3檔時撤單（成交風險高）
+                // 配置 (從 API 加載，不設默認值)
+                orderDistanceBps: null,
+                cancelDistanceBps: null,
+                rebalanceDistanceBps: null,
+                uptimeMaxDistanceBps: null,
+                queuePositionLimit: null,
 
                 // 模擬掛單 (null = 無單)
                 bidOrder: null,
@@ -1458,8 +1455,16 @@ async def root():
                     }
                 },
 
+                // 檢查配置是否已載入
+                isConfigLoaded() {
+                    return this.orderDistanceBps !== null;
+                },
+
                 // 檢查並處理訂單 (基於時間的 Uptime 計算)
                 tick(midPrice, ob) {
+                    // 配置未載入時不執行
+                    if (!this.isConfigLoaded()) return { bidStatus: 'waiting', askStatus: 'waiting' };
+
                     const now = Date.now();
                     let bidStatus = 'none';
                     let askStatus = 'none';
@@ -1609,11 +1614,18 @@ async def root():
                         this.orderDistanceBps = config.quote.order_distance_bps;
                         this.cancelDistanceBps = config.quote.cancel_distance_bps;
                         this.rebalanceDistanceBps = config.quote.rebalance_distance_bps;
-                        this.queuePositionLimit = config.quote.queue_position_limit || 3;
+                        this.queuePositionLimit = config.quote.queue_position_limit;
                     }
                     if (config.uptime) {
                         this.uptimeMaxDistanceBps = config.uptime.max_distance_bps;
                     }
+                    console.log('mmSim config loaded:', {
+                        orderDistanceBps: this.orderDistanceBps,
+                        cancelDistanceBps: this.cancelDistanceBps,
+                        rebalanceDistanceBps: this.rebalanceDistanceBps,
+                        queuePositionLimit: this.queuePositionLimit,
+                        uptimeMaxDistanceBps: this.uptimeMaxDistanceBps
+                    });
                 }
             };
 

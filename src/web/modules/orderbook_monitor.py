@@ -6,7 +6,7 @@ StandX 訂單簿監控模組
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, HTMLResponse
 
-router = APIRouter(prefix="/api/mm", tags=["market_maker"])
+router = APIRouter(prefix="/api/orderbook", tags=["orderbook_monitor"])
 
 # 模組配置
 MODULE_CONFIG = {
@@ -151,7 +151,7 @@ const OrderbookMonitor = {
 
     loadOrderbook: async function() {
         try {
-            const response = await fetch('/api/mm/orderbook/' + this.exchange + '/' + this.symbol);
+            const response = await fetch('/api/orderbook/data/' + this.exchange + '/' + this.symbol);
             if (!response.ok) return;
             const data = await response.json();
             if (data.error) return;
@@ -247,7 +247,7 @@ def register_routes(app, adapters_getter):
         adapters_getter: 獲取 adapters 字典的函數
     """
 
-    @router.get("/orderbook/{exchange}/{symbol}")
+    @router.get("/data/{exchange}/{symbol}")
     async def get_orderbook(exchange: str, symbol: str):
         """獲取指定交易所和交易對的詳細訂單簿"""
         try:
