@@ -39,13 +39,19 @@ class ComparisonEngine:
     """
     Loads and compares simulation results.
     Provides rankings and recommendations.
+
+    StandX Maker Points tiers:
+    - 0-10 bps: 100% points (Boosted)
+    - 10-30 bps: 50% points (Standard)
+    - 30-100 bps: 10% points (Basic)
     """
 
     # Weight configuration for recommendation scoring
+    # effective_points_pct is the weighted score based on StandX tiers
     DEFAULT_WEIGHTS = {
-        'uptime_percentage': 0.40,
-        'boosted_time_pct': 0.25,
-        'simulated_pnl_usd': 0.20,
+        'effective_points_pct': 0.50,  # Main metric - weighted tier score
+        'boosted_time_pct': 0.20,      # Bonus for 100% tier time
+        'simulated_pnl_usd': 0.15,
         'simulated_fills': 0.15,
     }
 
@@ -157,10 +163,9 @@ class ComparisonEngine:
             score = 0
             for metric, weight in weights.items():
                 value = entry.get(metric, 0)
-                # Normalize values (simple approach)
-                if metric == 'uptime_percentage':
-                    normalized = value / 100
-                elif metric == 'boosted_time_pct':
+                # Normalize values (0-1 scale)
+                if metric in ('uptime_percentage', 'boosted_time_pct', 'standard_time_pct',
+                              'basic_time_pct', 'effective_points_pct'):
                     normalized = value / 100
                 elif metric == 'simulated_pnl_usd':
                     normalized = min(value / 100, 1.0)  # Cap at 100 USD
@@ -184,7 +189,7 @@ class ComparisonEngine:
         return Recommendation(
             param_set_id=best['param_set_id'],
             param_set_name=best['param_set_name'],
-            reason=f"Highest weighted score ({best['score']:.3f}) based on uptime, PnL, and fills",
+            reason=f"最高綜合得分 ({best['score']:.3f}) - 有效積分{best['metrics'].get('effective_points_pct', 0):.1f}%",
             score=best['score'],
             metrics=best['metrics']
         )

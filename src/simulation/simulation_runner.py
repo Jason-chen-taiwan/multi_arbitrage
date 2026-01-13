@@ -239,7 +239,15 @@ class SimulationRunner:
         return comparison
 
     def _create_comparison_summary(self, results: List[Dict]) -> Dict:
-        """Create comparison summary with rankings."""
+        """
+        Create comparison summary with rankings.
+
+        Uses StandX tier metrics:
+        - effective_points_pct: Weighted score (100%*boosted + 50%*standard + 10%*basic)
+        - boosted_time_pct: Time at 0-10 bps (100% points)
+        - standard_time_pct: Time at 10-30 bps (50% points)
+        - basic_time_pct: Time at 30-100 bps (10% points)
+        """
         if not results:
             return {}
 
@@ -250,49 +258,46 @@ class SimulationRunner:
             metrics_list.append({
                 'param_set_id': r['param_set_id'],
                 'param_set_name': r['param_set_name'],
+                # Tier metrics
+                'effective_points_pct': m.get('effective_points_pct', 0),
+                'boosted_time_pct': m.get('boosted_time_pct', 0),
+                'standard_time_pct': m.get('standard_time_pct', 0),
+                'basic_time_pct': m.get('basic_time_pct', 0),
                 'uptime_percentage': m.get('uptime_percentage', 0),
+                # Trading metrics
                 'simulated_fills': m.get('simulated_fills', 0),
                 'simulated_pnl_usd': m.get('simulated_pnl_usd', 0),
                 'avg_spread_captured_bps': m.get('avg_spread_captured_bps', 0),
-                'boosted_time_pct': m.get('boosted_time_pct', 0),
                 'orders_cancelled': m.get('orders_cancelled', 0),
+                'cancel_by_distance': m.get('cancel_by_distance', 0),
+                'cancel_by_queue': m.get('cancel_by_queue', 0),
+                'rebalance_count': m.get('rebalance_count', 0),
             })
 
         # Create rankings
         rankings = {
-            'by_uptime': sorted(metrics_list, key=lambda x: x['uptime_percentage'], reverse=True),
+            'by_effective_points': sorted(metrics_list, key=lambda x: x['effective_points_pct'], reverse=True),
+            'by_boosted_time': sorted(metrics_list, key=lambda x: x['boosted_time_pct'], reverse=True),
             'by_pnl': sorted(metrics_list, key=lambda x: x['simulated_pnl_usd'], reverse=True),
             'by_fills': sorted(metrics_list, key=lambda x: x['simulated_fills'], reverse=True),
-            'by_boosted_time': sorted(metrics_list, key=lambda x: x['boosted_time_pct'], reverse=True),
         }
 
-        # Determine recommendation (weighted scoring)
-        scores = {}
-        for m in metrics_list:
-            ps_id = m['param_set_id']
-            # Weighted score: 50% uptime, 30% PnL, 20% fills
-            score = (
-                m['uptime_percentage'] * 0.5 +
-                min(m['simulated_pnl_usd'], 100) * 0.3 +  # Cap PnL contribution
-                min(m['simulated_fills'], 50) * 0.4  # Cap fills contribution
-            )
-            scores[ps_id] = score
-
-        best_id = max(scores, key=scores.get) if scores else None
-        best_metrics = next((m for m in metrics_list if m['param_set_id'] == best_id), None)
+        # Determine recommendation based on effective_points_pct
+        best = rankings['by_effective_points'][0] if rankings['by_effective_points'] else None
 
         return {
             'comparison_table': metrics_list,
             'rankings': {
-                'by_uptime': [m['param_set_id'] for m in rankings['by_uptime']],
+                'by_effective_points': [m['param_set_id'] for m in rankings['by_effective_points']],
+                'by_boosted_time': [m['param_set_id'] for m in rankings['by_boosted_time']],
                 'by_pnl': [m['param_set_id'] for m in rankings['by_pnl']],
                 'by_fills': [m['param_set_id'] for m in rankings['by_fills']],
-                'by_boosted_time': [m['param_set_id'] for m in rankings['by_boosted_time']],
             },
             'recommendation': {
-                'param_set_id': best_id,
-                'reason': f"Best weighted score: {scores.get(best_id, 0):.1f}",
-                'metrics': best_metrics
+                'param_set_id': best['param_set_id'] if best else None,
+                'param_set_name': best['param_set_name'] if best else None,
+                'reason': f"最高有效積分 {best['effective_points_pct']:.1f}% (100%檔: {best['boosted_time_pct']:.1f}%)" if best else '',
+                'metrics': best
             }
         }
 
@@ -353,10 +358,15 @@ class SimulationRunner:
             comparison.append({
                 'param_set_id': ps_id,
                 'param_set_name': executor.param_set.name,
-                'uptime_percentage': metrics.get('uptime_percentage', 0),
+                # Tier percentages (StandX scoring)
+                'boosted_time_pct': metrics.get('boosted_time_pct', 0),    # 0-10 bps: 100%
+                'standard_time_pct': metrics.get('standard_time_pct', 0),  # 10-30 bps: 50%
+                'basic_time_pct': metrics.get('basic_time_pct', 0),        # 30-100 bps: 10%
+                'effective_points_pct': metrics.get('effective_points_pct', 0),  # Weighted score
+                'uptime_percentage': metrics.get('uptime_percentage', 0),  # Any points earned
+                # Trading metrics
                 'simulated_fills': metrics.get('simulated_fills', 0),
                 'simulated_pnl_usd': metrics.get('simulated_pnl_usd', 0),
-                'boosted_time_pct': metrics.get('boosted_time_pct', 0),
                 'rolling_uptime': status['state'].get('rolling_uptime', 0),
                 'has_orders': status['state'].get('has_bid', False) or status['state'].get('has_ask', False),
                 # Cancel and rebalance counts
@@ -365,6 +375,6 @@ class SimulationRunner:
                 'rebalance_count': metrics.get('rebalance_count', 0),
             })
 
-        # Sort by uptime for display
-        comparison.sort(key=lambda x: x['uptime_percentage'], reverse=True)
+        # Sort by effective points percentage (weighted score)
+        comparison.sort(key=lambda x: x['effective_points_pct'], reverse=True)
         return comparison

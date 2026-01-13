@@ -37,10 +37,23 @@ class SimulatedFill:
 
 @dataclass
 class SimulationMetrics:
-    """Metrics collected during simulation."""
+    """
+    Metrics collected during simulation.
+
+    StandX Maker Points tiers (by order distance from mid):
+    - Boosted (0-10 bps): 100% points
+    - Standard (10-30 bps): 50% points
+    - Basic (30-100 bps): 10% points
+    - No points (>100 bps): 0% points
+    """
     # Uptime tracking
     total_ticks: int = 0
-    qualified_ticks: int = 0  # Ticks where orders were within max_distance_bps
+
+    # Tier tracking by order distance (StandX rules)
+    boosted_ticks: int = 0   # 0-10 bps: 100% points
+    standard_ticks: int = 0  # 10-30 bps: 50% points
+    basic_ticks: int = 0     # 30-100 bps: 10% points
+    no_points_ticks: int = 0 # >100 bps: 0% points
 
     # Simulated trading
     simulated_fills: int = 0
@@ -55,12 +68,14 @@ class SimulationMetrics:
     rebalance_count: int = 0
     volatility_pauses: int = 0
 
-    # Tier tracking
-    boosted_ticks: int = 0  # Ticks at >= 70% uptime
-    standard_ticks: int = 0  # Ticks at >= 50% uptime
+    @property
+    def qualified_ticks(self) -> int:
+        """Ticks earning any points (within 100 bps)."""
+        return self.boosted_ticks + self.standard_ticks + self.basic_ticks
 
     @property
     def uptime_percentage(self) -> float:
+        """Percentage of time earning any points."""
         if self.total_ticks == 0:
             return 0.0
         return (self.qualified_ticks / self.total_ticks) * 100
@@ -73,21 +88,52 @@ class SimulationMetrics:
 
     @property
     def boosted_time_pct(self) -> float:
+        """Percentage at 0-10 bps (100% points)."""
         if self.total_ticks == 0:
             return 0.0
         return (self.boosted_ticks / self.total_ticks) * 100
 
     @property
     def standard_time_pct(self) -> float:
+        """Percentage at 10-30 bps (50% points)."""
         if self.total_ticks == 0:
             return 0.0
         return (self.standard_ticks / self.total_ticks) * 100
+
+    @property
+    def basic_time_pct(self) -> float:
+        """Percentage at 30-100 bps (10% points)."""
+        if self.total_ticks == 0:
+            return 0.0
+        return (self.basic_ticks / self.total_ticks) * 100
+
+    @property
+    def effective_points_pct(self) -> float:
+        """
+        Weighted effective points percentage.
+        Boosted=100%, Standard=50%, Basic=10%
+        """
+        if self.total_ticks == 0:
+            return 0.0
+        weighted = (
+            self.boosted_ticks * 1.0 +
+            self.standard_ticks * 0.5 +
+            self.basic_ticks * 0.1
+        )
+        return (weighted / self.total_ticks) * 100
 
     def to_dict(self) -> Dict:
         return {
             'uptime_percentage': round(self.uptime_percentage, 2),
             'qualified_ticks': self.qualified_ticks,
             'total_ticks': self.total_ticks,
+            'boosted_ticks': self.boosted_ticks,
+            'standard_ticks': self.standard_ticks,
+            'basic_ticks': self.basic_ticks,
+            'boosted_time_pct': round(self.boosted_time_pct, 2),
+            'standard_time_pct': round(self.standard_time_pct, 2),
+            'basic_time_pct': round(self.basic_time_pct, 2),
+            'effective_points_pct': round(self.effective_points_pct, 2),
             'simulated_fills': self.simulated_fills,
             'simulated_pnl_usd': float(self.simulated_pnl_usd),
             'avg_spread_captured_bps': round(self.avg_spread_captured_bps, 2),
@@ -97,8 +143,6 @@ class SimulationMetrics:
             'cancel_by_queue': self.cancel_by_queue,
             'rebalance_count': self.rebalance_count,
             'volatility_pauses': self.volatility_pauses,
-            'boosted_time_pct': round(self.boosted_time_pct, 2),
-            'standard_time_pct': round(self.standard_time_pct, 2),
         }
 
 
@@ -242,27 +286,43 @@ class SimulationState:
         with self._lock:
             self.metrics.volatility_pauses += 1
 
-    def record_tick(self, is_qualified: bool, current_uptime_pct: float):
+    def record_tick(self, order_distance_bps: float):
         """
-        Record a simulation tick.
+        Record a simulation tick with order distance for tier tracking.
+
+        StandX Maker Points tiers:
+        - 0-10 bps: 100% points (Boosted)
+        - 10-30 bps: 50% points (Standard)
+        - 30-100 bps: 10% points (Basic)
+        - >100 bps: 0% points
 
         Args:
-            is_qualified: Whether orders are within max_distance_bps
-            current_uptime_pct: Current rolling uptime percentage
+            order_distance_bps: Distance of order from mid price in basis points.
+                               Use -1 or None if no order is active.
         """
         with self._lock:
             self.metrics.total_ticks += 1
-            if is_qualified:
-                self.metrics.qualified_ticks += 1
+
+            # Determine tier based on order distance
+            if order_distance_bps is None or order_distance_bps < 0:
+                # No active order
+                self.metrics.no_points_ticks += 1
+                is_qualified = False
+            elif order_distance_bps <= 10:
+                self.metrics.boosted_ticks += 1
+                is_qualified = True
+            elif order_distance_bps <= 30:
+                self.metrics.standard_ticks += 1
+                is_qualified = True
+            elif order_distance_bps <= 100:
+                self.metrics.basic_ticks += 1
+                is_qualified = True
+            else:
+                self.metrics.no_points_ticks += 1
+                is_qualified = False
 
             # Update uptime window for rolling calculation
             self._uptime_window.append(is_qualified)
-
-            # Track tier time
-            if current_uptime_pct >= 70:
-                self.metrics.boosted_ticks += 1
-            elif current_uptime_pct >= 50:
-                self.metrics.standard_ticks += 1
 
     def simulate_fill(
         self,

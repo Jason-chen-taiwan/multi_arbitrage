@@ -121,8 +121,8 @@ class SimulationExecutor:
                 self._paused_for_volatility = True
                 self.state.record_volatility_pause()
                 self.state.cancel_all_orders("volatility")
-            # Record tick as not qualified
-            self._record_tick(mid_price, is_qualified=False)
+            # Record tick with no active orders (volatility pause)
+            self._record_tick(mid_price)
             return
         else:
             self._paused_for_volatility = False
@@ -133,9 +133,8 @@ class SimulationExecutor:
         # Place new orders if needed
         await self._place_orders_if_needed(tick)
 
-        # Record tick with qualification status
-        is_qualified = self._check_uptime_qualified(mid_price)
-        self._record_tick(mid_price, is_qualified)
+        # Record tick with current order distance for tier tracking
+        self._record_tick(mid_price)
 
     async def _process_orders(self, tick: MarketTick):
         """Process existing simulated orders - check for cancels, fills, rebalances."""
@@ -261,37 +260,37 @@ class SimulationExecutor:
             return 0.0
         return abs(float((order_price - mid_price) / mid_price * 10000))
 
-    def _check_uptime_qualified(self, mid_price: Decimal) -> bool:
+    def _get_best_order_distance(self, mid_price: Decimal) -> float:
         """
-        Check if current orders qualify for uptime tracking.
-        Orders must be within max_distance_bps of mid price.
+        Get the minimum order distance from mid price in bps.
+        Returns -1 if no orders are active.
+
+        StandX uses the closest order for points calculation.
         """
         bid_order = self.state.get_bid_order()
         ask_order = self.state.get_ask_order()
 
-        # Need at least one order to qualify
-        if bid_order is None and ask_order is None:
-            return False
+        distances = []
 
-        # Check bid order qualification
-        bid_qualified = False
         if bid_order:
             bid_distance = self._calculate_distance_bps(bid_order.price, mid_price)
-            bid_qualified = bid_distance <= self.config.max_distance_bps
+            distances.append(bid_distance)
 
-        # Check ask order qualification
-        ask_qualified = False
         if ask_order:
             ask_distance = self._calculate_distance_bps(ask_order.price, mid_price)
-            ask_qualified = ask_distance <= self.config.max_distance_bps
+            distances.append(ask_distance)
 
-        # Qualify if at least one order is within range
-        return bid_qualified or ask_qualified
+        if not distances:
+            return -1.0  # No active orders
 
-    def _record_tick(self, mid_price: Decimal, is_qualified: bool):
-        """Record tick for metrics."""
-        current_uptime = self.state.get_rolling_uptime()
-        self.state.record_tick(is_qualified, current_uptime)
+        return min(distances)  # Best (closest) order distance
+
+    def _record_tick(self, mid_price: Decimal):
+        """
+        Record tick for metrics with order distance for tier tracking.
+        """
+        order_distance = self._get_best_order_distance(mid_price)
+        self.state.record_tick(order_distance)
 
     def get_state(self) -> SimulationState:
         """Get current simulation state."""

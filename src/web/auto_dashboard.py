@@ -1241,21 +1241,27 @@ async def root():
                     <!-- 右側：即時比較結果 -->
                     <div class="card">
                         <div class="card-title">即時比較 <span id="simProgress" style="color: #9ca3af; font-size: 11px; margin-left: 10px;"></span></div>
+                        <div style="font-size: 10px; color: #6b7280; margin-bottom: 8px;">
+                            積分規則：<span style="color: #10b981;">0-10bps=100%</span> |
+                            <span style="color: #f59e0b;">10-30bps=50%</span> |
+                            <span style="color: #9ca3af;">30-100bps=10%</span>
+                        </div>
                         <div id="liveComparison" style="overflow-x: auto;">
-                            <table class="price-table" style="font-size: 12px;">
+                            <table class="price-table" style="font-size: 11px;">
                                 <thead>
                                     <tr>
                                         <th>參數組</th>
-                                        <th>Uptime %</th>
-                                        <th>模擬成交</th>
-                                        <th>PnL (USD)</th>
-                                        <th>價格撤單</th>
-                                        <th>隊列撤單</th>
-                                        <th>重掛次數</th>
+                                        <th style="color: #667eea;">有效積分</th>
+                                        <th style="color: #10b981;">100%檔</th>
+                                        <th style="color: #f59e0b;">50%檔</th>
+                                        <th style="color: #9ca3af;">10%檔</th>
+                                        <th>成交</th>
+                                        <th>PnL</th>
+                                        <th>撤單</th>
                                     </tr>
                                 </thead>
                                 <tbody id="liveComparisonBody">
-                                    <tr><td colspan="7" style="text-align: center; color: #9ca3af; padding: 20px;">選擇參數組後點擊「開始比較」</td></tr>
+                                    <tr><td colspan="8" style="text-align: center; color: #9ca3af; padding: 20px;">選擇參數組後點擊「開始比較」</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2599,32 +2605,31 @@ async def root():
                 const tbody = document.getElementById('liveComparisonBody');
 
                 if (!data || data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #9ca3af; padding: 20px;">等待數據...</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #9ca3af; padding: 20px;">等待數據...</td></tr>';
                     return;
                 }
 
-                // 按 Uptime 排序
-                data.sort((a, b) => (b.uptime_percentage || 0) - (a.uptime_percentage || 0));
-
+                // 按有效積分排序 (已由後端排序)
                 tbody.innerHTML = data.map((row, idx) => {
-                    const uptime = row.uptime_percentage || 0;
-                    const uptimeColor = uptime >= 70 ? '#10b981' : (uptime >= 50 ? '#f59e0b' : '#ef4444');
+                    const effectivePts = row.effective_points_pct || 0;
+                    const boosted = row.boosted_time_pct || 0;
+                    const standard = row.standard_time_pct || 0;
+                    const basic = row.basic_time_pct || 0;
                     const isTop = idx === 0;
-                    // 價格撤單 = cancel_count, 隊列撤單 = queue_cancel_count
-                    const priceCancel = row.price_cancel_count || row.cancel_count || 0;
-                    const queueCancel = row.queue_cancel_count || 0;
+                    const totalCancels = (row.price_cancel_count || 0) + (row.queue_cancel_count || 0);
 
                     return `
                         <tr style="${isTop ? 'background: #10b98120;' : ''}">
                             <td style="${isTop ? 'font-weight: 700;' : ''}">${row.param_set_name || row.param_set_id}${isTop ? ' ⭐' : ''}</td>
-                            <td style="color: ${uptimeColor}; font-weight: 600;">${uptime.toFixed(1)}%</td>
+                            <td style="color: #667eea; font-weight: 700;">${effectivePts.toFixed(1)}%</td>
+                            <td style="color: #10b981;">${boosted.toFixed(1)}%</td>
+                            <td style="color: #f59e0b;">${standard.toFixed(1)}%</td>
+                            <td style="color: #9ca3af;">${basic.toFixed(1)}%</td>
                             <td>${row.simulated_fills || 0}</td>
                             <td style="color: ${(row.simulated_pnl_usd || 0) >= 0 ? '#10b981' : '#ef4444'};">
                                 $${(row.simulated_pnl_usd || 0).toFixed(2)}
                             </td>
-                            <td style="color: #ef4444;">${priceCancel}</td>
-                            <td style="color: #f59e0b;">${queueCancel}</td>
-                            <td>${row.rebalance_count || 0}</td>
+                            <td style="color: #6b7280;">${totalCancels}</td>
                         </tr>
                     `;
                 }).join('');
