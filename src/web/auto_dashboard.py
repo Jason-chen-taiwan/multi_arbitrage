@@ -1043,22 +1043,22 @@ async def root():
                         <div class="stat-row"><span class="stat-label">當前乘數</span><span class="stat-value" id="mmMultiplier">0x</span></div>
                     </div>
 
-                    <!-- 建議報價 -->
+                    <!-- 模擬掛單 -->
                     <div class="card">
-                        <div class="card-title">建議報價 (mark ± 10 bps)</div>
+                        <div class="card-title">模擬掛單 (需在 mark ± 10 bps 內)</div>
                         <div class="quote-box">
-                            <div class="quote-label">建議買價</div>
+                            <div class="quote-label">買單價格</div>
                             <div class="quote-price quote-bid" id="mmSuggestedBid">-</div>
                             <div class="quote-status" id="mmBidStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
                         <div class="quote-box">
-                            <div class="quote-label">建議賣價</div>
+                            <div class="quote-label">賣單價格</div>
                             <div class="quote-price quote-ask" id="mmSuggestedAsk">-</div>
                             <div class="quote-status" id="mmAskStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
-                        <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;">
-                            策略：mid * (1 ± 10/10000)<br/>
-                            撤單距離: 5 bps | 重掛距離: 20 bps
+                        <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;" id="mmStrategyDesc">
+                            策略：mid * (1 ± 8/10000)<br/>
+                            撤單: 3 bps | 重掛: 12 bps
                         </p>
                     </div>
 
@@ -1081,7 +1081,7 @@ async def root():
                     <div class="card">
                         <div class="card-title">訂單模擬</div>
                         <div class="sim-grid">
-                            <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0</div><div class="sim-label">總 Ticks</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0秒</div><div class="sim-label">運行時間</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">符合率</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0</div><div class="sim-label">買撤/重掛</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0</div><div class="sim-label">賣撤/重掛</div></div>
@@ -1282,6 +1282,14 @@ async def root():
                         toggle.classList.remove('active');
                     }
                 }
+
+                // 更新策略說明
+                if (mmConfig.quote) {
+                    const q = mmConfig.quote;
+                    document.getElementById('mmStrategyDesc').innerHTML =
+                        '策略：mid * (1 ± ' + q.order_distance_bps + '/10000)<br/>' +
+                        '撤單: ' + q.cancel_distance_bps + ' bps | 重掛: ' + q.rebalance_distance_bps + ' bps';
+                }
             }
 
             // ===== 做市商模擬狀態 =====
@@ -1296,14 +1304,17 @@ async def root():
                 bidOrder: null,
                 askOrder: null,
 
-                // 統計
-                totalTicks: 0,
-                qualifiedTicks: 0,
+                // 時間統計 (毫秒)
+                startTime: Date.now(),
+                lastTickTime: null,
+                qualifiedTimeMs: 0,   // 雙邊都合格的總時間
+                totalTimeMs: 0,       // 總運行時間
+
+                // 訂單操作統計
                 bidCancels: 0,
                 askCancels: 0,
                 bidRebalances: 0,
                 askRebalances: 0,
-                startTime: Date.now(),
 
                 // 下單
                 placeOrder(side, midPrice) {
@@ -1317,11 +1328,16 @@ async def root():
                     return order;
                 },
 
-                // 檢查並處理訂單
+                // 檢查並處理訂單 (基於時間的 Uptime 計算)
                 tick(midPrice) {
-                    this.totalTicks++;
+                    const now = Date.now();
                     let bidStatus = 'none';
                     let askStatus = 'none';
+
+                    // 計算自上次 tick 以來的時間間隔
+                    const deltaMs = this.lastTickTime ? (now - this.lastTickTime) : 0;
+                    this.lastTickTime = now;
+                    this.totalTimeMs += deltaMs;
 
                     // 處理買單
                     if (this.bidOrder) {
@@ -1364,7 +1380,6 @@ async def root():
                     // 沒有訂單則下單，並立即檢查是否合格
                     if (!this.bidOrder) {
                         this.placeOrder('bid', midPrice);
-                        // 新下的單距離 = orderDistanceBps，如果 <= uptimeMaxDistanceBps 則合格
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         }
@@ -1376,9 +1391,9 @@ async def root():
                         }
                     }
 
-                    // 統計合格 tick (雙邊都符合)
+                    // 累計合格時間 (雙邊都符合才計入)
                     if (bidStatus === 'qualified' && askStatus === 'qualified') {
-                        this.qualifiedTicks++;
+                        this.qualifiedTimeMs += deltaMs;
                     }
 
                     return { bidStatus, askStatus };
@@ -1397,13 +1412,24 @@ async def root():
                 reset() {
                     this.bidOrder = null;
                     this.askOrder = null;
-                    this.totalTicks = 0;
-                    this.qualifiedTicks = 0;
+                    this.startTime = Date.now();
+                    this.lastTickTime = null;
+                    this.qualifiedTimeMs = 0;
+                    this.totalTimeMs = 0;
                     this.bidCancels = 0;
                     this.askCancels = 0;
                     this.bidRebalances = 0;
                     this.askRebalances = 0;
-                    this.startTime = Date.now();
+                },
+
+                // 獲取 Uptime 百分比
+                getUptimePct() {
+                    return this.totalTimeMs > 0 ? (this.qualifiedTimeMs / this.totalTimeMs * 100) : 0;
+                },
+
+                // 獲取運行時間 (秒)
+                getRunningTimeSec() {
+                    return this.totalTimeMs / 1000;
                 },
 
                 // 更新配置
@@ -1642,8 +1668,8 @@ async def root():
                     document.getElementById('mmAskPosition').textContent = '-';
                 }
 
-                // Uptime - 使用 mmSim 統計
-                const uptimePct = mmSim.totalTicks > 0 ? (mmSim.qualifiedTicks / mmSim.totalTicks * 100) : 0;
+                // Uptime - 使用時間計算
+                const uptimePct = mmSim.getUptimePct();
                 document.getElementById('mmUptimePct').textContent = uptimePct.toFixed(1) + '%';
 
                 const tier = uptimePct >= 70 ? 'boosted' : (uptimePct >= 50 ? 'standard' : 'inactive');
@@ -1653,10 +1679,14 @@ async def root():
                 document.getElementById('mmUptimeTier').className = 'uptime-tier tier-' + tier;
                 document.getElementById('mmMultiplier').textContent = multiplier + 'x';
 
-                // 模擬統計顯示 - 使用 mmSim 的訂單操作統計
-                document.getElementById('mmTotalQuotes').textContent = mmSim.totalTicks;
+                // 模擬統計顯示 - 運行時間和訂單操作
+                const runningTimeSec = mmSim.getRunningTimeSec();
+                const runningTimeStr = runningTimeSec >= 60
+                    ? Math.floor(runningTimeSec / 60) + '分' + Math.floor(runningTimeSec % 60) + '秒'
+                    : runningTimeSec.toFixed(0) + '秒';
+                document.getElementById('mmTotalQuotes').textContent = runningTimeStr;
                 document.getElementById('mmQualifiedRate').textContent = uptimePct.toFixed(1) + '%';
-                // 撤單次數和重掛次數 (比「成交率」更有意義)
+                // 撤單次數和重掛次數
                 document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askRebalances;
 
