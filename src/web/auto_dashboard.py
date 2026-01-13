@@ -175,6 +175,23 @@ async def init_system():
                 'exchange_name': exchange_name,
                 'testnet': config.get('testnet', False)
             }
+
+            # 添加特定交易所的配置
+            if exchange_name == 'standx':
+                private_key = os.getenv('WALLET_PRIVATE_KEY')
+                address = os.getenv('WALLET_ADDRESS')
+                if private_key:
+                    adapter_config['private_key'] = private_key
+                if address:
+                    adapter_config['wallet_address'] = address
+            elif exchange_name == 'grvt':
+                api_key = os.getenv('GRVT_API_KEY')
+                api_secret = os.getenv('GRVT_API_SECRET')
+                if api_key:
+                    adapter_config['api_key'] = api_key
+                if api_secret:
+                    adapter_config['api_secret'] = api_secret
+
             adapter = create_adapter(adapter_config)
             adapters[exchange_name.upper()] = adapter
             symbols.update(symbols_config['dex'])
@@ -252,6 +269,22 @@ async def add_exchange(exchange_name: str, exchange_type: str):
                 'exchange_name': exchange_name,
                 'testnet': os.getenv(f'{exchange_name.upper()}_TESTNET', 'false').lower() == 'true'
             }
+
+            # 添加 DEX 特定配置
+            if exchange_name == 'standx':
+                private_key = os.getenv('WALLET_PRIVATE_KEY')
+                address = os.getenv('WALLET_ADDRESS')
+                if private_key:
+                    adapter_config['private_key'] = private_key
+                if address:
+                    adapter_config['wallet_address'] = address
+            elif exchange_name == 'grvt':
+                api_key = os.getenv('GRVT_API_KEY')
+                api_secret = os.getenv('GRVT_API_SECRET')
+                if api_key:
+                    adapter_config['api_key'] = api_key
+                if api_secret:
+                    adapter_config['api_secret'] = api_secret
         else:
             adapter_config = {
                 'exchange_name': exchange_name,

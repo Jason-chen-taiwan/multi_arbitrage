@@ -337,7 +337,11 @@ class StandXAdapter(BasePerpAdapter):
         self,
         symbol: str,
         depth: int = 20,
+        limit: int = None,  # 兼容性參數
     ) -> Dict[str, Any]:
+        # 如果提供了 limit 參數，使用它而不是 depth
+        if limit is not None:
+            depth = limit
         """查詢訂單簿"""
         try:
             result = await self._request(
