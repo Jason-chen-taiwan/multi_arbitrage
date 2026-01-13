@@ -7,12 +7,13 @@ import json
 import time
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
+from datetime import datetime
 from uuid import uuid4
 
 import aiohttp
 from eth_account import Account
 
-from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus
+from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook
 from ..auth import AsyncStandXAuth
 
 
@@ -338,23 +339,24 @@ class StandXAdapter(BasePerpAdapter):
         symbol: str,
         depth: int = 20,
         limit: int = None,  # 兼容性參數
-    ) -> Dict[str, Any]:
+    ) -> Orderbook:
+        """查詢訂單簿"""
         # 如果提供了 limit 參數，使用它而不是 depth
         if limit is not None:
             depth = limit
-        """查詢訂單簿"""
+
         try:
             result = await self._request(
                 'GET', '/api/query_depth_book',
                 params={'symbol': symbol}
             )
-            
-            return {
-                'symbol': symbol,
-                'bids': [[Decimal(p), Decimal(q)] for p, q in result.get('bids', [])],
-                'asks': [[Decimal(p), Decimal(q)] for p, q in result.get('asks', [])],
-                'timestamp': result.get('timestamp')
-            }
+
+            return Orderbook(
+                symbol=symbol,
+                bids=[[Decimal(p), Decimal(q)] for p, q in result.get('bids', [])],
+                asks=[[Decimal(p), Decimal(q)] for p, q in result.get('asks', [])],
+                timestamp=datetime.fromtimestamp(result['timestamp'] / 1000) if result.get('timestamp') else datetime.now()
+            )
         except Exception as e:
             print(f"❌ Failed to get orderbook: {e}")
             raise

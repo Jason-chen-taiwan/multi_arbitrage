@@ -193,6 +193,14 @@ async def init_system():
                     adapter_config['api_secret'] = api_secret
 
             adapter = create_adapter(adapter_config)
+
+            # 連接到交易所
+            if hasattr(adapter, 'connect'):
+                connected = await adapter.connect()
+                if not connected:
+                    logger.warning(f"  ⚠️  {exchange_name.upper()} - 連接失敗")
+                    continue
+
             adapters[exchange_name.upper()] = adapter
             symbols.update(symbols_config['dex'])
             logger.info(f"  ✅ {exchange_name.upper()} - 已連接")
@@ -215,6 +223,14 @@ async def init_system():
                     adapter_config['passphrase'] = passphrase
 
             adapter = create_adapter(adapter_config)
+
+            # 連接到交易所
+            if hasattr(adapter, 'connect'):
+                connected = await adapter.connect()
+                if not connected:
+                    logger.warning(f"  ⚠️  {exchange_name.upper()} - 連接失敗")
+                    continue
+
             adapters[exchange_name.upper()] = adapter
             symbols.update(symbols_config['cex'])
             logger.info(f"  ✅ {exchange_name.upper()} - 已連接")
@@ -299,6 +315,14 @@ async def add_exchange(exchange_name: str, exchange_type: str):
                     adapter_config['passphrase'] = passphrase
 
         adapter = create_adapter(adapter_config)
+
+        # 連接到交易所
+        if hasattr(adapter, 'connect'):
+            connected = await adapter.connect()
+            if not connected:
+                logger.error(f"❌ {exchange_name.upper()} 連接失敗")
+                return False
+
         adapters[exchange_name.upper()] = adapter
 
         # 更新監控器
@@ -321,7 +345,14 @@ async def remove_exchange(exchange_name: str):
 
     exchange_key = exchange_name.upper()
 
+    # 斷開連接
     if exchange_key in adapters:
+        adapter = adapters[exchange_key]
+        if hasattr(adapter, 'disconnect'):
+            try:
+                await adapter.disconnect()
+            except Exception as e:
+                logger.warning(f"⚠️  斷開 {exchange_key} 連接時出錯: {e}")
         del adapters[exchange_key]
 
     if exchange_key in monitor.adapters:
@@ -330,19 +361,35 @@ async def remove_exchange(exchange_name: str):
     logger.info(f"✅ {exchange_key} 已從監控系統移除")
 
 
+def serialize_for_json(obj):
+    """將 Decimal 和其他不能序列化的類型轉換為可序列化的類型"""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serialize_for_json(item) for item in obj]
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        return str(obj)
+
+
 async def broadcast_data():
     """廣播數據到所有連接的客戶端"""
+    logger.info("📡 廣播任務已啟動")
     while True:
         try:
-            if monitor and len(connected_clients) > 0:
+            client_count = len(connected_clients)
+            if monitor and client_count > 0:
                 # 準備數據
                 data = {
                     'timestamp': datetime.now().isoformat(),
                     'system_status': system_status,
                     'market_data': {},
                     'opportunities': [],
-                    'stats': monitor.stats if monitor else {},
-                    'executor_stats': executor.get_stats() if executor else {}
+                    'stats': serialize_for_json(dict(monitor.stats)) if monitor else {},
+                    'executor_stats': serialize_for_json(executor.get_stats()) if executor else {}
                 }
 
                 # 市場數據
@@ -356,6 +403,10 @@ async def broadcast_data():
                             'ask_size': float(market.ask_size),
                             'spread_pct': float(market.spread_pct)
                         }
+
+                # Debug: 打印發送的數據
+                if data['market_data']:
+                    logger.debug(f"Broadcasting market data: {list(data['market_data'].keys())}")
 
                 # 套利機會
                 for opp in monitor.arbitrage_opportunities:
@@ -375,7 +426,9 @@ async def broadcast_data():
                 for client in connected_clients:
                     try:
                         await client.send_json(data)
-                    except:
+                        logger.info(f"✅ 數據已發送給客戶端")
+                    except Exception as e:
+                        logger.error(f"❌ 發送失敗: {e}")
                         disconnected.append(client)
 
                 # 移除斷開的客戶端
@@ -405,6 +458,10 @@ async def lifespan(app: FastAPI):
 
 # FastAPI app
 app = FastAPI(lifespan=lifespan)
+
+# 註冊模組路由
+from src.web.modules.market_maker import register_routes as register_mm_routes
+register_mm_routes(app, lambda: adapters)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -692,6 +749,9 @@ async def root():
                 </div>
             </div>
 
+            <!-- 動態模組載入區 -->
+            <div id="modulesContainer"></div>
+
             <div class="section">
                 <h2>🏦 交易所價格</h2>
                 <table id="pricesTable">
@@ -788,6 +848,10 @@ async def root():
 
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
+                    // Debug: 打印市場數據結構
+                    if (data.market_data) {
+                        console.log('Market Data:', data.market_data);
+                    }
                     updateUI(data);
                 };
 
@@ -879,8 +943,15 @@ async def root():
 
                 tbody.innerHTML = exchanges.map(exchange => {
                     const data = marketData[exchange];
-                    const btc = data['BTC/USDT:USDT'] || data['BTC-USD'] || {};
-                    const eth = data['ETH/USDT:USDT'] || data['ETH-USD'] || {};
+
+                    // 嘗試所有可能的 BTC symbol 名稱
+                    const btc = data['BTC/USDT:USDT'] || data['BTC-USD'] || data['BTCUSDT'] || {};
+                    // 嘗試所有可能的 ETH symbol 名稱
+                    const eth = data['ETH/USDT:USDT'] || data['ETH-USD'] || data['ETHUSDT'] || {};
+
+                    // Debug: 如果沒找到數據，顯示可用的 symbols
+                    const availableSymbols = Object.keys(data).join(', ');
+                    console.log(`${exchange} available symbols:`, availableSymbols);
 
                     return `
                         <tr>
@@ -1104,10 +1175,60 @@ async def root():
                 }
             }
 
+            // ==================== 模組動態載入系統 ====================
+            async function loadMarketMakerModule() {
+                try {
+                    console.log('Loading market maker module...');
+
+                    // 載入 HTML
+                    const htmlRes = await fetch('/api/mm/html');
+                    if (!htmlRes.ok) {
+                        console.error('Failed to load module HTML');
+                        return false;
+                    }
+                    const html = await htmlRes.text();
+
+                    // 注入 HTML
+                    const container = document.getElementById('modulesContainer');
+                    container.innerHTML = html;
+                    console.log('Module HTML injected');
+
+                    // 載入 JavaScript
+                    const jsRes = await fetch('/api/mm/js');
+                    if (!jsRes.ok) {
+                        console.error('Failed to load module JS');
+                        return false;
+                    }
+                    const js = await jsRes.text();
+
+                    // 執行 JavaScript
+                    const script = document.createElement('script');
+                    script.textContent = js;
+                    document.body.appendChild(script);
+                    console.log('Module JS executed');
+
+                    // 初始化模組
+                    if (typeof MarketMaker !== 'undefined') {
+                        MarketMaker.init();
+                        console.log('MarketMaker initialized successfully');
+                    } else {
+                        console.error('MarketMaker not defined');
+                    }
+
+                    return true;
+                } catch (error) {
+                    console.error('Failed to load market maker module:', error);
+                    return false;
+                }
+            }
+
             // 初始化
             connect();
             updateExchangeOptions();
             loadConfiguredExchanges();
+
+            // 載入做市商模組
+            loadMarketMakerModule();
 
             // 定期刷新配置列表
             setInterval(loadConfiguredExchanges, 10000);
