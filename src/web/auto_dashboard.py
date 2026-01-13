@@ -916,9 +916,9 @@ async def root():
                         <div style="display: flex; justify-content: space-between; font-size: 10px; color: #9ca3af; margin-bottom: 15px;">
                             <span>買方深度</span><span id="mmImbalance">平衡: 0%</span><span>賣方深度</span>
                         </div>
-                        <div class="card-title" style="margin-top: 10px;">成交風險</div>
-                        <div class="risk-row"><span>買單風險</span><span class="risk-badge risk-low" id="mmBidRisk">LOW</span></div>
-                        <div class="risk-row"><span>賣單風險</span><span class="risk-badge risk-low" id="mmAskRisk">LOW</span></div>
+                        <div class="card-title" style="margin-top: 10px;">報價排隊位置</div>
+                        <div class="risk-row"><span>買單位置</span><span id="mmBidPosition" style="font-weight:600">-</span></div>
+                        <div class="risk-row"><span>賣單位置</span><span id="mmAskPosition" style="font-weight:600">-</span></div>
                     </div>
 
                     <!-- 模擬統計 -->
@@ -1141,19 +1141,9 @@ async def root():
                 document.getElementById('mmSuggestedBid').textContent = '$' + sugBid.toLocaleString(undefined, {maximumFractionDigits: 2});
                 document.getElementById('mmSuggestedAsk').textContent = '$' + sugAsk.toLocaleString(undefined, {maximumFractionDigits: 2});
 
-                // 成交風險分析
-                const bidDistance = ((btc.best_bid - sugBid) / sugBid * 10000);
-                const askDistance = ((sugAsk - btc.best_ask) / sugAsk * 10000);
-
+                // 報價位置分析（會在訂單簿哪一檔）
                 if (sugBid >= btc.best_ask) mmStats.bidFill++;
                 if (sugAsk <= btc.best_bid) mmStats.askFill++;
-
-                const bidRisk = bidDistance < 2 ? 'high' : (bidDistance < 5 ? 'medium' : 'low');
-                const askRisk = askDistance < 2 ? 'high' : (askDistance < 5 ? 'medium' : 'low');
-                document.getElementById('mmBidRisk').textContent = bidRisk.toUpperCase();
-                document.getElementById('mmBidRisk').className = 'risk-badge risk-' + bidRisk;
-                document.getElementById('mmAskRisk').textContent = askRisk.toUpperCase();
-                document.getElementById('mmAskRisk').className = 'risk-badge risk-' + askRisk;
 
                 // Spread display
                 const spreadDisplay = document.getElementById('mmSpreadDisplay');
@@ -1175,12 +1165,29 @@ async def root():
                         return '<div class="ob-row ask"><div class="bg" style="width:' + pct + '%"></div><span class="ob-price-ask">' + a[0].toLocaleString(undefined, {minimumFractionDigits: 2}) + '</span><span class="ob-size">' + a[1].toFixed(4) + '</span></div>';
                     }).join('');
 
+                    // 計算建議報價會排在第幾檔
+                    // 買單：找第一個價格 < sugBid 的位置
+                    let bidPos = ob.bids.findIndex(b => b[0] < sugBid);
+                    bidPos = bidPos === -1 ? ob.bids.length + 1 : bidPos + 1;
+                    // 賣單：找第一個價格 > sugAsk 的位置
+                    let askPos = ob.asks.findIndex(a => a[0] > sugAsk);
+                    askPos = askPos === -1 ? ob.asks.length + 1 : askPos + 1;
+
+                    const bidPosText = bidPos === 1 ? '最佳價 (第1檔)' : '第 ' + bidPos + ' 檔';
+                    const askPosText = askPos === 1 ? '最佳價 (第1檔)' : '第 ' + askPos + ' 檔';
+                    document.getElementById('mmBidPosition').textContent = bidPosText;
+                    document.getElementById('mmBidPosition').style.color = bidPos <= 2 ? '#10b981' : '#9ca3af';
+                    document.getElementById('mmAskPosition').textContent = askPosText;
+                    document.getElementById('mmAskPosition').style.color = askPos <= 2 ? '#10b981' : '#9ca3af';
+
                     // 計算實際深度
                     var bidDepth = ob.bids.slice(0, 5).reduce((sum, b) => sum + b[1], 0);
                     var askDepth = ob.asks.slice(0, 5).reduce((sum, a) => sum + a[1], 0);
                 } else {
                     var bidDepth = btc.bid_size || 0;
                     var askDepth = btc.ask_size || 0;
+                    document.getElementById('mmBidPosition').textContent = '-';
+                    document.getElementById('mmAskPosition').textContent = '-';
                 }
 
                 // Uptime
