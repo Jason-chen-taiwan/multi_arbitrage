@@ -513,6 +513,64 @@ async def root():
                 outline: none;
                 border-color: #667eea;
             }
+
+            .exchange-card {
+                background: #0f1419;
+                border: 1px solid #2a3347;
+                border-radius: 8px;
+                padding: 15px;
+                margin-bottom: 15px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .exchange-card:hover {
+                border-color: #667eea;
+            }
+            .exchange-info {
+                display: flex;
+                align-items: center;
+                gap: 15px;
+            }
+            .exchange-name {
+                font-size: 18px;
+                font-weight: 600;
+                color: #e4e6eb;
+            }
+            .exchange-type {
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            .exchange-type.dex {
+                background: #10b981;
+                color: white;
+            }
+            .exchange-type.cex {
+                background: #3b82f6;
+                color: white;
+            }
+            .exchange-details {
+                font-size: 12px;
+                color: #9ca3af;
+                margin-top: 5px;
+            }
+            .btn-delete {
+                background: #ef4444;
+                color: white;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+                transition: all 0.3s;
+            }
+            .btn-delete:hover {
+                background: #dc2626;
+            }
         </style>
     </head>
     <body>
@@ -623,7 +681,15 @@ async def root():
             </div>
 
             <div class="section">
-                <h2>⚙️ 配置交易所</h2>
+                <h2>📋 已配置交易所</h2>
+                <p style="color: #9ca3af; margin-bottom: 15px;">當前系統中已配置的交易所</p>
+                <div id="configuredExchanges">
+                    <p style="color: #9ca3af; text-align: center; padding: 20px;">載入中...</p>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>⚙️ 添加新交易所</h2>
                 <p style="color: #9ca3af; margin-bottom: 15px;">添加交易所後自動開始監控</p>
 
                 <div class="config-form">
@@ -866,6 +932,8 @@ async def root():
                         document.getElementById('passphrase').value = '';
                         document.getElementById('privateKey').value = '';
                         document.getElementById('walletAddress').value = '';
+                        // 刷新配置列表
+                        loadConfiguredExchanges();
                     } else {
                         alert('❌ 保存失敗: ' + result.error);
                     }
@@ -910,9 +978,106 @@ async def root():
                 }
             }
 
+            async function loadConfiguredExchanges() {
+                try {
+                    const response = await fetch('/api/config/list');
+                    const data = await response.json();
+                    displayConfiguredExchanges(data);
+                } catch (error) {
+                    console.error('載入配置失敗:', error);
+                }
+            }
+
+            function displayConfiguredExchanges(configs) {
+                const container = document.getElementById('configuredExchanges');
+
+                const allExchanges = [];
+
+                // DEX
+                for (const [key, config] of Object.entries(configs.dex || {})) {
+                    allExchanges.push({
+                        name: key,
+                        displayName: config.name,
+                        type: 'dex',
+                        testnet: config.testnet,
+                        details: config.private_key_masked || config.api_key_masked
+                    });
+                }
+
+                // CEX
+                for (const [key, config] of Object.entries(configs.cex || {})) {
+                    allExchanges.push({
+                        name: key,
+                        displayName: config.name,
+                        type: 'cex',
+                        testnet: config.testnet,
+                        details: config.api_key_masked
+                    });
+                }
+
+                if (allExchanges.length === 0) {
+                    container.innerHTML = `
+                        <p style="color: #9ca3af; text-align: center; padding: 20px;">
+                            尚未配置任何交易所<br>
+                            <span style="font-size: 14px;">請在下方添加交易所</span>
+                        </p>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = allExchanges.map(ex => `
+                    <div class="exchange-card">
+                        <div class="exchange-info">
+                            <div>
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <span class="exchange-name">${ex.displayName}</span>
+                                    <span class="exchange-type ${ex.type}">${ex.type.toUpperCase()}</span>
+                                    ${ex.testnet ? '<span class="status-badge" style="background: #f59e0b;">測試網</span>' : ''}
+                                </div>
+                                <div class="exchange-details">
+                                    Key: ${ex.details}
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn-delete" onclick="deleteExchange('${ex.name}', '${ex.type}')">移除</button>
+                    </div>
+                `).join('');
+            }
+
+            async function deleteExchange(name, type) {
+                if (!confirm(`確定要移除 ${name.toUpperCase()} 嗎？`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/config/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            exchange_name: name,
+                            exchange_type: type
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        alert('✅ 已移除！');
+                        loadConfiguredExchanges();
+                    } else {
+                        alert('❌ 移除失敗: ' + result.error);
+                    }
+                } catch (error) {
+                    alert('❌ 移除失敗: ' + error.message);
+                }
+            }
+
             // 初始化
             connect();
             updateExchangeOptions();
+            loadConfiguredExchanges();
+
+            // 定期刷新配置列表
+            setInterval(loadConfiguredExchanges, 10000);
         </script>
     </body>
     </html>
@@ -931,6 +1096,16 @@ async def websocket_endpoint(websocket: WebSocket):
         connected_clients.remove(websocket)
 
 
+@app.get("/api/config/list")
+async def list_configs():
+    """獲取所有配置"""
+    try:
+        configs = config_manager.get_all_configs()
+        return JSONResponse(configs)
+    except Exception as e:
+        return JSONResponse({'error': str(e)})
+
+
 @app.post("/api/config/save")
 async def save_config(request: Request):
     """保存配置並動態添加到監控"""
@@ -945,6 +1120,25 @@ async def save_config(request: Request):
 
         # 動態添加到監控
         await add_exchange(exchange_name, exchange_type)
+
+        return JSONResponse({'success': True})
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)})
+
+
+@app.post("/api/config/delete")
+async def delete_config(request: Request):
+    """刪除配置並從監控移除"""
+    try:
+        data = await request.json()
+        exchange_name = data['exchange_name']
+        exchange_type = data['exchange_type']
+
+        # 從監控移除
+        await remove_exchange(exchange_name)
+
+        # 刪除配置
+        config_manager.delete_config(exchange_name, exchange_type)
 
         return JSONResponse({'success': True})
     except Exception as e:
