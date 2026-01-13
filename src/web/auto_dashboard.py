@@ -1105,10 +1105,10 @@ async def root():
 
             // ===== 做市商模擬狀態 =====
             const mmSim = {
-                // 配置
-                orderDistanceBps: 10,
-                cancelDistanceBps: 5,
-                rebalanceDistanceBps: 20,
+                // 配置 (掛單距離 8 bps，留 2 bps 緩衝以符合 10 bps uptime 要求)
+                orderDistanceBps: 8,      // 掛單距離 mark price (< 10 bps 才符合 uptime)
+                cancelDistanceBps: 3,     // 價格靠近時撤單（防止成交）
+                rebalanceDistanceBps: 12, // 價格遠離時撤單重掛（超出 10 bps 後再 2 bps）
 
                 // 模擬掛單 (null = 無單)
                 bidOrder: null,  // { price: number, placedAt: timestamp, placedMid: number }

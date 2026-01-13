@@ -42,19 +42,24 @@ class MMConfig:
     """
     做市商配置
 
-    參數說明 (參考 frozen-cherry/standx-mm)：
-    - order_distance_bps: 掛單距離 mark price，需要在 10 bps 內才符合 uptime
+    參數說明：
+    - order_distance_bps: 掛單距離 mark price，需要 < 10 bps 才符合 uptime
     - cancel_distance_bps: 價格接近訂單時撤單，防止成交
     - rebalance_distance_bps: 價格遠離訂單時撤單重掛，獲得更好價格
+
+    Uptime 策略：
+    - 掛單距離 8 bps（留 2 bps 緩衝）
+    - 價格靠近 3 bps 時撤單（避免成交）
+    - 價格遠離 12 bps 時重掛（超出 10 bps uptime 要求後再 2 bps）
     """
     # 交易對
     standx_symbol: str = "BTC-USD"
     binance_symbol: str = "BTC/USDT:USDT"
 
-    # 報價參數 (frozen-cherry 默認值)
-    order_distance_bps: int = 10         # 掛單距離 mark price (需 ≤10 bps 符合 uptime)
-    cancel_distance_bps: int = 5         # 價格靠近時撤單（防止成交）
-    rebalance_distance_bps: int = 20     # 價格遠離時撤單重掛
+    # 報價參數 (優化版：8 bps 掛單距離，留緩衝給 uptime)
+    order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
+    cancel_distance_bps: int = 3         # 價格靠近時撤單（防止成交）
+    rebalance_distance_bps: int = 12     # 價格遠離時撤單重掛 (超出 10 bps 後)
 
     # 倉位參數
     order_size_btc: Decimal = Decimal("0.001")   # 單邊訂單量
