@@ -1288,26 +1288,34 @@ async def root():
                     'ask': '賣'
                 };
 
-                let html = '<table style="width: 100%; border-collapse: collapse;">';
-                html += '<thead><tr style="color: #9ca3af; font-size: 10px; border-bottom: 1px solid #2a3347;">';
-                html += '<th style="text-align: left; padding: 4px;">時間</th>';
-                html += '<th style="text-align: left; padding: 4px;">操作</th>';
-                html += '<th style="text-align: right; padding: 4px;">舊價</th>';
-                html += '<th style="text-align: right; padding: 4px;">新價</th>';
-                html += '<th style="text-align: right; padding: 4px;">Mid</th>';
-                html += '<th style="text-align: left; padding: 4px;">原因</th>';
+                let html = '<table style="width: 100%; border-collapse: collapse; font-size: 10px;">';
+                html += '<thead><tr style="color: #9ca3af; border-bottom: 1px solid #2a3347;">';
+                html += '<th style="text-align: left; padding: 3px;">時間</th>';
+                html += '<th style="text-align: left; padding: 3px;">操作</th>';
+                html += '<th style="text-align: center; padding: 3px;">排位</th>';
+                html += '<th style="text-align: right; padding: 3px;">訂單價</th>';
+                html += '<th style="text-align: right; padding: 3px;">Best Bid</th>';
+                html += '<th style="text-align: right; padding: 3px;">Best Ask</th>';
+                html += '<th style="text-align: left; padding: 3px;">原因</th>';
                 html += '</tr></thead><tbody>';
 
                 mmSim.history.forEach((h, i) => {
                     const bgColor = i % 2 === 0 ? '#0f1419' : 'transparent';
                     const actionColor = actionColors[h.action] || '#9ca3af';
+                    const orderPrice = h.oldPrice || h.newPrice;
+
+                    // 隊列位置顏色：1-3檔紅色警告
+                    const queueColor = h.queuePos && h.queuePos <= 3 ? '#ef4444' : '#9ca3af';
+                    const queueText = h.queuePos ? '第' + h.queuePos + '檔' : '-';
+
                     html += '<tr style="background: ' + bgColor + ';">';
-                    html += '<td style="padding: 4px; color: #9ca3af;">' + h.time + '</td>';
-                    html += '<td style="padding: 4px;"><span style="color: ' + actionColor + ';">' + sideNames[h.side] + actionNames[h.action] + '</span></td>';
-                    html += '<td style="padding: 4px; text-align: right; color: #9ca3af;">' + (h.oldPrice ? '$' + h.oldPrice.toLocaleString() : '-') + '</td>';
-                    html += '<td style="padding: 4px; text-align: right; color: #e5e7eb;">' + (h.newPrice ? '$' + h.newPrice.toLocaleString() : '-') + '</td>';
-                    html += '<td style="padding: 4px; text-align: right; color: #9ca3af;">$' + h.midPrice.toLocaleString() + '</td>';
-                    html += '<td style="padding: 4px; color: #9ca3af; font-size: 10px;">' + h.reason + '</td>';
+                    html += '<td style="padding: 3px; color: #6b7280;">' + h.time + '</td>';
+                    html += '<td style="padding: 3px;"><span style="color: ' + actionColor + ';">' + sideNames[h.side] + actionNames[h.action] + '</span></td>';
+                    html += '<td style="padding: 3px; text-align: center; color: ' + queueColor + '; font-weight: ' + (h.queuePos <= 3 ? '700' : '400') + ';">' + queueText + '</td>';
+                    html += '<td style="padding: 3px; text-align: right; color: #e5e7eb;">' + (orderPrice ? '$' + orderPrice.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
+                    html += '<td style="padding: 3px; text-align: right; color: #10b981;">' + (h.bestBid ? '$' + h.bestBid.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
+                    html += '<td style="padding: 3px; text-align: right; color: #ef4444;">' + (h.bestAsk ? '$' + h.bestAsk.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
+                    html += '<td style="padding: 3px; color: #9ca3af;">' + h.reason + '</td>';
                     html += '</tr>';
                 });
 
@@ -1392,7 +1400,7 @@ async def root():
                 maxHistorySize: 50,
 
                 // 添加歷史記錄
-                addHistory(action, side, oldPrice, newPrice, midPrice, distBps, reason) {
+                addHistory(action, side, oldPrice, newPrice, midPrice, distBps, reason, extra = {}) {
                     const now = new Date();
                     const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
                     this.history.unshift({
@@ -1403,7 +1411,10 @@ async def root():
                         newPrice,    // 新訂單價格
                         midPrice,    // 當時的中間價
                         distBps,     // 觸發時的距離
-                        reason       // 原因說明
+                        reason,      // 原因說明
+                        queuePos: extra.queuePos || null,      // 隊列位置
+                        bestBid: extra.bestBid || null,        // 最佳買價
+                        bestAsk: extra.bestAsk || null,        // 最佳賣價
                     });
                     if (this.history.length > this.maxHistorySize) {
                         this.history.pop();
@@ -1411,7 +1422,7 @@ async def root():
                 },
 
                 // 下單
-                placeOrder(side, midPrice, reason = '初始下單') {
+                placeOrder(side, midPrice, reason = '初始下單', ob = null) {
                     const price = side === 'bid'
                         ? Math.floor(midPrice * (1 - this.orderDistanceBps / 10000) * 100) / 100
                         : Math.ceil(midPrice * (1 + this.orderDistanceBps / 10000) * 100) / 100;
@@ -1420,7 +1431,15 @@ async def root():
                     if (side === 'bid') this.bidOrder = order;
                     else this.askOrder = order;
 
-                    this.addHistory('place', side, null, price, midPrice, this.orderDistanceBps, reason);
+                    // 計算新訂單的隊列位置
+                    const queuePos = this.getQueuePosition(side, price, ob);
+                    const extra = {
+                        queuePos,
+                        bestBid: ob?.bids?.[0]?.[0] || null,
+                        bestAsk: ob?.asks?.[0]?.[0] || null,
+                    };
+
+                    this.addHistory('place', side, null, price, midPrice, this.orderDistanceBps, reason, extra);
                     return order;
                 },
 
@@ -1450,10 +1469,15 @@ async def root():
                     this.lastTickTime = now;
                     this.totalTimeMs += deltaMs;
 
+                    // 取得最佳買賣價
+                    const bestBid = ob?.bids?.[0]?.[0] || null;
+                    const bestAsk = ob?.asks?.[0]?.[0] || null;
+
                     // 處理買單
                     if (this.bidOrder) {
                         const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
                         const queuePos = this.getQueuePosition('bid', this.bidOrder.price, ob);
+                        const extra = { queuePos, bestBid, bestAsk };
 
                         // 優先檢查隊列位置風控
                         if (queuePos && queuePos <= this.queuePositionLimit) {
@@ -1462,21 +1486,21 @@ async def root():
                             this.bidOrder = null;
                             this.bidQueueCancels++;
                             this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '隊列風控 (第' + queuePos + '檔，距離 ' + distBps.toFixed(2) + ' bps)');
+                                '隊列風控 (第' + queuePos + '檔)', extra);
                         } else if (distBps < this.cancelDistanceBps) {
                             const oldPrice = this.bidOrder.price;
                             bidStatus = 'cancel';
                             this.bidOrder = null;
                             this.bidCancels++;
                             this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '價格靠近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ' bps)');
+                                'bps太近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ')', extra);
                         } else if (distBps > this.rebalanceDistanceBps) {
                             const oldPrice = this.bidOrder.price;
                             bidStatus = 'rebalance';
                             this.bidOrder = null;
                             this.bidRebalances++;
                             this.addHistory('rebalance', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '價格遠離 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ' bps)');
+                                'bps太遠 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ')', extra);
                         } else if (distBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         } else {
@@ -1488,6 +1512,7 @@ async def root():
                     if (this.askOrder) {
                         const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
                         const queuePos = this.getQueuePosition('ask', this.askOrder.price, ob);
+                        const extra = { queuePos, bestBid, bestAsk };
 
                         // 優先檢查隊列位置風控
                         if (queuePos && queuePos <= this.queuePositionLimit) {
@@ -1496,21 +1521,21 @@ async def root():
                             this.askOrder = null;
                             this.askQueueCancels++;
                             this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '隊列風控 (第' + queuePos + '檔，距離 ' + distBps.toFixed(2) + ' bps)');
+                                '隊列風控 (第' + queuePos + '檔)', extra);
                         } else if (distBps < this.cancelDistanceBps) {
                             const oldPrice = this.askOrder.price;
                             askStatus = 'cancel';
                             this.askOrder = null;
                             this.askCancels++;
                             this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '價格靠近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ' bps)');
+                                'bps太近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ')', extra);
                         } else if (distBps > this.rebalanceDistanceBps) {
                             const oldPrice = this.askOrder.price;
                             askStatus = 'rebalance';
                             this.askOrder = null;
                             this.askRebalances++;
                             this.addHistory('rebalance', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '價格遠離 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ' bps)');
+                                'bps太遠 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ')', extra);
                         } else if (distBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
                         } else {
@@ -1521,14 +1546,14 @@ async def root():
                     // 沒有訂單則下單，並立即檢查是否合格
                     if (!this.bidOrder) {
                         const reason = (bidStatus === 'cancel' || bidStatus === 'queue_cancel') ? '撤單後重掛' : (bidStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
-                        this.placeOrder('bid', midPrice, reason);
+                        this.placeOrder('bid', midPrice, reason, ob);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         }
                     }
                     if (!this.askOrder) {
                         const reason = (askStatus === 'cancel' || askStatus === 'queue_cancel') ? '撤單後重掛' : (askStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
-                        this.placeOrder('ask', midPrice, reason);
+                        this.placeOrder('ask', midPrice, reason, ob);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
                         }
