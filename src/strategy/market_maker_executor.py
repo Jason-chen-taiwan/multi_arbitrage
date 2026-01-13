@@ -98,6 +98,8 @@ class MarketMakerExecutor:
 
         # 最新價格
         self._last_mid_price: Optional[Decimal] = None
+        self._last_best_bid: Optional[Decimal] = None
+        self._last_best_ask: Optional[Decimal] = None
 
         # 回調
         self._on_status_change: Optional[Callable[[ExecutorStatus], Awaitable[None]]] = None
@@ -235,6 +237,8 @@ class MarketMakerExecutor:
             mid_price = (best_bid + best_ask) / 2
 
             self._last_mid_price = mid_price
+            self._last_best_bid = best_bid
+            self._last_best_ask = best_ask
             self.state.update_price(mid_price)
 
         except Exception as e:
@@ -273,12 +277,12 @@ class MarketMakerExecutor:
         if should_rebalance:
             await self._cancel_all_orders()
 
-        # 掛單
-        await self._place_orders(mid_price)
+        # 掛單（傳遞 best_bid/best_ask 以確保不穿透價差）
+        await self._place_orders(mid_price, best_bid, best_ask)
 
     # ==================== 訂單管理 ====================
 
-    async def _place_orders(self, mid_price: Decimal):
+    async def _place_orders(self, mid_price: Decimal, best_bid: Optional[Decimal] = None, best_ask: Optional[Decimal] = None):
         """掛雙邊訂單"""
         # 檢查倉位限制
         current_position = abs(self.state.get_standx_position())
@@ -287,7 +291,7 @@ class MarketMakerExecutor:
             return
 
         # 計算報價
-        bid_price, ask_price = self._calculate_prices(mid_price)
+        bid_price, ask_price = self._calculate_prices(mid_price, best_bid, best_ask)
 
         # 掛買單
         if not self.state.has_bid_order():
@@ -297,12 +301,49 @@ class MarketMakerExecutor:
         if not self.state.has_ask_order():
             await self._place_ask(ask_price)
 
-    def _calculate_prices(self, mid_price: Decimal) -> tuple[Decimal, Decimal]:
-        """計算報價"""
-        distance = mid_price * Decimal(self.config.order_distance_bps) / Decimal("10000")
+    def _calculate_prices(
+        self,
+        mid_price: Decimal,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None
+    ) -> tuple[Decimal, Decimal]:
+        """
+        計算報價
 
-        bid_price = (mid_price - distance).quantize(Decimal("0.1"))  # BTC 精度
-        ask_price = (mid_price + distance).quantize(Decimal("0.1"))
+        策略：
+        1. 必須在 mark price (mid_price) 的 10 bps 內（符合 uptime 要求）
+        2. 必須不穿透價差（避免立即成交）
+        3. 優先使用 best_bid - tick / best_ask + tick
+        """
+        tick_size = Decimal("0.01")  # 最小價格單位
+        max_distance_bps = Decimal("10")  # uptime 要求的最大距離
+        max_offset = mid_price * max_distance_bps / Decimal("10000")
+
+        # 默認報價：基於訂單簿最佳價格 ± tick
+        if best_bid and best_ask:
+            bid_price = best_bid - tick_size  # 比 best_bid 低，確保不成交
+            ask_price = best_ask + tick_size  # 比 best_ask 高，確保不成交
+        else:
+            # 沒有訂單簿數據時，使用 mid_price 計算
+            distance = mid_price * Decimal(self.config.order_distance_bps) / Decimal("10000")
+            bid_price = mid_price - distance
+            ask_price = mid_price + distance
+
+        # 檢查是否在 10 bps 範圍內，如果不是則調整
+        bid_dist_from_mid = mid_price - bid_price
+        ask_dist_from_mid = ask_price - mid_price
+
+        if bid_dist_from_mid > max_offset:
+            bid_price = mid_price - max_offset
+            logger.debug(f"Adjusted bid to fit 10 bps: {bid_price}")
+
+        if ask_dist_from_mid > max_offset:
+            ask_price = mid_price + max_offset
+            logger.debug(f"Adjusted ask to fit 10 bps: {ask_price}")
+
+        # 量化到合適精度
+        bid_price = bid_price.quantize(Decimal("0.01"))
+        ask_price = ask_price.quantize(Decimal("0.01"))
 
         return bid_price, ask_price
 

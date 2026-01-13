@@ -976,16 +976,21 @@ async def root():
 
                     <!-- 建議報價 -->
                     <div class="card">
-                        <div class="card-title">建議報價 (8 bps)</div>
+                        <div class="card-title">建議報價 (best bid/ask ± 1 tick)</div>
                         <div class="quote-box">
                             <div class="quote-label">建議買價</div>
                             <div class="quote-price quote-bid" id="mmSuggestedBid">-</div>
+                            <div class="quote-status" id="mmBidStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
                         <div class="quote-box">
                             <div class="quote-label">建議賣價</div>
                             <div class="quote-price quote-ask" id="mmSuggestedAsk">-</div>
+                            <div class="quote-status" id="mmAskStatus" style="font-size: 10px; margin-top: 4px;">-</div>
                         </div>
-                        <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;">符合 Uptime 10 bps 要求</p>
+                        <p style="font-size: 10px; color: #9ca3af; text-align: center; margin-top: 8px;">
+                            策略：best_bid - tick / best_ask + tick<br/>
+                            確保不成交且在 10 bps 內
+                        </p>
                     </div>
 
                     <!-- 深度分析 -->
@@ -1216,16 +1221,57 @@ async def root():
                 mmStats.total++;
                 if (spreadBps <= 10) mmStats.qualified++;
 
-                // 建議報價 (8 bps)
-                const halfSpread = midPrice * (8 / 10000) / 2;
-                const sugBid = midPrice - halfSpread;
-                const sugAsk = midPrice + halfSpread;
-                document.getElementById('mmSuggestedBid').textContent = '$' + sugBid.toLocaleString(undefined, {maximumFractionDigits: 2});
-                document.getElementById('mmSuggestedAsk').textContent = '$' + sugAsk.toLocaleString(undefined, {maximumFractionDigits: 2});
+                // 建議報價策略：
+                // 1. 必須在 mark price 的 10 bps 內（符合 uptime 要求）
+                // 2. 必須不穿透價差（避免立即成交）
+                // 3. 使用 8 bps 作為目標距離（預留 2 bps 緩衝）
+                const targetDistanceBps = 8;
+                const maxDistanceBps = 10;  // uptime 要求的最大距離
+                const tickSize = 0.01;  // 最小價格單位
+
+                // 計算範圍
+                const targetOffset = midPrice * (targetDistanceBps / 10000);
+                const maxOffset = midPrice * (maxDistanceBps / 10000);
+
+                // 安全報價計算：
+                // Bid: 在 best_bid 下方一個 tick，但不超過 10 bps
+                // Ask: 在 best_ask 上方一個 tick，但不超過 10 bps
+                let sugBid = btc.best_bid - tickSize;  // 比 best_bid 低一點，確保不成交
+                let sugAsk = btc.best_ask + tickSize;  // 比 best_ask 高一點，確保不成交
+
+                // 檢查是否在 10 bps 範圍內，如果不是則調整
+                const bidDistFromMid = midPrice - sugBid;
+                const askDistFromMid = sugAsk - midPrice;
+
+                // 如果超出 10 bps，拉回到剛好 10 bps
+                if (bidDistFromMid > maxOffset) {
+                    sugBid = midPrice - maxOffset;
+                }
+                if (askDistFromMid > maxOffset) {
+                    sugAsk = midPrice + maxOffset;
+                }
+
+                // 最終安全檢查：確保不會立即成交
+                const bidSafe = sugBid < btc.best_bid;
+                const askSafe = sugAsk > btc.best_ask;
+                const bidInRange = (midPrice - sugBid) <= maxOffset;
+                const askInRange = (sugAsk - midPrice) <= maxOffset;
+
+                // 顯示報價
+                const bidStyle = (bidSafe && bidInRange) ? 'color: #10b981' : 'color: #ef4444';
+                const askStyle = (askSafe && askInRange) ? 'color: #10b981' : 'color: #ef4444';
+                document.getElementById('mmSuggestedBid').innerHTML = '<span style="' + bidStyle + '">$' + sugBid.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
+                document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + sugAsk.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
+
+                // 報價狀態指示
+                const bidStatus = !bidSafe ? '⚠️ 會成交!' : (!bidInRange ? '⚠️ 超出10bps' : '✓ 安全');
+                const askStatus = !askSafe ? '⚠️ 會成交!' : (!askInRange ? '⚠️ 超出10bps' : '✓ 安全');
+                document.getElementById('mmBidStatus').textContent = bidStatus;
+                document.getElementById('mmAskStatus').textContent = askStatus;
 
                 // 報價位置分析（會在訂單簿哪一檔）
-                if (sugBid >= btc.best_ask) mmStats.bidFill++;
-                if (sugAsk <= btc.best_bid) mmStats.askFill++;
+                if (!bidSafe) mmStats.bidFill++;
+                if (!askSafe) mmStats.askFill++;
 
                 // Spread display
                 const spreadDisplay = document.getElementById('mmSpreadDisplay');
