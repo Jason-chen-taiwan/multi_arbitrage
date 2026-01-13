@@ -33,8 +33,9 @@ def print_menu():
     print("📋 可用功能：\n")
     print("  1. 🎯 Dashboard        - Web UI 整合介面（推薦）")
     print("  2. 🔍 終端監控         - 命令行版本（適合伺服器）")
-    print("  3. 🧪 測試連接         - 測試交易所連接狀態")
-    print("  4. 🤖 做市商策略       - 運行自動做市商")
+    print("  3. 🤖 自動套利         - 實時監控並自動執行套利")
+    print("  4. 🧪 測試連接         - 測試交易所連接狀態")
+    print("  5. 💼 做市商策略       - 運行自動做市商")
     print("\n" + "-" * 80 + "\n")
 
 
@@ -255,6 +256,64 @@ def run_test_exchanges():
     print("\n✅ 測試完成\n")
 
 
+def run_auto_arbitrage():
+    """啟動自動套利系統"""
+    print("\n🤖 啟動自動套利系統...\n")
+
+    import subprocess
+
+    print("=" * 60)
+    print("💡 提示：")
+    print("  - 默認為模擬模式（DRY RUN），不會實際下單")
+    print("  - 啟用自動執行請使用: --auto 參數")
+    print("  - 實際交易請使用: --auto --no-dry-run")
+    print("=" * 60)
+    print()
+
+    # 詢問用戶選擇模式
+    print("請選擇運行模式：")
+    print("  1. 僅監控（不執行交易）")
+    print("  2. 自動執行（模擬模式，安全）")
+    print("  3. 自動執行（實際交易，危險！）")
+    print()
+
+    try:
+        choice = input("請選擇 (1-3): ").strip()
+    except KeyboardInterrupt:
+        print("\n\n👋 已取消\n")
+        return
+
+    # 構建命令
+    cmd = [sys.executable, "scripts/run_auto_arbitrage.py"]
+
+    if choice == "1":
+        # 僅監控
+        print("\n✅ 啟動監控模式（不執行交易）\n")
+        cmd.append("--dry-run")
+    elif choice == "2":
+        # 自動執行（模擬）
+        print("\n✅ 啟動自動套利（模擬模式）\n")
+        cmd.extend(["--auto", "--dry-run"])
+    elif choice == "3":
+        # 自動執行（實際）
+        print("\n⚠️  啟動自動套利（實際交易模式）\n")
+        print("⚠️  警告：這將使用真實資金進行交易！")
+        confirm = input("確定繼續嗎？(輸入 'YES' 確認): ")
+        if confirm != 'YES':
+            print("\n❌ 已取消\n")
+            return
+        cmd.extend(["--auto", "--no-dry-run"])
+    else:
+        print("\n❌ 無效的選擇\n")
+        return
+
+    # 運行腳本
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\n\n👋 自動套利已停止\n")
+
+
 def main():
     """主函數"""
     parser = argparse.ArgumentParser(
@@ -265,7 +324,7 @@ def main():
     parser.add_argument(
         'command',
         nargs='?',
-        choices=['dashboard', 'monitor', 'test', 'mm'],
+        choices=['dashboard', 'monitor', 'arbitrage', 'test', 'mm'],
         help='要執行的功能'
     )
 
@@ -278,7 +337,7 @@ def main():
         print_menu()
 
         try:
-            choice = input("請選擇功能 (1-7) 或按 Ctrl+C 退出: ").strip()
+            choice = input("請選擇功能 (1-5) 或按 Ctrl+C 退出: ").strip()
         except KeyboardInterrupt:
             print("\n\n👋 再見！\n")
             return
@@ -286,8 +345,9 @@ def main():
         command_map = {
             '1': 'dashboard',
             '2': 'monitor',
-            '3': 'test',
-            '4': 'mm'
+            '3': 'arbitrage',
+            '4': 'test',
+            '5': 'mm'
         }
 
         args.command = command_map.get(choice)
@@ -300,6 +360,7 @@ def main():
     function_map = {
         'dashboard': run_dashboard,
         'monitor': run_monitor,
+        'arbitrage': run_auto_arbitrage,
         'test': run_test_exchanges,
         'mm': run_market_maker
     }
