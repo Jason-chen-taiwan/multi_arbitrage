@@ -1,0 +1,73 @@
+# Market Maker Configuration
+# 做市商配置文件
+
+# 交易對設定
+symbols:
+  standx: "BTC-USD"
+  binance: "BTC/USDT:USDT"
+
+# 報價參數
+quote:
+  # 掛單距離 mark price (bps)
+  # 需要 < 10 bps 才符合 StandX uptime 要求
+  order_distance_bps: 8
+
+  # 價格靠近時撤單距離 (bps)
+  # 防止訂單被成交
+  cancel_distance_bps: 3
+
+  # 價格遠離時重掛距離 (bps)
+  # 超出 uptime 要求後重新掛單
+  rebalance_distance_bps: 12
+
+# 倉位參數
+position:
+  # 單邊訂單量 (BTC)
+  order_size_btc: 0.001
+
+  # 最大持倉量 (BTC)
+  max_position_btc: 0.01
+
+# 波動率控制
+volatility:
+  # 觀察窗口 (秒)
+  window_sec: 5
+
+  # 波動率閾值 (bps)
+  # 超過此值暫停掛單
+  threshold_bps: 5.0
+
+# 訂單參數
+order:
+  type: "limit"
+  time_in_force: "gtc"
+
+# 執行參數
+execution:
+  # 主循環間隔 (毫秒)
+  tick_interval_ms: 100
+
+  # 是否模擬模式
+  dry_run: true
+
+# 對沖參數
+hedge:
+  # 對沖超時 (毫秒)
+  timeout_ms: 1000
+
+  # 重試次數
+  retry_count: 3
+
+  # 重試間隔 (毫秒)
+  retry_delay_ms: 100
+
+# Uptime Program 參數 (StandX 官方要求)
+uptime:
+  # 訂單必須在 mark price ±10 bps 內才算 qualified
+  max_distance_bps: 10
+
+  # Boosted tier 需要 70% uptime
+  boosted_threshold: 0.70
+
+  # Standard tier 需要 50% uptime
+  standard_threshold: 0.50

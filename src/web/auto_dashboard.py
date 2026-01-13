@@ -29,6 +29,7 @@ from src.strategy.arbitrage_executor import ArbitrageExecutor
 from src.strategy.market_maker_executor import MarketMakerExecutor, MMConfig, ExecutorStatus
 from src.strategy.hedge_engine import HedgeEngine, HedgeConfig
 from src.strategy.mm_state import MMState, FillEvent
+from src.utils.mm_config_manager import get_mm_config, MMConfigManager
 
 # 全局變量
 monitor: Optional[MultiExchangeMonitor] = None
@@ -1103,24 +1104,58 @@ async def root():
             let ws = null;
             let systemStartTime = null;
 
+            // ===== 做市商配置 (從 API 加載) =====
+            let mmConfig = null;
+
+            async function loadMMConfig() {
+                try {
+                    const res = await fetch('/api/mm/config');
+                    mmConfig = await res.json();
+                    console.log('Loaded MM config:', mmConfig);
+                    // 更新 mmSim 配置
+                    if (mmConfig.quote) {
+                        mmSim.orderDistanceBps = mmConfig.quote.order_distance_bps;
+                        mmSim.cancelDistanceBps = mmConfig.quote.cancel_distance_bps;
+                        mmSim.rebalanceDistanceBps = mmConfig.quote.rebalance_distance_bps;
+                    }
+                    if (mmConfig.uptime) {
+                        mmSim.uptimeMaxDistanceBps = mmConfig.uptime.max_distance_bps;
+                    }
+                    // 更新 UI 顯示
+                    updateMMConfigDisplay();
+                } catch (e) {
+                    console.error('Failed to load MM config:', e);
+                }
+            }
+
+            function updateMMConfigDisplay() {
+                if (!mmConfig) return;
+                // 更新輸入框默認值
+                const orderDistInput = document.getElementById('mmOrderDistance');
+                if (orderDistInput && mmConfig.quote) {
+                    orderDistInput.value = mmConfig.quote.order_distance_bps;
+                }
+            }
+
             // ===== 做市商模擬狀態 =====
             const mmSim = {
-                // 配置 (掛單距離 8 bps，留 2 bps 緩衝以符合 10 bps uptime 要求)
-                orderDistanceBps: 8,      // 掛單距離 mark price (< 10 bps 才符合 uptime)
-                cancelDistanceBps: 3,     // 價格靠近時撤單（防止成交）
-                rebalanceDistanceBps: 12, // 價格遠離時撤單重掛（超出 10 bps 後再 2 bps）
+                // 配置 (從 API 加載後更新)
+                orderDistanceBps: 8,
+                cancelDistanceBps: 3,
+                rebalanceDistanceBps: 12,
+                uptimeMaxDistanceBps: 10,
 
                 // 模擬掛單 (null = 無單)
-                bidOrder: null,  // { price: number, placedAt: timestamp, placedMid: number }
+                bidOrder: null,
                 askOrder: null,
 
                 // 統計
                 totalTicks: 0,
-                qualifiedTicks: 0,      // 雙邊都在 10 bps 內的 tick 數
-                bidCancels: 0,          // 買單撤單次數
-                askCancels: 0,          // 賣單撤單次數
-                bidRebalances: 0,       // 買單重掛次數
-                askRebalances: 0,       // 賣單重掛次數
+                qualifiedTicks: 0,
+                bidCancels: 0,
+                askCancels: 0,
+                bidRebalances: 0,
+                askRebalances: 0,
                 startTime: Date.now(),
 
                 // 下單
@@ -1146,16 +1181,14 @@ async def root():
                         const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
 
                         if (distBps < this.cancelDistanceBps) {
-                            // 太近，撤單
                             bidStatus = 'cancel';
                             this.bidOrder = null;
                             this.bidCancels++;
                         } else if (distBps > this.rebalanceDistanceBps) {
-                            // 太遠，重掛
                             bidStatus = 'rebalance';
                             this.bidOrder = null;
                             this.bidRebalances++;
-                        } else if (distBps <= 10) {
+                        } else if (distBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         } else {
                             bidStatus = 'out_of_range';
@@ -1174,7 +1207,7 @@ async def root():
                             askStatus = 'rebalance';
                             this.askOrder = null;
                             this.askRebalances++;
-                        } else if (distBps <= 10) {
+                        } else if (distBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
                         } else {
                             askStatus = 'out_of_range';
@@ -1185,7 +1218,7 @@ async def root():
                     if (!this.bidOrder) this.placeOrder('bid', midPrice);
                     if (!this.askOrder) this.placeOrder('ask', midPrice);
 
-                    // 統計合格 tick
+                    // 統計合格 tick (雙邊都符合)
                     if (bidStatus === 'qualified' && askStatus === 'qualified') {
                         this.qualifiedTicks++;
                     }
@@ -1213,6 +1246,18 @@ async def root():
                     this.bidRebalances = 0;
                     this.askRebalances = 0;
                     this.startTime = Date.now();
+                },
+
+                // 更新配置
+                updateConfig(config) {
+                    if (config.quote) {
+                        this.orderDistanceBps = config.quote.order_distance_bps;
+                        this.cancelDistanceBps = config.quote.cancel_distance_bps;
+                        this.rebalanceDistanceBps = config.quote.rebalance_distance_bps;
+                    }
+                    if (config.uptime) {
+                        this.uptimeMaxDistanceBps = config.uptime.max_distance_bps;
+                    }
                 }
             };
 
@@ -1686,6 +1731,7 @@ async def root():
             connect();
             updateExchangeOptions();
             loadConfiguredExchanges();
+            loadMMConfig();  // 加載做市商配置
         </script>
     </body>
     </html>
@@ -1938,6 +1984,39 @@ async def get_mm_positions():
         return JSONResponse(serialize_for_json(positions))
     except Exception as e:
         return JSONResponse({'error': str(e)})
+
+
+@app.get("/api/mm/config")
+async def get_mm_config_api():
+    """獲取做市商配置"""
+    try:
+        config_manager = get_mm_config()
+        return JSONResponse(config_manager.get_dict())
+    except Exception as e:
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post("/api/mm/config")
+async def update_mm_config_api(request: Request):
+    """更新做市商配置"""
+    try:
+        data = await request.json()
+        config_manager = get_mm_config()
+        config_manager.update(data, save=True)
+        return JSONResponse({'success': True, 'config': config_manager.get_dict()})
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.post("/api/mm/config/reload")
+async def reload_mm_config_api():
+    """重新加載做市商配置"""
+    try:
+        config_manager = get_mm_config()
+        config_manager.reload()
+        return JSONResponse({'success': True, 'config': config_manager.get_dict()})
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
 
 if __name__ == "__main__":
