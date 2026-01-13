@@ -40,20 +40,25 @@ def print_menu():
 
 
 def run_dashboard():
-    """啟動 Dashboard"""
-    print("\n🎯 啟動 Dashboard...\n")
+    """啟動自動化 Dashboard"""
+    print("\n🎯 啟動自動化套利控制台...\n")
     print("=" * 60)
-    print("功能包含：")
-    print("  📊 系統總覽 - 實時統計和套利機會")
-    print("  💰 套利監控 - 跨交易所套利詳情")
-    print("  🏦 交易所狀態 - 所有交易所價格")
-    print("  ⚙️  配置管理 - 管理 API 憑證")
+    print("✨ 自動化特性：")
+    print("  🚀 啟動即監控 - 自動載入所有已配置交易所")
+    print("  ⚡ 配置即生效 - 添加交易所後立即開始監控")
+    print("  📊 實時更新 - 1秒更新市場數據和套利機會")
+    print("  🎛️  動態控制 - 在 Web UI 中切換自動執行/模擬模式")
     print("=" * 60)
-    from src.web.unified_dashboard import app
+    from src.web.auto_dashboard import app
     import uvicorn
 
     print("\n📍 訪問地址：http://localhost:8888")
-    print("⚠️  按 Ctrl+C 停止服務\n")
+    print("\n💡 提示：")
+    print("  - 系統啟動後自動開始監控所有已配置交易所")
+    print("  - 在 Web UI 中添加交易所後立即生效")
+    print("  - 默認為「監控模式」，可在 UI 中開啟「自動執行」")
+    print("  - 默認為「模擬模式」，測試穩定後可切換「實際交易」")
+    print("\n⚠️  按 Ctrl+C 停止服務\n")
 
     try:
         uvicorn.run(app, host="127.0.0.1", port=8888, log_level="info")
