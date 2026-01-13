@@ -1089,6 +1089,14 @@ async def root():
                         <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=價格太近 / 重掛=價格太遠</p>
                     </div>
 
+                    <!-- 訂單操作歷史 -->
+                    <div class="card">
+                        <div class="card-title">操作歷史 <span style="font-size: 10px; color: #9ca3af;">(最近 50 筆)</span></div>
+                        <div id="mmHistoryList" style="max-height: 300px; overflow-y: auto; font-size: 11px;">
+                            <div style="color: #9ca3af; text-align: center; padding: 20px;">等待訂單操作...</div>
+                        </div>
+                    </div>
+
                     <!-- Maker Hours -->
                     <div class="card">
                         <div class="card-title">Maker Hours 預估</div>
@@ -1250,6 +1258,55 @@ async def root():
                 }
             }
 
+            // 更新歷史記錄顯示
+            function updateHistoryDisplay() {
+                const container = document.getElementById('mmHistoryList');
+                if (!container || mmSim.history.length === 0) return;
+
+                const actionColors = {
+                    'cancel': '#ef4444',     // 紅色 - 撤單
+                    'rebalance': '#f59e0b',  // 黃色 - 重掛
+                    'place': '#10b981'       // 綠色 - 下單
+                };
+
+                const actionNames = {
+                    'cancel': '撤單',
+                    'rebalance': '重掛',
+                    'place': '下單'
+                };
+
+                const sideNames = {
+                    'bid': '買',
+                    'ask': '賣'
+                };
+
+                let html = '<table style="width: 100%; border-collapse: collapse;">';
+                html += '<thead><tr style="color: #9ca3af; font-size: 10px; border-bottom: 1px solid #2a3347;">';
+                html += '<th style="text-align: left; padding: 4px;">時間</th>';
+                html += '<th style="text-align: left; padding: 4px;">操作</th>';
+                html += '<th style="text-align: right; padding: 4px;">舊價</th>';
+                html += '<th style="text-align: right; padding: 4px;">新價</th>';
+                html += '<th style="text-align: right; padding: 4px;">Mid</th>';
+                html += '<th style="text-align: left; padding: 4px;">原因</th>';
+                html += '</tr></thead><tbody>';
+
+                mmSim.history.forEach((h, i) => {
+                    const bgColor = i % 2 === 0 ? '#0f1419' : 'transparent';
+                    const actionColor = actionColors[h.action] || '#9ca3af';
+                    html += '<tr style="background: ' + bgColor + ';">';
+                    html += '<td style="padding: 4px; color: #9ca3af;">' + h.time + '</td>';
+                    html += '<td style="padding: 4px;"><span style="color: ' + actionColor + ';">' + sideNames[h.side] + actionNames[h.action] + '</span></td>';
+                    html += '<td style="padding: 4px; text-align: right; color: #9ca3af;">' + (h.oldPrice ? '$' + h.oldPrice.toLocaleString() : '-') + '</td>';
+                    html += '<td style="padding: 4px; text-align: right; color: #e5e7eb;">' + (h.newPrice ? '$' + h.newPrice.toLocaleString() : '-') + '</td>';
+                    html += '<td style="padding: 4px; text-align: right; color: #9ca3af;">$' + h.midPrice.toLocaleString() + '</td>';
+                    html += '<td style="padding: 4px; color: #9ca3af; font-size: 10px;">' + h.reason + '</td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            }
+
             function updateMMConfigDisplay() {
                 if (!mmConfig) return;
 
@@ -1316,8 +1373,31 @@ async def root():
                 bidRebalances: 0,
                 askRebalances: 0,
 
+                // 歷史記錄 (最多保留 50 條)
+                history: [],
+                maxHistorySize: 50,
+
+                // 添加歷史記錄
+                addHistory(action, side, oldPrice, newPrice, midPrice, distBps, reason) {
+                    const now = new Date();
+                    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
+                    this.history.unshift({
+                        time: timeStr,
+                        action,      // 'cancel' | 'rebalance' | 'place'
+                        side,        // 'bid' | 'ask'
+                        oldPrice,    // 舊訂單價格 (撤單時)
+                        newPrice,    // 新訂單價格
+                        midPrice,    // 當時的中間價
+                        distBps,     // 觸發時的距離
+                        reason       // 原因說明
+                    });
+                    if (this.history.length > this.maxHistorySize) {
+                        this.history.pop();
+                    }
+                },
+
                 // 下單
-                placeOrder(side, midPrice) {
+                placeOrder(side, midPrice, reason = '初始下單') {
                     const price = side === 'bid'
                         ? Math.floor(midPrice * (1 - this.orderDistanceBps / 10000) * 100) / 100
                         : Math.ceil(midPrice * (1 + this.orderDistanceBps / 10000) * 100) / 100;
@@ -1325,6 +1405,8 @@ async def root():
                     const order = { price, placedAt: Date.now(), placedMid: midPrice };
                     if (side === 'bid') this.bidOrder = order;
                     else this.askOrder = order;
+
+                    this.addHistory('place', side, null, price, midPrice, this.orderDistanceBps, reason);
                     return order;
                 },
 
@@ -1344,13 +1426,19 @@ async def root():
                         const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
 
                         if (distBps < this.cancelDistanceBps) {
+                            const oldPrice = this.bidOrder.price;
                             bidStatus = 'cancel';
                             this.bidOrder = null;
                             this.bidCancels++;
+                            this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '價格靠近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ' bps)');
                         } else if (distBps > this.rebalanceDistanceBps) {
+                            const oldPrice = this.bidOrder.price;
                             bidStatus = 'rebalance';
                             this.bidOrder = null;
                             this.bidRebalances++;
+                            this.addHistory('rebalance', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '價格遠離 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ' bps)');
                         } else if (distBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         } else {
@@ -1363,13 +1451,19 @@ async def root():
                         const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
 
                         if (distBps < this.cancelDistanceBps) {
+                            const oldPrice = this.askOrder.price;
                             askStatus = 'cancel';
                             this.askOrder = null;
                             this.askCancels++;
+                            this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '價格靠近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ' bps)');
                         } else if (distBps > this.rebalanceDistanceBps) {
+                            const oldPrice = this.askOrder.price;
                             askStatus = 'rebalance';
                             this.askOrder = null;
                             this.askRebalances++;
+                            this.addHistory('rebalance', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
+                                '價格遠離 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ' bps)');
                         } else if (distBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
                         } else {
@@ -1379,13 +1473,15 @@ async def root():
 
                     // 沒有訂單則下單，並立即檢查是否合格
                     if (!this.bidOrder) {
-                        this.placeOrder('bid', midPrice);
+                        const reason = bidStatus === 'cancel' ? '撤單後重掛' : (bidStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        this.placeOrder('bid', midPrice, reason);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             bidStatus = 'qualified';
                         }
                     }
                     if (!this.askOrder) {
-                        this.placeOrder('ask', midPrice);
+                        const reason = askStatus === 'cancel' ? '撤單後重掛' : (askStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        this.placeOrder('ask', midPrice, reason);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
                             askStatus = 'qualified';
                         }
@@ -1420,6 +1516,7 @@ async def root():
                     this.askCancels = 0;
                     this.bidRebalances = 0;
                     this.askRebalances = 0;
+                    this.history = [];
                 },
 
                 // 獲取 Uptime 百分比
@@ -1689,6 +1786,9 @@ async def root():
                 // 撤單次數和重掛次數
                 document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askRebalances;
+
+                // 更新歷史記錄顯示
+                updateHistoryDisplay();
 
                 // Maker Hours - 使用配置中的訂單大小
                 // StandX 規則：Maker Hours = min(bid_size, ask_size, 2) / 2 * multiplier
