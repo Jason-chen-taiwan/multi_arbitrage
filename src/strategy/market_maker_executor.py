@@ -39,26 +39,33 @@ class ExecutorStatus(Enum):
 
 @dataclass
 class MMConfig:
-    """做市商配置"""
+    """
+    做市商配置
+
+    參數說明 (參考 frozen-cherry/standx-mm)：
+    - order_distance_bps: 掛單距離 mark price，需要在 10 bps 內才符合 uptime
+    - cancel_distance_bps: 價格接近訂單時撤單，防止成交
+    - rebalance_distance_bps: 價格遠離訂單時撤單重掛，獲得更好價格
+    """
     # 交易對
     standx_symbol: str = "BTC-USD"
     binance_symbol: str = "BTC/USDT:USDT"
 
-    # 報價參數
-    order_distance_bps: int = 8          # 掛單距離中間價 (basis points)
-    cancel_distance_bps: int = 3         # 價格靠近時撤單
-    rebalance_distance_bps: int = 15     # 價格遠離時重掛
+    # 報價參數 (frozen-cherry 默認值)
+    order_distance_bps: int = 10         # 掛單距離 mark price (需 ≤10 bps 符合 uptime)
+    cancel_distance_bps: int = 5         # 價格靠近時撤單（防止成交）
+    rebalance_distance_bps: int = 20     # 價格遠離時撤單重掛
 
     # 倉位參數
     order_size_btc: Decimal = Decimal("0.001")   # 單邊訂單量
     max_position_btc: Decimal = Decimal("0.01")  # 最大持倉
 
-    # 波動率控制
+    # 波動率控制 (frozen-cherry 默認值)
     volatility_window_sec: int = 5       # 波動率窗口
-    volatility_threshold_bps: float = 10.0  # 超過則暫停
+    volatility_threshold_bps: float = 5.0  # 超過則暫停（更保守）
 
     # 訂單參數
-    order_type: str = "post_only"        # 使用 post_only 避免吃單
+    order_type: str = "limit"            # 使用 limit 單
     time_in_force: str = "gtc"           # good-til-cancel
 
     # 執行參數
@@ -310,40 +317,34 @@ class MarketMakerExecutor:
         """
         計算報價
 
-        策略：
-        1. 必須在 mark price (mid_price) 的 10 bps 內（符合 uptime 要求）
-        2. 必須不穿透價差（避免立即成交）
-        3. 優先使用 best_bid - tick / best_ask + tick
+        策略 (參考 frozen-cherry/standx-mm)：
+        1. 從 mark price (mid_price) 計算固定距離的報價
+        2. 使用 order_distance_bps 參數（默認 10 bps = 0.1%）
+        3. 依靠 cancel_distance_bps 在價格接近時撤單來避免成交
+
+        計算公式：
+        - buy_price = mid_price * (1 - order_distance_bps / 10000)
+        - sell_price = mid_price * (1 + order_distance_bps / 10000)
         """
-        tick_size = Decimal("0.01")  # 最小價格單位
-        max_distance_bps = Decimal("10")  # uptime 要求的最大距離
-        max_offset = mid_price * max_distance_bps / Decimal("10000")
+        # 從 mark price 計算報價
+        distance_ratio = Decimal(self.config.order_distance_bps) / Decimal("10000")
 
-        # 默認報價：基於訂單簿最佳價格 ± tick
-        if best_bid and best_ask:
-            bid_price = best_bid - tick_size  # 比 best_bid 低，確保不成交
-            ask_price = best_ask + tick_size  # 比 best_ask 高，確保不成交
-        else:
-            # 沒有訂單簿數據時，使用 mid_price 計算
-            distance = mid_price * Decimal(self.config.order_distance_bps) / Decimal("10000")
-            bid_price = mid_price - distance
-            ask_price = mid_price + distance
+        bid_price = mid_price * (Decimal("1") - distance_ratio)
+        ask_price = mid_price * (Decimal("1") + distance_ratio)
 
-        # 檢查是否在 10 bps 範圍內，如果不是則調整
-        bid_dist_from_mid = mid_price - bid_price
-        ask_dist_from_mid = ask_price - mid_price
+        # 對齊到 tick size (floor for buy, ceil for sell)
+        import math
+        tick_size = Decimal("0.01")
 
-        if bid_dist_from_mid > max_offset:
-            bid_price = mid_price - max_offset
-            logger.debug(f"Adjusted bid to fit 10 bps: {bid_price}")
+        # Floor for buy (更保守的買價)
+        bid_price = Decimal(str(math.floor(float(bid_price) / float(tick_size)) * float(tick_size)))
+        # Ceil for sell (更保守的賣價)
+        ask_price = Decimal(str(math.ceil(float(ask_price) / float(tick_size)) * float(tick_size)))
 
-        if ask_dist_from_mid > max_offset:
-            ask_price = mid_price + max_offset
-            logger.debug(f"Adjusted ask to fit 10 bps: {ask_price}")
-
-        # 量化到合適精度
-        bid_price = bid_price.quantize(Decimal("0.01"))
-        ask_price = ask_price.quantize(Decimal("0.01"))
+        logger.debug(
+            f"Quote prices: bid={bid_price}, ask={ask_price}, "
+            f"mid={mid_price}, distance={self.config.order_distance_bps}bps"
+        )
 
         return bid_price, ask_price
 
