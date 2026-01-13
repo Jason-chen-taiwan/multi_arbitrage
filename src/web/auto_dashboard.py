@@ -1010,14 +1010,14 @@ async def root():
 
                     <!-- 模擬統計 -->
                     <div class="card">
-                        <div class="card-title">模擬統計</div>
+                        <div class="card-title">訂單模擬</div>
                         <div class="sim-grid">
-                            <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0</div><div class="sim-label">總報價</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0</div><div class="sim-label">總 Ticks</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">符合率</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0%</div><div class="sim-label">買成交率</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0%</div><div class="sim-label">賣成交率</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0</div><div class="sim-label">買撤/重掛</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0</div><div class="sim-label">賣撤/重掛</div></div>
                         </div>
-                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">模擬 2 BTC 下單統計</p>
+                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=價格太近 / 重掛=價格太遠</p>
                     </div>
 
                     <!-- Maker Hours -->
@@ -1102,7 +1102,119 @@ async def root():
         <script>
             let ws = null;
             let systemStartTime = null;
-            let mmStats = { total: 0, qualified: 0, bidFill: 0, askFill: 0, startTime: Date.now() };
+
+            // ===== 做市商模擬狀態 =====
+            const mmSim = {
+                // 配置
+                orderDistanceBps: 10,
+                cancelDistanceBps: 5,
+                rebalanceDistanceBps: 20,
+
+                // 模擬掛單 (null = 無單)
+                bidOrder: null,  // { price: number, placedAt: timestamp, placedMid: number }
+                askOrder: null,
+
+                // 統計
+                totalTicks: 0,
+                qualifiedTicks: 0,      // 雙邊都在 10 bps 內的 tick 數
+                bidCancels: 0,          // 買單撤單次數
+                askCancels: 0,          // 賣單撤單次數
+                bidRebalances: 0,       // 買單重掛次數
+                askRebalances: 0,       // 賣單重掛次數
+                startTime: Date.now(),
+
+                // 下單
+                placeOrder(side, midPrice) {
+                    const price = side === 'bid'
+                        ? Math.floor(midPrice * (1 - this.orderDistanceBps / 10000) * 100) / 100
+                        : Math.ceil(midPrice * (1 + this.orderDistanceBps / 10000) * 100) / 100;
+
+                    const order = { price, placedAt: Date.now(), placedMid: midPrice };
+                    if (side === 'bid') this.bidOrder = order;
+                    else this.askOrder = order;
+                    return order;
+                },
+
+                // 檢查並處理訂單
+                tick(midPrice) {
+                    this.totalTicks++;
+                    let bidStatus = 'none';
+                    let askStatus = 'none';
+
+                    // 處理買單
+                    if (this.bidOrder) {
+                        const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
+
+                        if (distBps < this.cancelDistanceBps) {
+                            // 太近，撤單
+                            bidStatus = 'cancel';
+                            this.bidOrder = null;
+                            this.bidCancels++;
+                        } else if (distBps > this.rebalanceDistanceBps) {
+                            // 太遠，重掛
+                            bidStatus = 'rebalance';
+                            this.bidOrder = null;
+                            this.bidRebalances++;
+                        } else if (distBps <= 10) {
+                            bidStatus = 'qualified';
+                        } else {
+                            bidStatus = 'out_of_range';
+                        }
+                    }
+
+                    // 處理賣單
+                    if (this.askOrder) {
+                        const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
+
+                        if (distBps < this.cancelDistanceBps) {
+                            askStatus = 'cancel';
+                            this.askOrder = null;
+                            this.askCancels++;
+                        } else if (distBps > this.rebalanceDistanceBps) {
+                            askStatus = 'rebalance';
+                            this.askOrder = null;
+                            this.askRebalances++;
+                        } else if (distBps <= 10) {
+                            askStatus = 'qualified';
+                        } else {
+                            askStatus = 'out_of_range';
+                        }
+                    }
+
+                    // 沒有訂單則下單
+                    if (!this.bidOrder) this.placeOrder('bid', midPrice);
+                    if (!this.askOrder) this.placeOrder('ask', midPrice);
+
+                    // 統計合格 tick
+                    if (bidStatus === 'qualified' && askStatus === 'qualified') {
+                        this.qualifiedTicks++;
+                    }
+
+                    return { bidStatus, askStatus };
+                },
+
+                // 計算距離
+                getDistance(side, midPrice) {
+                    const order = side === 'bid' ? this.bidOrder : this.askOrder;
+                    if (!order) return null;
+                    return side === 'bid'
+                        ? (midPrice - order.price) / midPrice * 10000
+                        : (order.price - midPrice) / midPrice * 10000;
+                },
+
+                // 重置
+                reset() {
+                    this.bidOrder = null;
+                    this.askOrder = null;
+                    this.totalTicks = 0;
+                    this.qualifiedTicks = 0;
+                    this.bidCancels = 0;
+                    this.askCancels = 0;
+                    this.bidRebalances = 0;
+                    this.askRebalances = 0;
+                    this.startTime = Date.now();
+                }
+            };
 
             // ===== 分頁切換 =====
             function switchPage(page) {
@@ -1214,51 +1326,63 @@ async def root():
                 spreadEl.textContent = spreadBps.toFixed(1);
                 spreadEl.className = 'mm-stat-value ' + (spreadBps <= 10 ? 'text-green' : (spreadBps <= 15 ? 'text-yellow' : 'text-red'));
 
-                const runtime = Math.floor((Date.now() - mmStats.startTime) / 60000);
+                const runtime = Math.floor((Date.now() - mmSim.startTime) / 60000);
                 document.getElementById('mmRuntime').textContent = runtime + 'm';
 
-                // 模擬統計更新
-                mmStats.total++;
-                if (spreadBps <= 10) mmStats.qualified++;
+                // ===== 使用 mmSim 模擬訂單生命週期 =====
+                const simResult = mmSim.tick(midPrice);
 
-                // 建議報價策略 (參考 frozen-cherry/standx-mm)：
-                // 1. 從 mark price (mid price) 計算固定距離報價
-                // 2. 依靠 cancel_distance_bps 機制在價格接近時撤單避免成交
-                // 3. 使用 10 bps 距離（剛好符合 uptime 要求邊界）
-                const orderDistanceBps = 10;  // 掛單距離
-                const cancelDistanceBps = 5;  // 撤單距離
+                // 顯示實際掛單價格（不是理論價格）
+                const bidOrder = mmSim.bidOrder;
+                const askOrder = mmSim.askOrder;
 
-                // 計算報價 (frozen-cherry 策略)
-                // buy_price = mid_price * (1 - order_distance_bps / 10000)
-                // sell_price = mid_price * (1 + order_distance_bps / 10000)
-                const sugBid = Math.floor(midPrice * (1 - orderDistanceBps / 10000) * 100) / 100;
-                const sugAsk = Math.ceil(midPrice * (1 + orderDistanceBps / 10000) * 100) / 100;
+                // 計算當前距離
+                const bidDistBps = mmSim.getDistance('bid', midPrice);
+                const askDistBps = mmSim.getDistance('ask', midPrice);
 
-                // 計算當前訂單與 mark price 的距離
-                const bidDistBps = (midPrice - sugBid) / midPrice * 10000;
-                const askDistBps = (sugAsk - midPrice) / midPrice * 10000;
+                // 顯示報價和狀態
+                if (bidOrder) {
+                    const bidInRange = bidDistBps <= 10;
+                    const bidStyle = bidInRange ? 'color: #10b981' : 'color: #ef4444';
+                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="' + bidStyle + '">$' + bidOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
 
-                // 檢查狀態
-                const bidInRange = bidDistBps <= 10;  // 符合 uptime 要求
-                const askInRange = askDistBps <= 10;
-                const bidNeedCancel = bidDistBps < cancelDistanceBps;  // 太近需要撤單
-                const askNeedCancel = askDistBps < cancelDistanceBps;
+                    // 狀態指示
+                    let bidStatusText = '';
+                    if (simResult.bidStatus === 'cancel') {
+                        bidStatusText = '⚡ 撤單 (太近)';
+                    } else if (simResult.bidStatus === 'rebalance') {
+                        bidStatusText = '🔄 重掛 (太遠)';
+                    } else if (bidInRange) {
+                        bidStatusText = '✓ ' + bidDistBps.toFixed(1) + ' bps';
+                    } else {
+                        bidStatusText = '⚠️ 超出10bps (' + bidDistBps.toFixed(1) + ')';
+                    }
+                    document.getElementById('mmBidStatus').textContent = bidStatusText;
+                } else {
+                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="color: #9ca3af">下單中...</span>';
+                    document.getElementById('mmBidStatus').textContent = '新掛單';
+                }
 
-                // 顯示報價
-                const bidStyle = bidInRange ? 'color: #10b981' : 'color: #ef4444';
-                const askStyle = askInRange ? 'color: #10b981' : 'color: #ef4444';
-                document.getElementById('mmSuggestedBid').innerHTML = '<span style="' + bidStyle + '">$' + sugBid.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
-                document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + sugAsk.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
+                if (askOrder) {
+                    const askInRange = askDistBps <= 10;
+                    const askStyle = askInRange ? 'color: #10b981' : 'color: #ef4444';
+                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + askOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
 
-                // 報價狀態指示
-                const bidStatus = bidNeedCancel ? '⚡ 價格太近!' : (bidInRange ? '✓ ' + bidDistBps.toFixed(1) + ' bps' : '⚠️ 超出10bps');
-                const askStatus = askNeedCancel ? '⚡ 價格太近!' : (askInRange ? '✓ ' + askDistBps.toFixed(1) + ' bps' : '⚠️ 超出10bps');
-                document.getElementById('mmBidStatus').textContent = bidStatus;
-                document.getElementById('mmAskStatus').textContent = askStatus;
-
-                // 統計：實際成交風險（價格在撤單距離內）
-                if (bidNeedCancel) mmStats.bidFill++;
-                if (askNeedCancel) mmStats.askFill++;
+                    let askStatusText = '';
+                    if (simResult.askStatus === 'cancel') {
+                        askStatusText = '⚡ 撤單 (太近)';
+                    } else if (simResult.askStatus === 'rebalance') {
+                        askStatusText = '🔄 重掛 (太遠)';
+                    } else if (askInRange) {
+                        askStatusText = '✓ ' + askDistBps.toFixed(1) + ' bps';
+                    } else {
+                        askStatusText = '⚠️ 超出10bps (' + askDistBps.toFixed(1) + ')';
+                    }
+                    document.getElementById('mmAskStatus').textContent = askStatusText;
+                } else {
+                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="color: #9ca3af">下單中...</span>';
+                    document.getElementById('mmAskStatus').textContent = '新掛單';
+                }
 
                 // Spread display
                 const spreadDisplay = document.getElementById('mmSpreadDisplay');
@@ -1305,8 +1429,8 @@ async def root():
                     document.getElementById('mmAskPosition').textContent = '-';
                 }
 
-                // Uptime
-                const uptimePct = mmStats.total > 0 ? (mmStats.qualified / mmStats.total * 100) : 0;
+                // Uptime - 使用 mmSim 統計
+                const uptimePct = mmSim.totalTicks > 0 ? (mmSim.qualifiedTicks / mmSim.totalTicks * 100) : 0;
                 document.getElementById('mmUptimePct').textContent = uptimePct.toFixed(1) + '%';
 
                 const tier = uptimePct >= 70 ? 'boosted' : (uptimePct >= 50 ? 'standard' : 'inactive');
@@ -1316,11 +1440,12 @@ async def root():
                 document.getElementById('mmUptimeTier').className = 'uptime-tier tier-' + tier;
                 document.getElementById('mmMultiplier').textContent = multiplier + 'x';
 
-                // 模擬統計顯示
-                document.getElementById('mmTotalQuotes').textContent = mmStats.total;
+                // 模擬統計顯示 - 使用 mmSim 的訂單操作統計
+                document.getElementById('mmTotalQuotes').textContent = mmSim.totalTicks;
                 document.getElementById('mmQualifiedRate').textContent = uptimePct.toFixed(1) + '%';
-                document.getElementById('mmBidFillRate').textContent = (mmStats.total > 0 ? mmStats.bidFill / mmStats.total * 100 : 0).toFixed(1) + '%';
-                document.getElementById('mmAskFillRate').textContent = (mmStats.total > 0 ? mmStats.askFill / mmStats.total * 100 : 0).toFixed(1) + '%';
+                // 撤單次數和重掛次數 (比「成交率」更有意義)
+                document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidRebalances;
+                document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askRebalances;
 
                 // Maker Hours
                 const orderSize = 2.0;
@@ -1360,10 +1485,11 @@ async def root():
                     netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
                 }
 
-                // 更新做市商執行器統計
-                if (data.mm_executor && data.mm_executor.stats) {
-                    document.getElementById('mmTotalQuotes').textContent = data.mm_executor.stats.total_quotes || 0;
-                }
+                // 更新做市商執行器統計 (實盤運行時使用後端數據)
+                // 注意：目前主要使用前端模擬 (mmSim)，後端數據暫不覆蓋
+                // if (data.mm_executor && data.mm_executor.stats) {
+                //     document.getElementById('mmTotalQuotes').textContent = data.mm_executor.stats.total_quotes || 0;
+                // }
 
                 // 更新 UI 按鈕狀態
                 if (data.mm_status) {
@@ -1533,7 +1659,7 @@ async def root():
                     document.getElementById('mmStopBtn').style.display = 'block';
                     document.getElementById('mmStatusBadge').textContent = mmDryRun ? '模擬中' : '運行中';
                     document.getElementById('mmStatusBadge').style.background = mmDryRun ? '#f59e0b' : '#10b981';
-                    mmStats.startTime = Date.now();
+                    mmSim.reset();  // 重置模擬統計
                 } else {
                     alert('啟動失敗: ' + result.error);
                 }
