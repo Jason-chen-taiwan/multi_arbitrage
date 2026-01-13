@@ -31,6 +31,10 @@ from src.strategy.market_maker_executor import MarketMakerExecutor, MMConfig, Ex
 from src.strategy.hedge_engine import HedgeEngine, HedgeConfig
 from src.strategy.mm_state import MMState, FillEvent
 from src.utils.mm_config_manager import get_mm_config, MMConfigManager
+from src.simulation import (
+    ParamSetManager, SimulationRunner, ResultLogger, ComparisonEngine,
+    get_param_set_manager
+)
 
 # 全局變量
 monitor: Optional[MultiExchangeMonitor] = None
@@ -51,6 +55,11 @@ mm_status = {
     'order_size_btc': 0.001,
     'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
 }
+
+# Simulation comparison globals
+simulation_runner: Optional[SimulationRunner] = None
+result_logger: Optional[ResultLogger] = None
+comparison_engine: Optional[ComparisonEngine] = None
 
 env_file = Path(__file__).parent.parent.parent / ".env"
 
@@ -827,6 +836,7 @@ async def root():
                 <button class="nav-tab active" onclick="switchPage('arbitrage')">套利監控</button>
                 <button class="nav-tab" onclick="switchPage('marketmaker')">做市商</button>
                 <button class="nav-tab" onclick="switchPage('settings')">設定</button>
+                <button class="nav-tab" onclick="switchPage('comparison')">參數比較</button>
             </div>
             <div class="nav-status">
                 <span class="status-dot" id="statusDot"></span>
@@ -1183,6 +1193,161 @@ async def root():
                             </div>
                         </div>
                         <button class="btn btn-primary" style="margin-top: 20px;" onclick="saveConfig()">保存並開始監控</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 參數比較頁面 ==================== -->
+            <div id="page-comparison" class="page">
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h2 style="font-size: 24px; font-weight: 700; color: #667eea;">參數比較模擬</h2>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <span id="simStatusBadge" class="badge" style="background: #2a3347; padding: 6px 12px;">未運行</span>
+                            <button id="simStartBtn" class="btn btn-primary" onclick="startSimulation()">開始比較</button>
+                            <button id="simStopBtn" class="btn btn-danger" onclick="stopSimulation()" style="display:none;">停止</button>
+                        </div>
+                    </div>
+                    <p style="color: #9ca3af; margin-top: 8px; font-size: 13px;">
+                        同時運行多組參數，比較 Uptime、成交次數、PnL 等指標，找出最佳參數組合
+                    </p>
+                </div>
+
+                <div class="grid-2" style="gap: 20px;">
+                    <!-- 左側：參數組選擇 -->
+                    <div class="card">
+                        <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>選擇參數組</span>
+                            <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="openParamSetEditor()">+ 新增</button>
+                        </div>
+                        <div id="paramSetList" style="display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto;">
+                            <p style="color: #9ca3af; text-align: center;">載入中...</p>
+                        </div>
+                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a3347;">
+                            <div style="display: flex; align-items: center; gap: 15px;">
+                                <label style="font-size: 12px; color: #9ca3af;">持續時間</label>
+                                <select id="simDuration" style="padding: 6px 12px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                    <option value="5">5 分鐘</option>
+                                    <option value="15">15 分鐘</option>
+                                    <option value="30">30 分鐘</option>
+                                    <option value="60" selected>1 小時</option>
+                                    <option value="120">2 小時</option>
+                                    <option value="240">4 小時</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右側：即時比較結果 -->
+                    <div class="card">
+                        <div class="card-title">即時比較 <span id="simProgress" style="color: #9ca3af; font-size: 11px; margin-left: 10px;"></span></div>
+                        <div id="liveComparison" style="overflow-x: auto;">
+                            <table class="price-table" style="font-size: 12px;">
+                                <thead>
+                                    <tr>
+                                        <th>參數組</th>
+                                        <th>Uptime %</th>
+                                        <th>模擬成交</th>
+                                        <th>PnL (USD)</th>
+                                        <th>價格撤單</th>
+                                        <th>隊列撤單</th>
+                                        <th>重掛次數</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="liveComparisonBody">
+                                    <tr><td colspan="7" style="text-align: center; color: #9ca3af; padding: 20px;">選擇參數組後點擊「開始比較」</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 歷史運行記錄 -->
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>歷史比較記錄</span>
+                        <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="loadSimulationRuns()">刷新</button>
+                    </div>
+                    <div id="simRunsList" style="overflow-x: auto;">
+                        <table class="price-table" style="font-size: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>運行ID</th>
+                                    <th>開始時間</th>
+                                    <th>持續時間</th>
+                                    <th>參數組數</th>
+                                    <th>推薦</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="simRunsBody">
+                                <tr><td colspan="6" style="text-align: center; color: #9ca3af; padding: 20px;">無歷史記錄</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 詳細結果展開區 -->
+                <div id="simResultDetail" class="card" style="margin-top: 20px; display: none;">
+                    <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>比較結果詳情</span>
+                        <button class="btn" style="padding: 4px 10px; font-size: 11px;" onclick="closeResultDetail()">關閉</button>
+                    </div>
+                    <div id="simResultContent"></div>
+                </div>
+
+                <!-- 參數組編輯彈窗 -->
+                <div id="paramSetModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 2000; align-items: center; justify-content: center;">
+                    <div style="background: #1a1f2e; border: 1px solid #2a3347; border-radius: 8px; padding: 20px; width: 450px; max-width: 90%;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h3 id="paramSetModalTitle" style="font-size: 16px; color: #667eea;">編輯參數組</h3>
+                            <button onclick="closeParamSetEditor()" style="background: none; border: none; color: #9ca3af; font-size: 20px; cursor: pointer;">&times;</button>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 12px;">
+                            <input type="hidden" id="psEditId">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                <div>
+                                    <label style="font-size: 11px; color: #9ca3af; display: block; margin-bottom: 4px;">ID (唯一標識)</label>
+                                    <input type="text" id="psEditIdInput" placeholder="例: my_strategy" style="width: 100%; padding: 8px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; color: #9ca3af; display: block; margin-bottom: 4px;">名稱</label>
+                                    <input type="text" id="psEditName" placeholder="例: 我的策略" style="width: 100%; padding: 8px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                </div>
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; color: #9ca3af; display: block; margin-bottom: 4px;">描述</label>
+                                <input type="text" id="psEditDesc" placeholder="策略描述" style="width: 100%; padding: 8px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                            </div>
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 10px;">報價參數</div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                                    <div>
+                                        <label style="font-size: 10px; color: #9ca3af;">掛單距離 (bps)</label>
+                                        <input type="number" id="psEditOrderDist" min="1" max="20" step="1" style="width: 100%; padding: 6px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                    </div>
+                                    <div>
+                                        <label style="font-size: 10px; color: #9ca3af;">撤單距離 (bps)</label>
+                                        <input type="number" id="psEditCancelDist" min="1" max="10" step="1" style="width: 100%; padding: 6px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                    </div>
+                                    <div>
+                                        <label style="font-size: 10px; color: #9ca3af;">重掛距離 (bps)</label>
+                                        <input type="number" id="psEditRebalDist" min="8" max="30" step="1" style="width: 100%; padding: 6px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                    </div>
+                                    <div>
+                                        <label style="font-size: 10px; color: #9ca3af;">隊列風控 (檔)</label>
+                                        <input type="number" id="psEditQueueLimit" min="1" max="10" step="1" style="width: 100%; padding: 6px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                                <button onclick="saveParamSet()" class="btn btn-primary" style="flex: 1;">保存</button>
+                                <button onclick="closeParamSetEditor()" class="btn" style="flex: 1;">取消</button>
+                            </div>
+                            <div id="psEditDeleteBtn" style="display: none; margin-top: 5px;">
+                                <button onclick="deleteParamSet()" class="btn btn-danger" style="width: 100%;">刪除此參數組</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1634,14 +1799,6 @@ async def root():
                     });
                 }
             };
-
-            // ===== 分頁切換 =====
-            function switchPage(page) {
-                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-                document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-                document.getElementById('page-' + page).classList.add('active');
-                event.target.classList.add('active');
-            }
 
             // ===== WebSocket 連接 =====
             function connect() {
@@ -2155,6 +2312,462 @@ async def root():
                 mmDryRun = toggle.classList.contains('active');
             }
 
+            // ===== 參數比較模擬功能 =====
+            let simPollingInterval = null;
+            let selectedParamSets = new Set();
+
+            let paramSetsData = {};  // Store loaded param sets for editing
+
+            async function loadParamSets() {
+                try {
+                    const res = await fetch('/api/simulation/param-sets');
+                    const data = await res.json();
+
+                    const container = document.getElementById('paramSetList');
+                    if (!data.param_sets || data.param_sets.length === 0) {
+                        container.innerHTML = '<p style="color: #9ca3af; text-align: center;">無可用參數組</p>';
+                        return;
+                    }
+
+                    // Store for editing
+                    paramSetsData = {};
+                    data.param_sets.forEach(ps => { paramSetsData[ps.id] = ps; });
+
+                    container.innerHTML = data.param_sets.map(ps => {
+                        const isDefault = ps.id === 'balanced';  // 默認選擇 balanced
+                        if (isDefault) selectedParamSets.add(ps.id);
+                        const quote = ps.config && ps.config.quote ? ps.config.quote : {};
+                        return `
+                            <div class="param-set-item" style="display: flex; align-items: center; gap: 10px; padding: 10px; background: #0f1419; border-radius: 6px;">
+                                <input type="checkbox" id="ps_${ps.id}" value="${ps.id}" ${isDefault ? 'checked' : ''}
+                                    onchange="toggleParamSet('${ps.id}')"
+                                    style="width: 16px; height: 16px; accent-color: #667eea; cursor: pointer;">
+                                <div style="flex: 1; cursor: pointer;" onclick="document.getElementById('ps_${ps.id}').click()">
+                                    <div style="font-weight: 600; color: #e4e6eb;">${ps.name}</div>
+                                    <div style="font-size: 11px; color: #6b7280;">${ps.description || ''}</div>
+                                    <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">
+                                        掛單 <span style="color: #667eea;">${quote.order_distance_bps || '-'}</span> bps |
+                                        撤單 <span style="color: #ef4444;">${quote.cancel_distance_bps || '-'}</span> bps |
+                                        重掛 <span style="color: #f59e0b;">${quote.rebalance_distance_bps || '-'}</span> bps |
+                                        隊列 <span style="color: #10b981;">${quote.queue_position_limit || '-'}</span> 檔
+                                    </div>
+                                </div>
+                                <button onclick="openParamSetEditor('${ps.id}')" class="btn" style="padding: 4px 8px; font-size: 10px;">編輯</button>
+                            </div>
+                        `;
+                    }).join('');
+                } catch (e) {
+                    console.error('Failed to load param sets:', e);
+                    document.getElementById('paramSetList').innerHTML = '<p style="color: #ef4444;">載入失敗</p>';
+                }
+            }
+
+            function toggleParamSet(id) {
+                if (selectedParamSets.has(id)) {
+                    selectedParamSets.delete(id);
+                } else {
+                    selectedParamSets.add(id);
+                }
+            }
+
+            // ===== 參數組編輯功能 =====
+            let currentEditingId = null;
+
+            function openParamSetEditor(id = null) {
+                const modal = document.getElementById('paramSetModal');
+                modal.style.display = 'flex';
+
+                if (id && paramSetsData[id]) {
+                    // Edit existing
+                    const ps = paramSetsData[id];
+                    const quote = ps.config && ps.config.quote ? ps.config.quote : {};
+                    currentEditingId = id;
+                    document.getElementById('paramSetModalTitle').textContent = '編輯參數組';
+                    document.getElementById('psEditId').value = id;
+                    document.getElementById('psEditIdInput').value = id;
+                    document.getElementById('psEditIdInput').disabled = true;  // Can't change ID when editing
+                    document.getElementById('psEditName').value = ps.name || '';
+                    document.getElementById('psEditDesc').value = ps.description || '';
+                    document.getElementById('psEditOrderDist').value = quote.order_distance_bps || 8;
+                    document.getElementById('psEditCancelDist').value = quote.cancel_distance_bps || 4;
+                    document.getElementById('psEditRebalDist').value = quote.rebalance_distance_bps || 12;
+                    document.getElementById('psEditQueueLimit').value = quote.queue_position_limit || 3;
+                    document.getElementById('psEditDeleteBtn').style.display = 'block';
+                } else {
+                    // Create new
+                    currentEditingId = null;
+                    document.getElementById('paramSetModalTitle').textContent = '新增參數組';
+                    document.getElementById('psEditId').value = '';
+                    document.getElementById('psEditIdInput').value = '';
+                    document.getElementById('psEditIdInput').disabled = false;
+                    document.getElementById('psEditName').value = '';
+                    document.getElementById('psEditDesc').value = '';
+                    document.getElementById('psEditOrderDist').value = 8;
+                    document.getElementById('psEditCancelDist').value = 4;
+                    document.getElementById('psEditRebalDist').value = 12;
+                    document.getElementById('psEditQueueLimit').value = 3;
+                    document.getElementById('psEditDeleteBtn').style.display = 'none';
+                }
+            }
+
+            function closeParamSetEditor() {
+                document.getElementById('paramSetModal').style.display = 'none';
+                currentEditingId = null;
+            }
+
+            async function saveParamSet() {
+                const id = currentEditingId || document.getElementById('psEditIdInput').value.trim();
+                const name = document.getElementById('psEditName').value.trim();
+
+                if (!id) {
+                    alert('請輸入參數組 ID');
+                    return;
+                }
+                if (!name) {
+                    alert('請輸入參數組名稱');
+                    return;
+                }
+
+                const psData = {
+                    id: id,
+                    name: name,
+                    description: document.getElementById('psEditDesc').value.trim(),
+                    overrides: {
+                        quote: {
+                            order_distance_bps: parseInt(document.getElementById('psEditOrderDist').value),
+                            cancel_distance_bps: parseInt(document.getElementById('psEditCancelDist').value),
+                            rebalance_distance_bps: parseInt(document.getElementById('psEditRebalDist').value),
+                            queue_position_limit: parseInt(document.getElementById('psEditQueueLimit').value)
+                        }
+                    }
+                };
+
+                try {
+                    const url = currentEditingId
+                        ? '/api/simulation/param-sets/' + currentEditingId
+                        : '/api/simulation/param-sets';
+                    const method = currentEditingId ? 'PUT' : 'POST';
+
+                    const res = await fetch(url, {
+                        method: method,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(psData)
+                    });
+                    const result = await res.json();
+
+                    if (result.success) {
+                        closeParamSetEditor();
+                        loadParamSets();
+                    } else {
+                        alert('保存失敗: ' + result.error);
+                    }
+                } catch (e) {
+                    console.error('Failed to save param set:', e);
+                    alert('保存失敗: ' + e.message);
+                }
+            }
+
+            async function deleteParamSet() {
+                if (!currentEditingId) return;
+                if (!confirm('確定刪除此參數組？此操作無法撤銷。')) return;
+
+                try {
+                    const res = await fetch('/api/simulation/param-sets/' + currentEditingId, {
+                        method: 'DELETE'
+                    });
+                    const result = await res.json();
+
+                    if (result.success) {
+                        closeParamSetEditor();
+                        selectedParamSets.delete(currentEditingId);
+                        loadParamSets();
+                    } else {
+                        alert('刪除失敗: ' + result.error);
+                    }
+                } catch (e) {
+                    console.error('Failed to delete param set:', e);
+                    alert('刪除失敗: ' + e.message);
+                }
+            }
+
+            async function startSimulation() {
+                if (selectedParamSets.size === 0) {
+                    alert('請至少選擇一個參數組');
+                    return;
+                }
+
+                const duration = parseInt(document.getElementById('simDuration').value);
+                const paramSetIds = Array.from(selectedParamSets);
+
+                try {
+                    document.getElementById('simStartBtn').disabled = true;
+                    document.getElementById('simStartBtn').textContent = '啟動中...';
+
+                    const res = await fetch('/api/simulation/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            param_set_ids: paramSetIds,
+                            duration_minutes: duration
+                        })
+                    });
+
+                    const result = await res.json();
+                    if (result.success) {
+                        document.getElementById('simStartBtn').style.display = 'none';
+                        document.getElementById('simStopBtn').style.display = 'inline-block';
+                        document.getElementById('simStatusBadge').textContent = '運行中';
+                        document.getElementById('simStatusBadge').style.background = '#10b981';
+
+                        // 開始定時更新
+                        startSimPolling();
+                    } else {
+                        alert('啟動失敗: ' + result.error);
+                    }
+                } catch (e) {
+                    console.error('Failed to start simulation:', e);
+                    alert('啟動失敗: ' + e.message);
+                } finally {
+                    document.getElementById('simStartBtn').disabled = false;
+                    document.getElementById('simStartBtn').textContent = '開始比較';
+                }
+            }
+
+            async function stopSimulation() {
+                try {
+                    const res = await fetch('/api/simulation/stop', { method: 'POST' });
+                    const result = await res.json();
+
+                    stopSimPolling();
+                    document.getElementById('simStartBtn').style.display = 'inline-block';
+                    document.getElementById('simStopBtn').style.display = 'none';
+                    document.getElementById('simStatusBadge').textContent = '已停止';
+                    document.getElementById('simStatusBadge').style.background = '#f59e0b';
+
+                    // 刷新歷史記錄
+                    loadSimulationRuns();
+                } catch (e) {
+                    console.error('Failed to stop simulation:', e);
+                }
+            }
+
+            function startSimPolling() {
+                updateLiveComparison();  // 立即更新一次
+                simPollingInterval = setInterval(updateLiveComparison, 1000);  // 每秒更新
+            }
+
+            function stopSimPolling() {
+                if (simPollingInterval) {
+                    clearInterval(simPollingInterval);
+                    simPollingInterval = null;
+                }
+            }
+
+            async function updateLiveComparison() {
+                try {
+                    // 獲取狀態
+                    const statusRes = await fetch('/api/simulation/status');
+                    const status = await statusRes.json();
+
+                    if (!status.running) {
+                        stopSimPolling();
+                        document.getElementById('simStartBtn').style.display = 'inline-block';
+                        document.getElementById('simStopBtn').style.display = 'none';
+                        document.getElementById('simStatusBadge').textContent = '已完成';
+                        document.getElementById('simStatusBadge').style.background = '#667eea';
+                        loadSimulationRuns();
+                        return;
+                    }
+
+                    // 更新進度
+                    const progress = status.progress_pct || 0;
+                    const elapsed = Math.floor(status.elapsed_seconds || 0);
+                    document.getElementById('simProgress').textContent =
+                        `${progress.toFixed(1)}% (${Math.floor(elapsed/60)}分${elapsed%60}秒)`;
+
+                    // 獲取即時比較數據
+                    const compRes = await fetch('/api/simulation/comparison');
+                    const comparison = await compRes.json();
+
+                    updateComparisonTable(comparison);
+                } catch (e) {
+                    console.error('Failed to update live comparison:', e);
+                }
+            }
+
+            function updateComparisonTable(data) {
+                const tbody = document.getElementById('liveComparisonBody');
+
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #9ca3af; padding: 20px;">等待數據...</td></tr>';
+                    return;
+                }
+
+                // 按 Uptime 排序
+                data.sort((a, b) => (b.uptime_percentage || 0) - (a.uptime_percentage || 0));
+
+                tbody.innerHTML = data.map((row, idx) => {
+                    const uptime = row.uptime_percentage || 0;
+                    const uptimeColor = uptime >= 70 ? '#10b981' : (uptime >= 50 ? '#f59e0b' : '#ef4444');
+                    const isTop = idx === 0;
+                    // 價格撤單 = cancel_count, 隊列撤單 = queue_cancel_count
+                    const priceCancel = row.price_cancel_count || row.cancel_count || 0;
+                    const queueCancel = row.queue_cancel_count || 0;
+
+                    return `
+                        <tr style="${isTop ? 'background: #10b98120;' : ''}">
+                            <td style="${isTop ? 'font-weight: 700;' : ''}">${row.param_set_name || row.param_set_id}${isTop ? ' ⭐' : ''}</td>
+                            <td style="color: ${uptimeColor}; font-weight: 600;">${uptime.toFixed(1)}%</td>
+                            <td>${row.simulated_fills || 0}</td>
+                            <td style="color: ${(row.simulated_pnl_usd || 0) >= 0 ? '#10b981' : '#ef4444'};">
+                                $${(row.simulated_pnl_usd || 0).toFixed(2)}
+                            </td>
+                            <td style="color: #ef4444;">${priceCancel}</td>
+                            <td style="color: #f59e0b;">${queueCancel}</td>
+                            <td>${row.rebalance_count || 0}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            async function loadSimulationRuns() {
+                try {
+                    const res = await fetch('/api/simulation/runs');
+                    const data = await res.json();
+
+                    const tbody = document.getElementById('simRunsBody');
+
+                    if (!data.runs || data.runs.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #9ca3af; padding: 20px;">無歷史記錄</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = data.runs.map(run => {
+                        const startTime = run.started_at ? new Date(run.started_at).toLocaleString('zh-TW') : '-';
+                        const duration = run.duration_seconds ? Math.floor(run.duration_seconds / 60) + ' 分鐘' : '-';
+
+                        return `
+                            <tr>
+                                <td style="font-family: monospace; font-size: 11px;">${run.run_id}</td>
+                                <td>${startTime}</td>
+                                <td>${duration}</td>
+                                <td>${run.param_set_count || '-'}</td>
+                                <td style="color: #10b981;">${run.recommendation || '-'}</td>
+                                <td>
+                                    <button class="btn" style="padding: 3px 8px; font-size: 10px; margin-right: 4px;"
+                                        onclick="viewRunDetail('${run.run_id}')">查看</button>
+                                    <button class="btn btn-danger" style="padding: 3px 8px; font-size: 10px;"
+                                        onclick="deleteRun('${run.run_id}')">刪除</button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+                } catch (e) {
+                    console.error('Failed to load simulation runs:', e);
+                }
+            }
+
+            async function viewRunDetail(runId) {
+                try {
+                    const res = await fetch('/api/simulation/runs/' + runId + '/comparison');
+                    const data = await res.json();
+
+                    const container = document.getElementById('simResultContent');
+                    const detailDiv = document.getElementById('simResultDetail');
+
+                    let html = '<div style="margin-bottom: 15px;">';
+
+                    // 推薦參數組
+                    if (data.recommendation) {
+                        html += `
+                            <div style="background: #10b98120; border: 1px solid #10b981; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
+                                <div style="font-weight: 700; color: #10b981; margin-bottom: 5px;">⭐ 推薦: ${data.recommendation.param_set_name}</div>
+                                <div style="font-size: 12px; color: #9ca3af;">${data.recommendation.reason}</div>
+                            </div>
+                        `;
+                    }
+
+                    // 比較表格
+                    html += `
+                        <table class="price-table" style="font-size: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>排名</th>
+                                    <th>參數組</th>
+                                    <th>Uptime %</th>
+                                    <th>Boosted %</th>
+                                    <th>模擬成交</th>
+                                    <th>PnL (USD)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+
+                    if (data.comparison_table) {
+                        data.comparison_table.forEach((row, idx) => {
+                            const uptime = row.uptime_percentage || 0;
+                            const uptimeColor = uptime >= 70 ? '#10b981' : (uptime >= 50 ? '#f59e0b' : '#ef4444');
+
+                            html += `
+                                <tr>
+                                    <td style="font-weight: 600;">#${idx + 1}</td>
+                                    <td>${row.param_set_name || row.param_set_id}</td>
+                                    <td style="color: ${uptimeColor};">${uptime.toFixed(1)}%</td>
+                                    <td>${(row.boosted_time_pct || 0).toFixed(1)}%</td>
+                                    <td>${row.simulated_fills || 0}</td>
+                                    <td style="color: ${(row.simulated_pnl_usd || 0) >= 0 ? '#10b981' : '#ef4444'};">
+                                        $${(row.simulated_pnl_usd || 0).toFixed(2)}
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                    }
+
+                    html += '</tbody></table></div>';
+
+                    container.innerHTML = html;
+                    detailDiv.style.display = 'block';
+                } catch (e) {
+                    console.error('Failed to view run detail:', e);
+                    alert('載入失敗: ' + e.message);
+                }
+            }
+
+            function closeResultDetail() {
+                document.getElementById('simResultDetail').style.display = 'none';
+            }
+
+            async function deleteRun(runId) {
+                if (!confirm('確定刪除此運行記錄？')) return;
+
+                try {
+                    const res = await fetch('/api/simulation/runs/' + runId, { method: 'DELETE' });
+                    const result = await res.json();
+
+                    if (result.success) {
+                        loadSimulationRuns();
+                    } else {
+                        alert('刪除失敗: ' + result.error);
+                    }
+                } catch (e) {
+                    console.error('Failed to delete run:', e);
+                }
+            }
+
+            // ===== 頁面切換增強 =====
+            function switchPage(page) {
+                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+                document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+                document.getElementById('page-' + page).classList.add('active');
+                event.target.classList.add('active');
+
+                // 切換到比較頁面時載入數據
+                if (page === 'comparison') {
+                    loadParamSets();
+                    loadSimulationRuns();
+                }
+            }
+
             // 初始化
             connect();
             updateExchangeOptions();
@@ -2485,6 +3098,259 @@ async def reload_mm_config_api():
         config_manager = get_mm_config()
         config_manager.reload()
         return JSONResponse({'success': True, 'config': config_manager.get_dict()})
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+# ==================== Simulation Comparison API ====================
+
+@app.get("/api/simulation/param-sets")
+async def get_simulation_param_sets():
+    """獲取所有參數組"""
+    try:
+        manager = get_param_set_manager()
+        return JSONResponse(manager.to_dict())
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.post("/api/simulation/param-sets")
+async def create_simulation_param_set(request: Request):
+    """創建新參數組"""
+    try:
+        data = await request.json()
+        manager = get_param_set_manager()
+        param_set = manager.add_param_set(data, save=True)
+        return JSONResponse({
+            'success': True,
+            'param_set': {
+                'id': param_set.id,
+                'name': param_set.name,
+                'description': param_set.description
+            }
+        })
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.put("/api/simulation/param-sets/{param_set_id}")
+async def update_simulation_param_set(param_set_id: str, request: Request):
+    """更新參數組"""
+    try:
+        data = await request.json()
+        manager = get_param_set_manager()
+
+        # Remove old and add new with same ID
+        manager.remove_param_set(param_set_id, save=False)
+        data['id'] = param_set_id  # Ensure ID stays the same
+        param_set = manager.add_param_set(data, save=True)
+
+        return JSONResponse({
+            'success': True,
+            'param_set': {
+                'id': param_set.id,
+                'name': param_set.name,
+                'description': param_set.description
+            }
+        })
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.delete("/api/simulation/param-sets/{param_set_id}")
+async def delete_simulation_param_set(param_set_id: str):
+    """刪除參數組"""
+    try:
+        manager = get_param_set_manager()
+        success = manager.remove_param_set(param_set_id, save=True)
+
+        if success:
+            return JSONResponse({'success': True})
+        else:
+            return JSONResponse({'success': False, 'error': '參數組不存在'}, status_code=404)
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.post("/api/simulation/start")
+async def start_simulation(request: Request):
+    """開始多參數模擬"""
+    global simulation_runner, result_logger, comparison_engine
+
+    try:
+        data = await request.json()
+        param_set_ids = data.get('param_set_ids', [])
+        duration_minutes = data.get('duration_minutes', 60)
+
+        if not param_set_ids:
+            return JSONResponse({'success': False, 'error': '請選擇至少一個參數組'})
+
+        # Check if StandX adapter is available
+        standx_adapter = adapters.get('STANDX')
+        if not standx_adapter:
+            return JSONResponse({'success': False, 'error': 'StandX 未連接，請先連接交易所'})
+
+        # Initialize components if needed
+        if result_logger is None:
+            result_logger = ResultLogger()
+        if comparison_engine is None:
+            comparison_engine = ComparisonEngine(result_logger)
+
+        # Create simulation runner
+        param_set_manager = get_param_set_manager()
+        simulation_runner = SimulationRunner(
+            adapter=standx_adapter,
+            param_set_manager=param_set_manager,
+            result_logger=result_logger,
+            symbol="BTC-USD",
+            tick_interval_ms=100
+        )
+
+        # Start simulation
+        run_id = await simulation_runner.start(
+            param_set_ids=param_set_ids,
+            duration_minutes=duration_minutes
+        )
+
+        return JSONResponse({
+            'success': True,
+            'run_id': run_id,
+            'param_set_ids': param_set_ids,
+            'duration_minutes': duration_minutes
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to start simulation: {e}")
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.post("/api/simulation/stop")
+async def stop_simulation():
+    """停止模擬"""
+    global simulation_runner
+
+    try:
+        if simulation_runner is None or not simulation_runner.is_running():
+            return JSONResponse({'success': False, 'error': '沒有正在運行的模擬'})
+
+        results = await simulation_runner.stop()
+        return JSONResponse({
+            'success': True,
+            'results': results
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to stop simulation: {e}")
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.get("/api/simulation/status")
+async def get_simulation_status():
+    """獲取模擬狀態"""
+    global simulation_runner
+
+    if simulation_runner is None:
+        return JSONResponse({
+            'running': False,
+            'message': 'No simulation runner initialized'
+        })
+
+    return JSONResponse(simulation_runner.get_live_status())
+
+
+@app.get("/api/simulation/comparison")
+async def get_live_simulation_comparison():
+    """獲取即時比較數據"""
+    global simulation_runner
+
+    if simulation_runner is None or not simulation_runner.is_running():
+        return JSONResponse([])
+
+    return JSONResponse(simulation_runner.get_live_comparison())
+
+
+@app.get("/api/simulation/runs")
+async def list_simulation_runs():
+    """列出所有歷史運行"""
+    global comparison_engine, result_logger
+
+    try:
+        if result_logger is None:
+            result_logger = ResultLogger()
+        if comparison_engine is None:
+            comparison_engine = ComparisonEngine(result_logger)
+
+        runs = comparison_engine.get_all_runs()
+        return JSONResponse({'runs': runs})
+
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.get("/api/simulation/runs/{run_id}")
+async def get_simulation_run_details(run_id: str):
+    """獲取特定運行的詳細結果"""
+    global comparison_engine, result_logger
+
+    try:
+        if result_logger is None:
+            result_logger = ResultLogger()
+        if comparison_engine is None:
+            comparison_engine = ComparisonEngine(result_logger)
+
+        results = comparison_engine.get_run_details(run_id)
+        if results is None:
+            return JSONResponse({'success': False, 'error': '運行記錄不存在'}, status_code=404)
+
+        return JSONResponse(results)
+
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.get("/api/simulation/runs/{run_id}/comparison")
+async def get_simulation_run_comparison(run_id: str, sort_by: str = "uptime_percentage"):
+    """獲取運行比較表"""
+    global comparison_engine, result_logger
+
+    try:
+        if result_logger is None:
+            result_logger = ResultLogger()
+        if comparison_engine is None:
+            comparison_engine = ComparisonEngine(result_logger)
+
+        table = comparison_engine.get_comparison_table(run_id, sort_by=sort_by)
+        recommendation = comparison_engine.get_recommendation(run_id)
+
+        return JSONResponse({
+            'comparison_table': table,
+            'recommendation': {
+                'param_set_id': recommendation.param_set_id,
+                'param_set_name': recommendation.param_set_name,
+                'reason': recommendation.reason,
+                'score': recommendation.score
+            } if recommendation else None
+        })
+
+    except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.delete("/api/simulation/runs/{run_id}")
+async def delete_simulation_run(run_id: str):
+    """刪除運行記錄"""
+    global result_logger
+
+    try:
+        if result_logger is None:
+            result_logger = ResultLogger()
+
+        success = result_logger.delete_run(run_id)
+        if success:
+            return JSONResponse({'success': True})
+        else:
+            return JSONResponse({'success': False, 'error': '運行記錄不存在'}, status_code=404)
+
     except Exception as e:
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
