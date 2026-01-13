@@ -35,6 +35,13 @@ class CCXTAdapter(BasePerpAdapter):
     使用 CCXT 庫提供統一的接口訪問多個中心化交易所。
     """
 
+    # CEX 使用 CCXT 格式的 symbol
+    SYMBOL_MAP = {
+        'BTC-USD': 'BTC/USDT:USDT',
+        'ETH-USD': 'ETH/USDT:USDT',
+        'SOL-USD': 'SOL/USDT:USDT',
+    }
+
     def __init__(self, config: Dict[str, Any]):
         """
         初始化 CCXT 適配器
@@ -142,7 +149,7 @@ class CCXTAdapter(BasePerpAdapter):
                 available_balance=Decimal(str(usdt_balance.get('free', 0))),
                 used_margin=Decimal(str(usdt_balance.get('used', 0))),
                 unrealized_pnl=Decimal(str(balance.get('info', {}).get('totalUnrealizedProfit', 0))),
-                total_equity=Decimal(str(usdt_balance.get('total', 0)))
+                equity=Decimal(str(usdt_balance.get('total', 0)))
             )
 
         except Exception as e:
@@ -154,14 +161,15 @@ class CCXTAdapter(BasePerpAdapter):
         查詢持倉
 
         Args:
-            symbol: 交易對符號（可選），格式如 "BTC/USDT:USDT"
+            symbol: 交易對符號（可選），統一格式如 "BTC-USD"
 
         Returns:
             List[Position]: 持倉列表
         """
         try:
             # CCXT 格式：fetch_positions([symbols])
-            symbols = [symbol] if symbol else None
+            exchange_symbol = self.normalize_symbol(symbol) if symbol else None
+            symbols = [exchange_symbol] if exchange_symbol else None
             positions = await self.exchange.fetch_positions(symbols)
 
             result = []
@@ -169,8 +177,10 @@ class CCXTAdapter(BasePerpAdapter):
                 # 過濾空倉位
                 contracts = float(pos.get('contracts', 0))
                 if contracts > 0:
+                    # 將交易所 symbol 轉回統一格式
+                    unified_symbol = self.denormalize_symbol(pos['symbol'])
                     result.append(Position(
-                        symbol=pos['symbol'],
+                        symbol=unified_symbol,
                         side=pos['side'].upper() if pos.get('side') else 'LONG',
                         size=Decimal(str(contracts)),
                         entry_price=Decimal(str(pos.get('entryPrice', 0))),
@@ -215,6 +225,8 @@ class CCXTAdapter(BasePerpAdapter):
             Order: 訂單信息
         """
         try:
+            # 轉換 symbol 為交易所格式
+            exchange_symbol = self.normalize_symbol(symbol)
             # 轉換為 CCXT 格式
             ccxt_side = side.value.lower()
             ccxt_type = order_type.value.lower()
@@ -228,7 +240,7 @@ class CCXTAdapter(BasePerpAdapter):
 
             # 下單
             order = await self.exchange.create_order(
-                symbol=symbol,
+                symbol=exchange_symbol,
                 type=ccxt_type,
                 side=ccxt_side,
                 amount=float(quantity),
@@ -236,30 +248,75 @@ class CCXTAdapter(BasePerpAdapter):
                 params=params
             )
 
-            return self._parse_order(order)
+            return self._parse_order(order, original_symbol=symbol)
 
         except Exception as e:
             print(f"❌ Failed to place order on {self.exchange_name}: {e}")
             raise
 
-    async def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> bool:
+    async def cancel_order(
+        self,
+        symbol: str,
+        order_id: Optional[str] = None,
+        client_order_id: Optional[str] = None
+    ) -> bool:
         """
         取消訂單
 
         Args:
+            symbol: 交易對符號
             order_id: 訂單 ID
-            symbol: 交易對符號（某些交易所需要）
+            client_order_id: 客戶端訂單 ID
 
         Returns:
             bool: 是否成功
         """
         try:
-            await self.exchange.cancel_order(order_id, symbol)
+            # 轉換 symbol 為交易所格式
+            exchange_symbol = self.normalize_symbol(symbol)
+            if order_id:
+                await self.exchange.cancel_order(order_id, exchange_symbol)
+            elif client_order_id:
+                # 某些交易所支持通過 client_order_id 取消
+                params = {'clientOrderId': client_order_id}
+                await self.exchange.cancel_order(client_order_id, exchange_symbol, params)
+            else:
+                raise ValueError("必須提供 order_id 或 client_order_id")
             return True
 
         except Exception as e:
             print(f"❌ Failed to cancel order on {self.exchange_name}: {e}")
             return False
+
+    async def cancel_all_orders(self, symbol: str) -> int:
+        """
+        取消所有訂單
+
+        Args:
+            symbol: 交易對符號（統一格式如 BTC-USD）
+
+        Returns:
+            int: 成功取消的訂單數量
+        """
+        try:
+            # 轉換 symbol 為交易所格式
+            exchange_symbol = self.normalize_symbol(symbol)
+            # 獲取所有未成交訂單
+            open_orders = await self.exchange.fetch_open_orders(exchange_symbol)
+            cancelled = 0
+
+            for order in open_orders:
+                try:
+                    await self.exchange.cancel_order(order['id'], exchange_symbol)
+                    cancelled += 1
+                except Exception as e:
+                    print(f"❌ Failed to cancel order {order['id']}: {e}")
+
+            return cancelled
+
+        except Exception as e:
+            print(f"❌ Failed to cancel all orders on {self.exchange_name}: {e}")
+            return 0
 
     async def get_order(self, order_id: str, symbol: Optional[str] = None) -> Optional[Order]:
         """
@@ -267,14 +324,15 @@ class CCXTAdapter(BasePerpAdapter):
 
         Args:
             order_id: 訂單 ID
-            symbol: 交易對符號
+            symbol: 交易對符號（統一格式）
 
         Returns:
             Optional[Order]: 訂單信息
         """
         try:
-            order = await self.exchange.fetch_order(order_id, symbol)
-            return self._parse_order(order)
+            exchange_symbol = self.normalize_symbol(symbol) if symbol else None
+            order = await self.exchange.fetch_order(order_id, exchange_symbol)
+            return self._parse_order(order, original_symbol=symbol)
 
         except Exception as e:
             print(f"❌ Failed to get order from {self.exchange_name}: {e}")
@@ -285,13 +343,14 @@ class CCXTAdapter(BasePerpAdapter):
         查詢未成交訂單
 
         Args:
-            symbol: 交易對符號（可選）
+            symbol: 交易對符號（統一格式，可選）
 
         Returns:
             List[Order]: 訂單列表
         """
         try:
-            orders = await self.exchange.fetch_open_orders(symbol)
+            exchange_symbol = self.normalize_symbol(symbol) if symbol else None
+            orders = await self.exchange.fetch_open_orders(exchange_symbol)
             return [self._parse_order(o) for o in orders]
 
         except Exception as e:
@@ -303,17 +362,19 @@ class CCXTAdapter(BasePerpAdapter):
         獲取訂單簿
 
         Args:
-            symbol: 交易對符號，格式如 "BTC/USDT:USDT"
+            symbol: 交易對符號，統一格式如 "BTC-USD" 或交易所格式 "BTC/USDT:USDT"
             limit: 深度限制
 
         Returns:
             Orderbook: 訂單簿數據
         """
         try:
-            ob = await self.exchange.fetch_order_book(symbol, limit)
+            # 轉換為交易所格式
+            exchange_symbol = self.normalize_symbol(symbol)
+            ob = await self.exchange.fetch_order_book(exchange_symbol, limit)
 
             return Orderbook(
-                symbol=symbol,
+                symbol=symbol,  # 返回原始請求的 symbol
                 bids=[[Decimal(str(b[0])), Decimal(str(b[1]))] for b in ob['bids'][:limit]],
                 asks=[[Decimal(str(a[0])), Decimal(str(a[1]))] for a in ob['asks'][:limit]],
                 timestamp=datetime.fromtimestamp(ob['timestamp'] / 1000) if ob.get('timestamp') else datetime.now()
@@ -328,14 +389,15 @@ class CCXTAdapter(BasePerpAdapter):
         設置槓桿倍數
 
         Args:
-            symbol: 交易對符號
+            symbol: 交易對符號（統一格式如 BTC-USD）
             leverage: 槓桿倍數
 
         Returns:
             bool: 是否成功
         """
         try:
-            await self.exchange.set_leverage(leverage, symbol)
+            exchange_symbol = self.normalize_symbol(symbol)
+            await self.exchange.set_leverage(leverage, exchange_symbol)
             print(f"✅ Set leverage to {leverage}x for {symbol}")
             return True
 
@@ -348,15 +410,16 @@ class CCXTAdapter(BasePerpAdapter):
         查詢資金費率
 
         Args:
-            symbol: 交易對符號
+            symbol: 交易對符號（統一格式如 BTC-USD）
 
         Returns:
             Dict: 資金費率信息
         """
         try:
-            funding_rate = await self.exchange.fetch_funding_rate(symbol)
+            exchange_symbol = self.normalize_symbol(symbol)
+            funding_rate = await self.exchange.fetch_funding_rate(exchange_symbol)
             return {
-                'symbol': symbol,
+                'symbol': symbol,  # 返回原始請求的 symbol
                 'funding_rate': Decimal(str(funding_rate.get('fundingRate', 0))),
                 'next_funding_time': funding_rate.get('fundingTimestamp'),
                 'funding_interval': funding_rate.get('fundingDatetime')
@@ -366,19 +429,22 @@ class CCXTAdapter(BasePerpAdapter):
             print(f"❌ Failed to get funding rate: {e}")
             return {}
 
-    def _parse_order(self, order: Dict) -> Order:
+    def _parse_order(self, order: Dict, original_symbol: Optional[str] = None) -> Order:
         """
         解析 CCXT 訂單格式到統一格式
 
         Args:
             order: CCXT 訂單數據
+            original_symbol: 原始請求的 symbol（統一格式）
 
         Returns:
             Order: 統一訂單格式
         """
+        # 使用原始 symbol 或轉換回統一格式
+        symbol = original_symbol or self.denormalize_symbol(order['symbol'])
         return Order(
             order_id=order['id'],
-            symbol=order['symbol'],
+            symbol=symbol,
             side=order['side'].upper(),
             order_type=order['type'].upper(),
             price=Decimal(str(order.get('price', 0) or 0)),

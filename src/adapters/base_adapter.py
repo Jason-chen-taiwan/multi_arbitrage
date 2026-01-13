@@ -187,20 +187,56 @@ class Order:
 class BasePerpAdapter(ABC):
     """
     永續合約交易所適配器基類
-    
+
     所有交易所適配器都應該繼承此類並實現所有抽象方法。
     這樣可以確保不同交易所的接口統一，方便策略編寫。
     """
-    
+
+    # Symbol 格式映射（統一格式 -> 交易所格式）
+    # 子類應覆蓋此映射
+    SYMBOL_MAP: Dict[str, str] = {
+        'BTC-USD': 'BTC-USD',
+        'ETH-USD': 'ETH-USD',
+    }
+
+    # 反向映射（自動生成）
+    REVERSE_SYMBOL_MAP: Dict[str, str] = {}
+
     def __init__(self, config: Dict[str, Any]):
         """
         初始化適配器
-        
+
         Args:
             config: 交易所配置字典，包含 API key、secret、base_url 等
         """
         self.config = config
         self.exchange_name = config.get("exchange_name", "unknown")
+        # 生成反向映射
+        self.REVERSE_SYMBOL_MAP = {v: k for k, v in self.SYMBOL_MAP.items()}
+
+    def normalize_symbol(self, symbol: str) -> str:
+        """
+        將統一格式的 symbol 轉換為交易所格式
+
+        Args:
+            symbol: 統一格式的 symbol (如 'BTC-USD')
+
+        Returns:
+            str: 交易所格式的 symbol
+        """
+        return self.SYMBOL_MAP.get(symbol, symbol)
+
+    def denormalize_symbol(self, symbol: str) -> str:
+        """
+        將交易所格式的 symbol 轉換為統一格式
+
+        Args:
+            symbol: 交易所格式的 symbol
+
+        Returns:
+            str: 統一格式的 symbol (如 'BTC-USD')
+        """
+        return self.REVERSE_SYMBOL_MAP.get(symbol, symbol)
     
     @abstractmethod
     async def connect(self) -> bool:

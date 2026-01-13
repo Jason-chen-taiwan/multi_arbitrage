@@ -26,10 +26,14 @@ from src.adapters.factory import create_adapter
 from src.adapters.base_adapter import BasePerpAdapter
 from src.monitor.multi_exchange_monitor import MultiExchangeMonitor
 from src.strategy.arbitrage_executor import ArbitrageExecutor
+from src.strategy.market_maker_executor import MarketMakerExecutor, MMConfig, ExecutorStatus
+from src.strategy.hedge_engine import HedgeEngine, HedgeConfig
+from src.strategy.mm_state import MMState, FillEvent
 
 # 全局變量
 monitor: Optional[MultiExchangeMonitor] = None
 executor: Optional[ArbitrageExecutor] = None
+mm_executor: Optional[MarketMakerExecutor] = None
 adapters: Dict[str, BasePerpAdapter] = {}
 connected_clients: List[WebSocket] = []
 system_status = {
@@ -37,6 +41,13 @@ system_status = {
     'auto_execute': False,
     'dry_run': True,
     'started_at': None
+}
+mm_status = {
+    'running': False,
+    'status': 'stopped',
+    'dry_run': True,
+    'order_size_btc': 0.001,
+    'order_distance_bps': 8,
 }
 
 env_file = Path(__file__).parent.parent.parent / ".env"
@@ -136,6 +147,9 @@ class ConfigManager:
 
         for key in keys:
             unset_key(self.env_file, key)
+            # 同時從環境變量中刪除
+            if key in os.environ:
+                del os.environ[key]
 
         load_dotenv(self.env_file, override=True)
 
@@ -159,14 +173,11 @@ async def init_system():
     # 加載配置
     configs = config_manager.get_all_configs()
 
-    # 符號配置
-    symbols_config = {
-        'cex': ['BTC/USDT:USDT', 'ETH/USDT:USDT'],
-        'dex': ['BTC-USD', 'ETH-USD']
-    }
+    # 統一符號格式 - Adapter 會自動轉換為各交易所的格式
+    # BTC-USD -> Binance: BTC/USDT:USDT, StandX: BTC-USD
+    unified_symbols = ['BTC-USD', 'ETH-USD']
 
     adapters = {}
-    symbols = set()
 
     # 加載 DEX
     for exchange_name, config in configs['dex'].items():
@@ -202,7 +213,6 @@ async def init_system():
                     continue
 
             adapters[exchange_name.upper()] = adapter
-            symbols.update(symbols_config['dex'])
             logger.info(f"  ✅ {exchange_name.upper()} - 已連接")
         except Exception as e:
             logger.warning(f"  ⚠️  {exchange_name.upper()} - 跳過: {str(e)[:50]}")
@@ -232,21 +242,18 @@ async def init_system():
                     continue
 
             adapters[exchange_name.upper()] = adapter
-            symbols.update(symbols_config['cex'])
             logger.info(f"  ✅ {exchange_name.upper()} - 已連接")
         except Exception as e:
             logger.warning(f"  ⚠️  {exchange_name.upper()} - 跳過: {str(e)[:50]}")
-
-    symbols = list(symbols)
 
     if len(adapters) == 0:
         logger.warning("⚠️  沒有已配置的交易所")
         return
 
-    # 創建監控器
+    # 創建監控器 - 使用統一的 symbol 格式
     monitor = MultiExchangeMonitor(
         adapters=adapters,
-        symbols=symbols,
+        symbols=unified_symbols,
         update_interval=2.0,
         min_profit_pct=0.1
     )
@@ -439,6 +446,48 @@ async def broadcast_data():
                         'profit_pct': float(opp.profit_pct),
                         'max_quantity': float(opp.max_quantity)
                     })
+
+                # 做市商狀態
+                data['mm_status'] = mm_status.copy()
+                if mm_executor:
+                    data['mm_executor'] = serialize_for_json(mm_executor.to_dict())
+
+                # 做市商實時倉位
+                positions = {
+                    'standx': {'btc': 0, 'equity': 0},
+                    'binance': {'btc': 0, 'usdt': 0},
+                }
+                if 'STANDX' in adapters:
+                    try:
+                        standx = adapters['STANDX']
+                        standx_positions = await standx.get_positions('BTC-USD')
+                        for pos in standx_positions:
+                            if 'BTC' in pos.symbol:
+                                qty = float(pos.size)
+                                if pos.side == 'short':
+                                    qty = -qty
+                                positions['standx']['btc'] = qty
+                        balance = await standx.get_balance()
+                        positions['standx']['equity'] = float(balance.equity)
+                    except:
+                        pass
+                if 'BINANCE' in adapters:
+                    try:
+                        binance = adapters['BINANCE']
+                        binance_positions = await binance.get_positions('BTC/USDT:USDT')
+                        for pos in binance_positions:
+                            if 'BTC' in pos.symbol:
+                                qty = float(pos.size)
+                                if pos.side == 'short':
+                                    qty = -qty
+                                positions['binance']['btc'] = qty
+                        balance = await binance.get_balance()
+                        positions['binance']['usdt'] = float(balance.available_balance)
+                    except:
+                        pass
+                positions['net_btc'] = positions['standx']['btc'] + positions['binance']['btc']
+                positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
+                data['mm_positions'] = positions
 
                 # 廣播
                 disconnected = []
@@ -862,6 +911,39 @@ async def root():
                                 <div class="mm-stat-label">運行時間</div>
                             </div>
                         </div>
+                        <div class="mm-controls" style="display: flex; gap: 10px; align-items: center;">
+                            <span id="mmStatusBadge" class="badge" style="background: #2a3347; padding: 6px 12px;">停止</span>
+                            <button id="mmStartBtn" class="btn btn-primary" onclick="startMM()">啟動</button>
+                            <button id="mmStopBtn" class="btn btn-danger" onclick="stopMM()" style="display:none;">停止</button>
+                        </div>
+                    </div>
+
+                    <!-- 控制面板 -->
+                    <div class="card" style="grid-column: 1 / -1;">
+                        <div class="card-title">執行控制</div>
+                        <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <label style="font-size: 12px; color: #9ca3af;">訂單大小:</label>
+                                <input type="number" id="mmOrderSize" value="0.001" step="0.001" min="0.001" max="0.1" style="width: 80px; padding: 6px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb;">
+                                <span style="font-size: 12px; color: #9ca3af;">BTC</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <label style="font-size: 12px; color: #9ca3af;">報價距離:</label>
+                                <input type="number" id="mmOrderDistance" value="8" step="1" min="5" max="20" style="width: 60px; padding: 6px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb;">
+                                <span style="font-size: 12px; color: #9ca3af;">bps</span>
+                            </div>
+                            <div class="toggle-group">
+                                <span style="font-size: 12px; color: #9ca3af;">模擬模式</span>
+                                <div class="toggle active" id="mmDryRunToggle" onclick="toggleMMDryRun()"></div>
+                            </div>
+                            <div style="margin-left: auto; font-size: 11px; color: #9ca3af;">
+                                StandX: <span id="mmStandxPos" style="color: #e4e6eb;">0</span> BTC |
+                                Binance: <span id="mmBinancePos" style="color: #e4e6eb;">0</span> BTC |
+                                淨敞口: <span id="mmNetPos" style="color: #10b981;">0</span> |
+                                StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">0</span> |
+                                Binance USDT: $<span id="mmBinanceUsdt" style="color: #e4e6eb;">0</span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 訂單簿 -->
@@ -1230,6 +1312,41 @@ async def root():
                 document.getElementById('mmDepthAsk').textContent = askDepth.toFixed(2) + ' BTC';
                 const imbalance = ((bidDepth - askDepth) / totalDepth * 100);
                 document.getElementById('mmImbalance').textContent = '偏移: ' + (imbalance > 0 ? '+' : '') + imbalance.toFixed(1) + '%';
+
+                // 更新實時倉位 (從 WebSocket)
+                if (data.mm_positions) {
+                    const pos = data.mm_positions;
+                    document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
+                    document.getElementById('mmBinancePos').textContent = (pos.binance?.btc || 0).toFixed(4);
+                    document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
+                    document.getElementById('mmBinanceUsdt').textContent = (pos.binance?.usdt || 0).toFixed(2);
+
+                    const netPos = pos.net_btc || 0;
+                    const netEl = document.getElementById('mmNetPos');
+                    netEl.textContent = netPos.toFixed(4);
+                    netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
+                }
+
+                // 更新做市商執行器統計
+                if (data.mm_executor && data.mm_executor.stats) {
+                    document.getElementById('mmTotalQuotes').textContent = data.mm_executor.stats.total_quotes || 0;
+                }
+
+                // 更新 UI 按鈕狀態
+                if (data.mm_status) {
+                    const running = data.mm_status.running;
+                    document.getElementById('mmStartBtn').style.display = running ? 'none' : 'block';
+                    document.getElementById('mmStopBtn').style.display = running ? 'block' : 'none';
+
+                    const badge = document.getElementById('mmStatusBadge');
+                    if (running) {
+                        badge.textContent = data.mm_status.dry_run ? '模擬中' : '運行中';
+                        badge.style.background = data.mm_status.dry_run ? '#f59e0b' : '#10b981';
+                    } else {
+                        badge.textContent = '停止';
+                        badge.style.background = '#2a3347';
+                    }
+                }
             }
 
             // ===== 控制開關 =====
@@ -1357,6 +1474,55 @@ async def root():
                 }
             }
 
+            // ===== 做市商控制 =====
+            let mmDryRun = true;
+
+            async function startMM() {
+                const orderSize = document.getElementById('mmOrderSize').value;
+                const orderDistance = document.getElementById('mmOrderDistance').value;
+
+                if (!mmDryRun && !confirm('⚠️ 確定啟用實盤模式？將使用真實資金進行交易！')) {
+                    return;
+                }
+
+                const res = await fetch('/api/mm/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        order_size: parseFloat(orderSize),
+                        order_distance: parseInt(orderDistance),
+                        dry_run: mmDryRun
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    document.getElementById('mmStartBtn').style.display = 'none';
+                    document.getElementById('mmStopBtn').style.display = 'block';
+                    document.getElementById('mmStatusBadge').textContent = mmDryRun ? '模擬中' : '運行中';
+                    document.getElementById('mmStatusBadge').style.background = mmDryRun ? '#f59e0b' : '#10b981';
+                    mmStats.startTime = Date.now();
+                } else {
+                    alert('啟動失敗: ' + result.error);
+                }
+            }
+
+            async function stopMM() {
+                const res = await fetch('/api/mm/stop', { method: 'POST' });
+                const result = await res.json();
+                if (result.success) {
+                    document.getElementById('mmStartBtn').style.display = 'block';
+                    document.getElementById('mmStopBtn').style.display = 'none';
+                    document.getElementById('mmStatusBadge').textContent = '停止';
+                    document.getElementById('mmStatusBadge').style.background = '#2a3347';
+                }
+            }
+
+            function toggleMMDryRun() {
+                const toggle = document.getElementById('mmDryRunToggle');
+                toggle.classList.toggle('active');
+                mmDryRun = toggle.classList.contains('active');
+            }
+
             // 初始化
             connect();
             updateExchangeOptions();
@@ -1458,6 +1624,161 @@ async def control_live_trade(request: Request):
         return JSONResponse({'success': True})
     except Exception as e:
         return JSONResponse({'success': False, 'error': str(e)})
+
+
+# ==================== 做市商 API ====================
+
+@app.post("/api/mm/start")
+async def start_market_maker(request: Request):
+    """啟動做市商"""
+    global mm_executor, mm_status
+
+    try:
+        data = await request.json()
+        order_size = Decimal(str(data.get('order_size', '0.001')))
+        order_distance = int(data.get('order_distance', 8))
+        dry_run = data.get('dry_run', True)
+
+        # 檢查是否有 StandX 和 Binance
+        if 'STANDX' not in adapters:
+            return JSONResponse({'success': False, 'error': 'StandX 未連接'})
+        if 'BINANCE' not in adapters:
+            return JSONResponse({'success': False, 'error': 'Binance 未連接'})
+
+        standx = adapters['STANDX']
+        binance = adapters['BINANCE']
+
+        # 創建配置
+        config = MMConfig(
+            standx_symbol="BTC-USD",
+            binance_symbol="BTC/USDT:USDT",
+            order_size_btc=order_size,
+            order_distance_bps=order_distance,
+            dry_run=dry_run,
+        )
+
+        # 創建對沖引擎
+        hedge_engine = HedgeEngine(
+            binance_adapter=binance,
+            standx_adapter=standx,
+        )
+
+        # 創建執行器
+        mm_executor = MarketMakerExecutor(
+            standx_adapter=standx,
+            binance_adapter=binance,
+            hedge_engine=hedge_engine,
+            config=config,
+        )
+
+        # 設置回調
+        async def on_status_change(status: ExecutorStatus):
+            mm_status['status'] = status.value
+
+        mm_executor.on_status_change(on_status_change)
+
+        # 啟動
+        await mm_executor.start()
+
+        mm_status['running'] = True
+        mm_status['status'] = 'running'
+        mm_status['dry_run'] = dry_run
+        mm_status['order_size_btc'] = float(order_size)
+        mm_status['order_distance_bps'] = order_distance
+
+        logger.info(f"做市商已啟動 (dry_run={dry_run})")
+        return JSONResponse({'success': True})
+
+    except Exception as e:
+        logger.error(f"啟動做市商失敗: {e}")
+        return JSONResponse({'success': False, 'error': str(e)})
+
+
+@app.post("/api/mm/stop")
+async def stop_market_maker():
+    """停止做市商"""
+    global mm_executor, mm_status
+
+    try:
+        if mm_executor:
+            await mm_executor.stop()
+            mm_executor = None
+
+        mm_status['running'] = False
+        mm_status['status'] = 'stopped'
+
+        logger.info("做市商已停止")
+        return JSONResponse({'success': True})
+
+    except Exception as e:
+        logger.error(f"停止做市商失敗: {e}")
+        return JSONResponse({'success': False, 'error': str(e)})
+
+
+@app.get("/api/mm/status")
+async def get_mm_status():
+    """獲取做市商狀態"""
+    try:
+        result = mm_status.copy()
+        if mm_executor:
+            result['executor'] = serialize_for_json(mm_executor.to_dict())
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({'error': str(e)})
+
+
+@app.get("/api/mm/positions")
+async def get_mm_positions():
+    """獲取做市商實時倉位"""
+    try:
+        positions = {
+            'standx': {'btc': 0, 'equity': 0},
+            'binance': {'btc': 0, 'usdt': 0},
+        }
+
+        # 查詢 StandX 倉位
+        if 'STANDX' in adapters:
+            try:
+                standx = adapters['STANDX']
+                standx_positions = await standx.get_positions('BTC-USD')
+                for pos in standx_positions:
+                    if 'BTC' in pos.symbol:
+                        qty = float(pos.size)
+                        if pos.side == 'short':
+                            qty = -qty
+                        positions['standx']['btc'] = qty
+
+                # 查詢餘額
+                balance = await standx.get_balance()
+                positions['standx']['equity'] = float(balance.equity)
+            except Exception as e:
+                logger.warning(f"查詢 StandX 倉位失敗: {e}")
+
+        # 查詢 Binance 倉位
+        if 'BINANCE' in adapters:
+            try:
+                binance = adapters['BINANCE']
+                binance_positions = await binance.get_positions('BTC/USDT:USDT')
+                for pos in binance_positions:
+                    if 'BTC' in pos.symbol:
+                        qty = float(pos.size)
+                        if pos.side == 'short':
+                            qty = -qty
+                        positions['binance']['btc'] = qty
+
+                # 查詢 USDT 餘額
+                balance = await binance.get_balance()
+                positions['binance']['usdt'] = float(balance.available_balance)
+            except Exception as e:
+                logger.warning(f"查詢 Binance 倉位失敗: {e}")
+
+        # 計算淨敞口
+        positions['net_btc'] = positions['standx']['btc'] + positions['binance']['btc']
+        positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
+
+        return JSONResponse(serialize_for_json(positions))
+    except Exception as e:
+        return JSONResponse({'error': str(e)})
 
 
 if __name__ == "__main__":
