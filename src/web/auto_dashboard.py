@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv, set_key, unset_key
 import logging
+import uvicorn
 
 # Import modules
 import sys
@@ -111,25 +112,26 @@ class ConfigManager:
 
     def save_config(self, exchange_name: str, exchange_type: str, config: dict, testnet: bool = False):
         """保存配置並立即啟動監控"""
+        # 使用 quote_mode='never' 避免添加引號
         if exchange_type == 'dex':
             if exchange_name == 'standx':
-                set_key(self.env_file, 'WALLET_PRIVATE_KEY', config.get('private_key', ''))
-                set_key(self.env_file, 'WALLET_ADDRESS', config.get('address', ''))
-                set_key(self.env_file, 'STANDX_TESTNET', str(testnet).lower())
+                set_key(self.env_file, 'WALLET_PRIVATE_KEY', config.get('private_key', ''), quote_mode='never')
+                set_key(self.env_file, 'WALLET_ADDRESS', config.get('address', ''), quote_mode='never')
+                set_key(self.env_file, 'STANDX_TESTNET', str(testnet).lower(), quote_mode='never')
             elif exchange_name == 'grvt':
-                set_key(self.env_file, 'GRVT_API_KEY', config.get('api_key', ''))
-                set_key(self.env_file, 'GRVT_API_SECRET', config.get('api_secret', ''))
-                set_key(self.env_file, 'GRVT_TESTNET', str(testnet).lower())
+                set_key(self.env_file, 'GRVT_API_KEY', config.get('api_key', ''), quote_mode='never')
+                set_key(self.env_file, 'GRVT_API_SECRET', config.get('api_secret', ''), quote_mode='never')
+                set_key(self.env_file, 'GRVT_TESTNET', str(testnet).lower(), quote_mode='never')
         else:
             prefix = exchange_name.upper()
-            set_key(self.env_file, f'{prefix}_API_KEY', config.get('api_key', ''))
-            set_key(self.env_file, f'{prefix}_API_SECRET', config.get('api_secret', ''))
-            set_key(self.env_file, f'{prefix}_TESTNET', str(testnet).lower())
+            set_key(self.env_file, f'{prefix}_API_KEY', config.get('api_key', ''), quote_mode='never')
+            set_key(self.env_file, f'{prefix}_API_SECRET', config.get('api_secret', ''), quote_mode='never')
+            set_key(self.env_file, f'{prefix}_TESTNET', str(testnet).lower(), quote_mode='never')
 
             if exchange_name in ['okx', 'bitget']:
                 passphrase = config.get('passphrase', '')
                 if passphrase:
-                    set_key(self.env_file, f'{prefix}_PASSPHRASE', passphrase)
+                    set_key(self.env_file, f'{prefix}_PASSPHRASE', passphrase, quote_mode='never')
 
         load_dotenv(self.env_file, override=True)
 
@@ -1125,7 +1127,11 @@ async def root():
             <!-- ==================== 設定頁面 ==================== -->
             <div id="page-settings" class="page">
                 <div class="settings-section">
-                    <div class="settings-title">已配置交易所</div>
+                    <div class="settings-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>已配置交易所</span>
+                        <button class="btn btn-primary" onclick="reinitSystem()" id="reinitBtn">🔄 重新連接</button>
+                    </div>
+                    <div id="reinitStatus" style="color: #9ca3af; margin-bottom: 10px; display: none;"></div>
                     <div id="configuredExchanges">
                         <p style="color: #9ca3af;">載入中...</p>
                     </div>
@@ -2072,6 +2078,34 @@ async def root():
                 }
             }
 
+            async function reinitSystem() {
+                const btn = document.getElementById('reinitBtn');
+                const status = document.getElementById('reinitStatus');
+                btn.disabled = true;
+                btn.textContent = '🔄 連接中...';
+                status.style.display = 'block';
+                status.textContent = '正在重新初始化系統...';
+                status.style.color = '#f59e0b';
+
+                try {
+                    const res = await fetch('/api/system/reinit', { method: 'POST' });
+                    const result = await res.json();
+                    if (result.success) {
+                        status.textContent = '✅ ' + result.message;
+                        status.style.color = '#10b981';
+                        loadConfiguredExchanges();
+                    } else {
+                        status.textContent = '❌ ' + result.error;
+                        status.style.color = '#ef4444';
+                    }
+                } catch (e) {
+                    status.textContent = '❌ 連接失敗: ' + e.message;
+                    status.style.color = '#ef4444';
+                }
+                btn.disabled = false;
+                btn.textContent = '🔄 重新連接';
+            }
+
             // ===== 做市商控制 =====
             let mmDryRun = true;
 
@@ -2190,6 +2224,48 @@ async def delete_config(request: Request):
 
         return JSONResponse({'success': True})
     except Exception as e:
+        return JSONResponse({'success': False, 'error': str(e)})
+
+
+@app.post("/api/system/reinit")
+async def reinit_system_api():
+    """重新初始化系統 - 重新連接所有已配置的交易所"""
+    global monitor, executor, adapters, system_status
+
+    try:
+        logger.info("🔄 重新初始化系統...")
+
+        # 停止現有監控
+        if monitor:
+            await monitor.stop()
+        if executor:
+            await executor.stop()
+
+        # 斷開所有現有連接
+        for name, adapter in list(adapters.items()):
+            if hasattr(adapter, 'disconnect'):
+                try:
+                    await adapter.disconnect()
+                except:
+                    pass
+
+        # 重新初始化
+        await init_system()
+
+        connected_count = len(adapters)
+        if connected_count > 0:
+            return JSONResponse({
+                'success': True,
+                'message': f'已連接 {connected_count} 個交易所: {", ".join(adapters.keys())}'
+            })
+        else:
+            return JSONResponse({
+                'success': False,
+                'error': '沒有可連接的交易所，請先配置交易所'
+            })
+
+    except Exception as e:
+        logger.error(f"重新初始化失敗: {e}")
         return JSONResponse({'success': False, 'error': str(e)})
 
 

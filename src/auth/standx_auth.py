@@ -269,7 +269,7 @@ class AsyncStandXAuth(StandXAuth):
     ) -> Dict[str, any]:
         """Async version of login."""
         import aiohttp
-        
+
         url = f"{self.base_url}/v1/offchain/login?chain={chain}"
         headers = {"Content-Type": "application/json"}
         data = {
@@ -277,8 +277,10 @@ class AsyncStandXAuth(StandXAuth):
             "signedData": signed_data,
             "expiresSeconds": expires_seconds
         }
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=data) as response:
-                response.raise_for_status()
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Login failed ({response.status}): {error_text}")
                 return await response.json()

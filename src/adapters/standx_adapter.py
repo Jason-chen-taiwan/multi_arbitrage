@@ -70,7 +70,11 @@ class StandXAdapter(BasePerpAdapter):
                 signed_message = self.account.sign_message(
                     encode_defunct(text=message)
                 )
-                return signed_message.signature.hex()
+                # 確保簽名帶有 0x 前綴（StandX API 要求）
+                sig_hex = signed_message.signature.hex()
+                if not sig_hex.startswith('0x'):
+                    sig_hex = '0x' + sig_hex
+                return sig_hex
             
             # Perform authentication
             login_response = await self.auth.authenticate(
