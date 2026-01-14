@@ -139,6 +139,8 @@ class SimulationExecutor:
     async def _process_orders(self, tick: MarketTick):
         """Process existing simulated orders - check for cancels, fills, rebalances."""
         mid_price = tick.mid_price
+        best_bid = float(tick.bid_price)
+        best_ask = float(tick.ask_price)
 
         bid_order = self.state.get_bid_order()
         ask_order = self.state.get_ask_order()
@@ -157,14 +159,38 @@ class SimulationExecutor:
                     fill_qty=bid_order.qty,
                     spread_bps=spread_captured
                 )
+                self.state.add_operation(
+                    action='fill', side='buy',
+                    order_price=float(bid_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=bid_distance,
+                    reason='成交',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_bid_order()
 
             # Check for cancel by distance (price too close)
             elif bid_distance < self.config.cancel_distance_bps:
+                self.state.add_operation(
+                    action='cancel', side='buy',
+                    order_price=float(bid_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=bid_distance,
+                    reason=f'bps太近 ({bid_distance:.1f} < {self.config.cancel_distance_bps})',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_bid_order("distance")
 
             # Check for rebalance (price moved away)
             elif bid_distance > self.config.rebalance_distance_bps:
+                self.state.add_operation(
+                    action='rebalance', side='buy',
+                    order_price=float(bid_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=bid_distance,
+                    reason=f'bps太遠 ({bid_distance:.1f} > {self.config.rebalance_distance_bps})',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_bid_order()
                 self.state.record_rebalance()
 
@@ -182,26 +208,56 @@ class SimulationExecutor:
                     fill_qty=ask_order.qty,
                     spread_bps=spread_captured
                 )
+                self.state.add_operation(
+                    action='fill', side='sell',
+                    order_price=float(ask_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=ask_distance,
+                    reason='成交',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_ask_order()
 
             # Check for cancel by distance
             elif ask_distance < self.config.cancel_distance_bps:
+                self.state.add_operation(
+                    action='cancel', side='sell',
+                    order_price=float(ask_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=ask_distance,
+                    reason=f'bps太近 ({ask_distance:.1f} < {self.config.cancel_distance_bps})',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_ask_order("distance")
 
             # Check for rebalance
             elif ask_distance > self.config.rebalance_distance_bps:
+                self.state.add_operation(
+                    action='rebalance', side='sell',
+                    order_price=float(ask_order.price),
+                    mid_price=float(mid_price),
+                    distance_bps=ask_distance,
+                    reason=f'bps太遠 ({ask_distance:.1f} > {self.config.rebalance_distance_bps})',
+                    best_bid=best_bid, best_ask=best_ask
+                )
                 self.state.cancel_ask_order()
                 self.state.record_rebalance()
 
     async def _place_orders_if_needed(self, tick: MarketTick):
         """Place simulated orders if we don't have them."""
         mid_price = tick.mid_price
+        best_bid = float(tick.bid_price)
+        best_ask = float(tick.ask_price)
         position = self.state.get_position()
+
+        # Track if we need to place (for recording reason)
+        bid_needs_place = self.state.get_bid_order() is None
+        ask_needs_place = self.state.get_ask_order() is None
 
         # Check position limits
         if abs(position) >= self.config.max_position_btc:
             # At max position, only place reducing orders
-            if position > 0 and self.state.get_ask_order() is None:
+            if position > 0 and ask_needs_place:
                 # Have long position, place ask to reduce
                 ask_price = self._calculate_ask_price(mid_price)
                 self.state.set_ask_order(SimulatedOrder(
@@ -211,7 +267,15 @@ class SimulationExecutor:
                     qty=self.config.order_size_btc,
                     distance_bps=self.config.order_distance_bps
                 ))
-            elif position < 0 and self.state.get_bid_order() is None:
+                self.state.add_operation(
+                    action='place', side='sell',
+                    order_price=float(ask_price),
+                    mid_price=float(mid_price),
+                    distance_bps=self.config.order_distance_bps,
+                    reason='減倉下單',
+                    best_bid=best_bid, best_ask=best_ask
+                )
+            elif position < 0 and bid_needs_place:
                 # Have short position, place bid to reduce
                 bid_price = self._calculate_bid_price(mid_price)
                 self.state.set_bid_order(SimulatedOrder(
@@ -221,10 +285,18 @@ class SimulationExecutor:
                     qty=self.config.order_size_btc,
                     distance_bps=self.config.order_distance_bps
                 ))
+                self.state.add_operation(
+                    action='place', side='buy',
+                    order_price=float(bid_price),
+                    mid_price=float(mid_price),
+                    distance_bps=self.config.order_distance_bps,
+                    reason='減倉下單',
+                    best_bid=best_bid, best_ask=best_ask
+                )
             return
 
         # Normal operation - place both sides
-        if self.state.get_bid_order() is None:
+        if bid_needs_place:
             bid_price = self._calculate_bid_price(mid_price)
             self.state.set_bid_order(SimulatedOrder(
                 order_id=f"sim_bid_{self.param_set.id}_{tick.timestamp.timestamp()}",
@@ -233,8 +305,16 @@ class SimulationExecutor:
                 qty=self.config.order_size_btc,
                 distance_bps=self.config.order_distance_bps
             ))
+            self.state.add_operation(
+                action='place', side='buy',
+                order_price=float(bid_price),
+                mid_price=float(mid_price),
+                distance_bps=self.config.order_distance_bps,
+                reason='初始下單' if self.state.metrics.orders_placed <= 2 else '撤單後重掛',
+                best_bid=best_bid, best_ask=best_ask
+            )
 
-        if self.state.get_ask_order() is None:
+        if ask_needs_place:
             ask_price = self._calculate_ask_price(mid_price)
             self.state.set_ask_order(SimulatedOrder(
                 order_id=f"sim_ask_{self.param_set.id}_{tick.timestamp.timestamp()}",
@@ -243,6 +323,14 @@ class SimulationExecutor:
                 qty=self.config.order_size_btc,
                 distance_bps=self.config.order_distance_bps
             ))
+            self.state.add_operation(
+                action='place', side='sell',
+                order_price=float(ask_price),
+                mid_price=float(mid_price),
+                distance_bps=self.config.order_distance_bps,
+                reason='初始下單' if self.state.metrics.orders_placed <= 2 else '撤單後重掛',
+                best_bid=best_bid, best_ask=best_ask
+            )
 
     def _calculate_bid_price(self, mid_price: Decimal) -> Decimal:
         """Calculate bid price based on order_distance_bps."""

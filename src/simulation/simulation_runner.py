@@ -164,22 +164,41 @@ class SimulationRunner:
         if self._auto_stop_task:
             self._auto_stop_task.cancel()
             try:
-                await self._auto_stop_task
+                await asyncio.wait_for(self._auto_stop_task, timeout=2.0)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning("Auto-stop task did not cancel within timeout")
+            except Exception as e:
+                logger.error(f"Error cancelling auto-stop task: {e}")
+            self._auto_stop_task = None
 
         logger.info("Stopping simulation run...")
 
         # Stop market feed first
         if self._market_feed:
-            await self._market_feed.stop()
+            try:
+                await asyncio.wait_for(self._market_feed.stop(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Market feed stop timed out")
+            except Exception as e:
+                logger.error(f"Error stopping market feed: {e}")
 
-        # Stop all executors
-        for executor in self._executors.values():
-            await executor.stop()
+        # Stop all executors with timeout
+        for ps_id, executor in self._executors.items():
+            try:
+                await asyncio.wait_for(executor.stop(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Executor {ps_id} stop timed out")
+            except Exception as e:
+                logger.error(f"Error stopping executor {ps_id}: {e}")
 
-        # Save results
-        results = await self._save_results()
+        # Save results with timeout
+        try:
+            results = await asyncio.wait_for(self._save_results(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Save results timed out")
+            results = {'save_timeout': True}
 
         # Clear state
         ended_at = datetime.now()
@@ -204,13 +223,15 @@ class SimulationRunner:
         # Save each param set result
         for ps_id, executor in self._executors.items():
             status = executor.get_status()
+            state = status['state']
             result = {
                 'param_set_id': ps_id,
                 'param_set_name': executor.param_set.name,
                 'description': executor.param_set.description,
                 'config': executor.param_set.config,
-                'metrics': status['state']['metrics'],
-                'final_state': status['state']
+                'metrics': state['metrics'],
+                'operation_history': state.get('operation_history', []),  # Explicit operation history
+                'final_state': state
             }
             results.append(result)
 

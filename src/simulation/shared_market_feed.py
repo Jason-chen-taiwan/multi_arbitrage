@@ -106,9 +106,14 @@ class SharedMarketFeed:
         if self._task:
             self._task.cancel()
             try:
-                await self._task
+                # Add timeout to prevent hanging
+                await asyncio.wait_for(self._task, timeout=3.0)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning("Market feed task did not stop within timeout")
+            except Exception as e:
+                logger.error(f"Error stopping market feed: {e}")
         logger.info(f"Market feed stopped. Sent {self._ticks_sent} ticks, {self._errors} errors")
 
     async def _feed_loop(self):
@@ -117,8 +122,16 @@ class SharedMarketFeed:
 
         while self._running:
             try:
-                # Fetch orderbook from adapter
-                orderbook = await self.adapter.get_orderbook(self.symbol)
+                # Fetch orderbook from adapter with timeout
+                try:
+                    orderbook = await asyncio.wait_for(
+                        self.adapter.get_orderbook(self.symbol),
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Orderbook fetch timed out")
+                    await asyncio.sleep(interval_sec)
+                    continue
 
                 if orderbook and orderbook.bids and orderbook.asks:
                     # Create market tick
@@ -171,14 +184,19 @@ class SharedMarketFeed:
         if not self._subscribers:
             return
 
-        # Call all subscribers concurrently
+        # Call all subscribers concurrently with timeout
         tasks = [callback(tick) for callback in self._subscribers]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Log any errors
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.warning(f"Subscriber {i} error: {result}")
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=2.0
+            )
+            # Log any errors
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.warning(f"Subscriber {i} error: {result}")
+        except asyncio.TimeoutError:
+            logger.warning("Broadcast to subscribers timed out")
 
     def get_current_tick(self) -> Optional[MarketTick]:
         """Get the most recent market tick."""

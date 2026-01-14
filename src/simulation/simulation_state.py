@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Deque
 from decimal import Decimal
 from datetime import datetime
 from collections import deque
-from threading import Lock
+from threading import RLock
 
 
 @dataclass
@@ -33,6 +33,33 @@ class SimulatedFill:
     fill_qty: Decimal
     spread_captured_bps: float
     timestamp: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
+class OrderOperation:
+    """Record of an order operation (place, cancel, rebalance)."""
+    timestamp: datetime
+    action: str         # 'place' | 'cancel' | 'rebalance' | 'fill'
+    side: str           # 'buy' | 'sell'
+    order_price: float  # Order price
+    mid_price: float    # Mid price at operation time
+    distance_bps: float # Distance from mid in bps
+    reason: str         # Reason for operation
+    best_bid: float = None
+    best_ask: float = None
+
+    def to_dict(self) -> Dict:
+        return {
+            'time': self.timestamp.strftime('%H:%M:%S'),
+            'action': self.action,
+            'side': self.side,
+            'order_price': self.order_price,
+            'mid_price': self.mid_price,
+            'distance_bps': round(self.distance_bps, 2),
+            'reason': self.reason,
+            'best_bid': self.best_bid,
+            'best_ask': self.best_ask,
+        }
 
 
 @dataclass
@@ -169,11 +196,14 @@ class SimulationState:
         # Fill history
         self._fills: List[SimulatedFill] = []
 
+        # Operation history (max 50 entries)
+        self._operation_history: Deque[OrderOperation] = deque(maxlen=50)
+
         # Metrics
         self.metrics = SimulationMetrics()
 
-        # Thread safety
-        self._lock = Lock()
+        # Thread safety (RLock allows reentrant locking)
+        self._lock = RLock()
 
         # Running uptime calculation (rolling window)
         self._uptime_window: Deque[bool] = deque(maxlen=100)
@@ -386,6 +416,49 @@ class SimulationState:
         with self._lock:
             return self._fills.copy()
 
+    def add_operation(
+        self,
+        action: str,
+        side: str,
+        order_price: float,
+        mid_price: float,
+        distance_bps: float,
+        reason: str,
+        best_bid: float = None,
+        best_ask: float = None
+    ):
+        """
+        Add an operation to history.
+
+        Args:
+            action: 'place' | 'cancel' | 'rebalance' | 'fill'
+            side: 'buy' | 'sell'
+            order_price: Price of the order
+            mid_price: Mid price at operation time
+            distance_bps: Distance from mid in basis points
+            reason: Reason for the operation
+            best_bid: Best bid price (optional)
+            best_ask: Best ask price (optional)
+        """
+        with self._lock:
+            op = OrderOperation(
+                timestamp=datetime.now(),
+                action=action,
+                side=side,
+                order_price=order_price,
+                mid_price=mid_price,
+                distance_bps=distance_bps,
+                reason=reason,
+                best_bid=best_bid,
+                best_ask=best_ask
+            )
+            self._operation_history.appendleft(op)  # Most recent first
+
+    def get_operation_history(self) -> List[Dict]:
+        """Get operation history as list of dicts."""
+        with self._lock:
+            return [op.to_dict() for op in self._operation_history]
+
     def get_runtime_seconds(self) -> float:
         """Get simulation runtime in seconds."""
         if self.started_at is None:
@@ -404,5 +477,6 @@ class SimulationState:
                 'bid_price': float(self._bid_order.price) if self._bid_order else None,
                 'ask_price': float(self._ask_order.price) if self._ask_order else None,
                 'rolling_uptime': round(self.get_rolling_uptime(), 2),
-                'metrics': self.metrics.to_dict()
+                'metrics': self.metrics.to_dict(),
+                'operation_history': [op.to_dict() for op in self._operation_history]
             }

@@ -16,51 +16,51 @@ base_config:
     threshold_bps: 5.0
     window_sec: 5
 param_sets:
-- description: 較寬距離，較少成交，較高 uptime
-  id: conservative
-  name: 保守策略
+- description: 8 bps 下單，5 bps 取消，排隊限 2
+  id: boosted_balanced
+  name: 100%層-平衡
+  overrides:
+    quote:
+      cancel_distance_bps: 5
+      order_distance_bps: 8
+      queue_position_limit: 2
+      rebalance_distance_bps: 12
+- description: 9 bps 下單，5 bps 取消，排隊限 2
+  id: boosted_risky
+  name: 100%層-激進
   overrides:
     quote:
       cancel_distance_bps: 5
       order_distance_bps: 9
       queue_position_limit: 2
-      rebalance_distance_bps: 14
-- description: 中等參數，平衡 uptime 和成交
-  id: balanced
-  name: 平衡策略
-  overrides:
-    quote:
-      cancel_distance_bps: 4
-      order_distance_bps: 8
-      queue_position_limit: 3
       rebalance_distance_bps: 12
-- description: 較窄距離，較多成交，較低 uptime
-  id: aggressive
-  name: 激進策略
-  overrides:
-    quote:
-      cancel_distance_bps: 3
-      order_distance_bps: 6
-      queue_position_limit: 4
-      rebalance_distance_bps: 10
-- description: 最小距離測試
-  id: tight_spread
-  name: 緊密價差
-  overrides:
-    quote:
-      cancel_distance_bps: 2
-      order_distance_bps: 5
-      queue_position_limit: 5
-      rebalance_distance_bps: 8
-- description: 最大距離測試
-  id: wide_spread
-  name: 寬鬆價差
+- description: 10 bps 下單，5 bps 取消，排隊限 2
+  id: boosted_safe
+  name: 100%層-安全
   overrides:
     quote:
       cancel_distance_bps: 5
-      order_distance_bps: 9
-      queue_position_limit: 1
+      order_distance_bps: 10
+      queue_position_limit: 2
       rebalance_distance_bps: 12
+- description: 15 bps 下單，10 bps 取消，排隊限 3
+  id: standard_safe
+  name: 50%層-安全
+  overrides:
+    quote:
+      cancel_distance_bps: 10
+      order_distance_bps: 15
+      queue_position_limit: 3
+      rebalance_distance_bps: 20
+- description: 20 bps 下單，10 bps 取消，排隊限 2
+  id: standard_edge
+  name: 50%層-邊緣
+  overrides:
+    quote:
+      cancel_distance_bps: 10
+      order_distance_bps: 20
+      queue_position_limit: 2
+      rebalance_distance_bps: 25
 simulation:
   duration_minutes: 60
   tick_interval_ms: 100

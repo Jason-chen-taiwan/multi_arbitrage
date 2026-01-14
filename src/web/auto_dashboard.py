@@ -524,15 +524,31 @@ async def broadcast_data():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """應用生命週期管理"""
+    global simulation_runner
     # 啟動
     await init_system()
     asyncio.create_task(broadcast_data())
     yield
-    # 關閉
+    # 關閉 - 確保所有組件正確停止
+    logger.info("Shutting down application...")
+
+    # Stop simulation runner first
+    if simulation_runner and simulation_runner.is_running():
+        logger.info("Stopping simulation runner...")
+        try:
+            await asyncio.wait_for(simulation_runner.stop(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Simulation runner stop timed out during shutdown")
+            simulation_runner._running = False
+        except Exception as e:
+            logger.error(f"Error stopping simulation runner: {e}")
+
     if monitor:
         await monitor.stop()
     if executor:
         await executor.stop()
+
+    logger.info("Application shutdown complete")
 
 
 # FastAPI app
@@ -1290,6 +1306,19 @@ async def root():
                                 <tr><td colspan="6" style="text-align: center; color: #9ca3af; padding: 20px;">無歷史記錄</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- 模擬操作歷史 -->
+                <div id="simOperationHistoryCard" class="card" style="margin-top: 20px; display: none;">
+                    <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span>操作歷史 <span style="font-size: 10px; color: #9ca3af;">(最近 50 筆)</span></span>
+                        <select id="simHistoryParamSetSelect" onchange="updateSimOperationHistory()" style="padding: 4px 8px; background: #0f1419; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 11px;">
+                            <option value="">載入中...</option>
+                        </select>
+                    </div>
+                    <div id="simOperationHistoryList" style="max-height: 350px; overflow-y: auto; font-size: 11px;">
+                        <div style="color: #9ca3af; text-align: center; padding: 20px;">載入操作歷史中...</div>
                     </div>
                 </div>
 
@@ -2339,8 +2368,12 @@ async def root():
                     paramSetsData = {};
                     data.param_sets.forEach(ps => { paramSetsData[ps.id] = ps; });
 
+                    // Clear and rebuild selection - default select 100% tier (boosted) strategies
+                    selectedParamSets.clear();
+                    const defaultIds = ['boosted_safe', 'boosted_balanced', 'boosted_risky'];
+
                     container.innerHTML = data.param_sets.map(ps => {
-                        const isDefault = ps.id === 'balanced';  // 默認選擇 balanced
+                        const isDefault = defaultIds.includes(ps.id);
                         if (isDefault) selectedParamSets.add(ps.id);
                         const quote = ps.config && ps.config.quote ? ps.config.quote : {};
                         return `
@@ -2362,6 +2395,8 @@ async def root():
                             </div>
                         `;
                     }).join('');
+
+                    console.log('Loaded param sets, default selected:', Array.from(selectedParamSets));
                 } catch (e) {
                     console.error('Failed to load param sets:', e);
                     document.getElementById('paramSetList').innerHTML = '<p style="color: #ef4444;">載入失敗</p>';
@@ -2369,11 +2404,13 @@ async def root():
             }
 
             function toggleParamSet(id) {
-                if (selectedParamSets.has(id)) {
-                    selectedParamSets.delete(id);
-                } else {
+                const checkbox = document.getElementById('ps_' + id);
+                if (checkbox && checkbox.checked) {
                     selectedParamSets.add(id);
+                } else {
+                    selectedParamSets.delete(id);
                 }
+                console.log('toggleParamSet:', id, 'selected:', Array.from(selectedParamSets));
             }
 
             // ===== 參數組編輯功能 =====
@@ -2497,18 +2534,24 @@ async def root():
             }
 
             async function startSimulation() {
+                console.log('startSimulation() called');
+                console.log('selectedParamSets:', Array.from(selectedParamSets));
+
                 if (selectedParamSets.size === 0) {
+                    console.log('No param sets selected');
                     alert('請至少選擇一個參數組');
                     return;
                 }
 
                 const duration = parseInt(document.getElementById('simDuration').value);
                 const paramSetIds = Array.from(selectedParamSets);
+                console.log('Starting simulation with:', { paramSetIds, duration });
 
                 try {
                     document.getElementById('simStartBtn').disabled = true;
                     document.getElementById('simStartBtn').textContent = '啟動中...';
 
+                    console.log('Sending start request...');
                     const res = await fetch('/api/simulation/start', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2518,8 +2561,12 @@ async def root():
                         })
                     });
 
+                    console.log('Response status:', res.status);
                     const result = await res.json();
+                    console.log('Response data:', result);
+
                     if (result.success) {
+                        console.log('Simulation started successfully');
                         document.getElementById('simStartBtn').style.display = 'none';
                         document.getElementById('simStopBtn').style.display = 'inline-block';
                         document.getElementById('simStatusBadge').textContent = '運行中';
@@ -2528,6 +2575,7 @@ async def root():
                         // 開始定時更新
                         startSimPolling();
                     } else {
+                        console.error('Start failed:', result.error);
                         alert('啟動失敗: ' + result.error);
                     }
                 } catch (e) {
@@ -2540,24 +2588,89 @@ async def root():
             }
 
             async function stopSimulation() {
-                try {
-                    const res = await fetch('/api/simulation/stop', { method: 'POST' });
-                    const result = await res.json();
+                console.log('stopSimulation() called');
 
-                    stopSimPolling();
+                // Stop polling immediately to prevent race conditions
+                stopSimPolling();
+
+                const stopBtn = document.getElementById('simStopBtn');
+                if (stopBtn) {
+                    stopBtn.disabled = true;
+                    stopBtn.textContent = '停止中...';
+                }
+
+                // Helper to reset UI
+                function resetUI(status, color) {
                     document.getElementById('simStartBtn').style.display = 'inline-block';
                     document.getElementById('simStopBtn').style.display = 'none';
-                    document.getElementById('simStatusBadge').textContent = '已停止';
-                    document.getElementById('simStatusBadge').style.background = '#f59e0b';
+                    document.getElementById('simStatusBadge').textContent = status;
+                    document.getElementById('simStatusBadge').style.background = color;
+                    document.getElementById('simOperationHistoryCard').style.display = 'none';
+                    liveSimStatus = null;
+                    if (stopBtn) {
+                        stopBtn.disabled = false;
+                        stopBtn.textContent = '停止';
+                    }
+                }
 
-                    // 刷新歷史記錄
+                try {
+                    console.log('Sending stop request with timeout...');
+
+                    // Use AbortController for fetch timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+                    let res;
+                    try {
+                        res = await fetch('/api/simulation/stop', {
+                            method: 'POST',
+                            signal: controller.signal
+                        });
+                        clearTimeout(timeoutId);
+                    } catch (fetchError) {
+                        clearTimeout(timeoutId);
+                        if (fetchError.name === 'AbortError') {
+                            console.log('Stop request timed out, trying force-stop...');
+                            // Try force-stop
+                            const forceRes = await fetch('/api/simulation/force-stop', { method: 'POST' });
+                            const forceResult = await forceRes.json();
+                            console.log('Force stop result:', forceResult);
+                            resetUI('已強制停止', '#f59e0b');
+                            loadSimulationRuns();
+                            return;
+                        }
+                        throw fetchError;
+                    }
+
+                    console.log('Response status:', res.status);
+                    const result = await res.json();
+                    console.log('Stop result:', result);
+
+                    resetUI('已停止', '#f59e0b');
                     loadSimulationRuns();
+
+                    if (!result.success) {
+                        console.error('Stop failed:', result.error);
+                        alert('停止失敗: ' + (result.error || '未知錯誤'));
+                    }
                 } catch (e) {
                     console.error('Failed to stop simulation:', e);
+
+                    // Try force-stop as last resort
+                    try {
+                        console.log('Trying force-stop as fallback...');
+                        await fetch('/api/simulation/force-stop', { method: 'POST' });
+                        resetUI('已強制停止', '#f59e0b');
+                    } catch (forceError) {
+                        console.error('Force stop also failed:', forceError);
+                        resetUI('錯誤', '#ef4444');
+                        alert('停止請求失敗，請重新整理頁面');
+                    }
                 }
             }
 
             function startSimPolling() {
+                console.log('startSimPolling() called');
                 updateLiveComparison();  // 立即更新一次
                 simPollingInterval = setInterval(updateLiveComparison, 1000);  // 每秒更新
             }
@@ -2569,21 +2682,32 @@ async def root():
                 }
             }
 
+            // Store live status with executors for operation history
+            let liveSimStatus = null;
+
             async function updateLiveComparison() {
                 try {
+                    console.log('updateLiveComparison() called');
                     // 獲取狀態
                     const statusRes = await fetch('/api/simulation/status');
                     const status = await statusRes.json();
+                    console.log('Status response:', status);
 
                     if (!status.running) {
+                        console.log('Simulation not running, resetting UI');
                         stopSimPolling();
                         document.getElementById('simStartBtn').style.display = 'inline-block';
                         document.getElementById('simStopBtn').style.display = 'none';
                         document.getElementById('simStatusBadge').textContent = '已完成';
                         document.getElementById('simStatusBadge').style.background = '#667eea';
+                        document.getElementById('simOperationHistoryCard').style.display = 'none';
+                        liveSimStatus = null;
                         loadSimulationRuns();
                         return;
                     }
+
+                    // Store status for operation history
+                    liveSimStatus = status;
 
                     // 更新進度
                     const progress = status.progress_pct || 0;
@@ -2596,9 +2720,143 @@ async def root():
                     const comparison = await compRes.json();
 
                     updateComparisonTable(comparison);
+
+                    // 更新操作歷史選擇器
+                    updateSimHistoryParamSetSelect(status.executors);
+
+                    // 顯示操作歷史卡片
+                    document.getElementById('simOperationHistoryCard').style.display = 'block';
+
+                    // 更新當前選中的操作歷史
+                    updateSimOperationHistory();
                 } catch (e) {
                     console.error('Failed to update live comparison:', e);
                 }
+            }
+
+            function updateSimHistoryParamSetSelect(executors) {
+                const select = document.getElementById('simHistoryParamSetSelect');
+                const currentValue = select.value;
+
+                const executorIds = Object.keys(executors || {});
+                console.log('updateSimHistoryParamSetSelect, executorIds:', executorIds);
+
+                if (executorIds.length === 0) {
+                    select.innerHTML = '<option value="">無可用參數組</option>';
+                    return;
+                }
+
+                // Always rebuild options to keep in sync
+                let html = '';
+                executorIds.forEach(id => {
+                    const executor = executors[id];
+                    const name = executor.param_set_name || id;
+                    html += `<option value="${id}">${name}</option>`;
+                });
+                select.innerHTML = html;
+
+                // Restore selection or default to first
+                if (currentValue && executorIds.includes(currentValue)) {
+                    select.value = currentValue;
+                } else {
+                    select.value = executorIds[0];
+                }
+                console.log('Selected param set:', select.value);
+            }
+
+            function updateSimOperationHistory() {
+                const select = document.getElementById('simHistoryParamSetSelect');
+                const container = document.getElementById('simOperationHistoryList');
+                let selectedId = select.value;
+
+                // Debug logging
+                console.log('updateSimOperationHistory called');
+                console.log('  selectedId:', selectedId);
+                console.log('  liveSimStatus:', liveSimStatus);
+                console.log('  liveSimStatus.executors:', liveSimStatus?.executors);
+
+                if (!liveSimStatus || !liveSimStatus.executors) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">等待模擬數據...</div>';
+                    return;
+                }
+
+                // Auto-select first executor if none selected
+                const executorIds = Object.keys(liveSimStatus.executors);
+                if (!selectedId && executorIds.length > 0) {
+                    selectedId = executorIds[0];
+                    select.value = selectedId;
+                    console.log('  Auto-selected:', selectedId);
+                }
+
+                if (!selectedId) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">無可用參數組</div>';
+                    return;
+                }
+
+                const executor = liveSimStatus.executors[selectedId];
+                console.log('  executor:', executor);
+                console.log('  executor.state:', executor?.state);
+                console.log('  operation_history:', executor?.state?.operation_history);
+
+                if (!executor || !executor.state) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">執行器狀態不可用</div>';
+                    return;
+                }
+
+                const history = executor.state.operation_history;
+                if (!history) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">無操作歷史數據</div>';
+                    return;
+                }
+
+                if (history.length === 0) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">等待操作...</div>';
+                    return;
+                }
+
+                // Build table
+                const actionColors = {
+                    'cancel': '#ef4444',
+                    'rebalance': '#f59e0b',
+                    'place': '#10b981',
+                    'fill': '#667eea'
+                };
+
+                const actionLabels = {
+                    'cancel': '撤單',
+                    'rebalance': '重掛',
+                    'place': '下單',
+                    'fill': '成交'
+                };
+
+                let html = '<table class="price-table" style="font-size: 10px; width: 100%;">';
+                html += '<thead><tr>';
+                html += '<th style="padding: 4px; text-align: left;">時間</th>';
+                html += '<th style="padding: 4px; text-align: center;">操作</th>';
+                html += '<th style="padding: 4px; text-align: right;">訂單價</th>';
+                html += '<th style="padding: 4px; text-align: right;">Best Bid</th>';
+                html += '<th style="padding: 4px; text-align: right;">Best Ask</th>';
+                html += '<th style="padding: 4px; text-align: left;">原因</th>';
+                html += '</tr></thead><tbody>';
+
+                history.forEach((h, i) => {
+                    const bgColor = i % 2 === 0 ? '#0f1419' : 'transparent';
+                    const actionColor = actionColors[h.action] || '#9ca3af';
+                    const sideLabel = h.side === 'buy' ? '買' : '賣';
+                    const actionLabel = actionLabels[h.action] || h.action;
+
+                    html += `<tr style="background: ${bgColor};">`;
+                    html += `<td style="padding: 4px; font-family: monospace;">${h.time}</td>`;
+                    html += `<td style="padding: 4px; text-align: center; color: ${actionColor}; font-weight: 600;">${sideLabel}${actionLabel}</td>`;
+                    html += `<td style="padding: 4px; text-align: right; font-family: monospace;">$${h.order_price?.toFixed(2) || '-'}</td>`;
+                    html += `<td style="padding: 4px; text-align: right; font-family: monospace; color: #10b981;">$${h.best_bid?.toFixed(2) || '-'}</td>`;
+                    html += `<td style="padding: 4px; text-align: right; font-family: monospace; color: #ef4444;">$${h.best_ask?.toFixed(2) || '-'}</td>`;
+                    html += `<td style="padding: 4px; color: #9ca3af; font-size: 9px;">${h.reason || ''}</td>`;
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
             }
 
             function updateComparisonTable(data) {
@@ -3182,17 +3440,23 @@ async def start_simulation(request: Request):
     """開始多參數模擬"""
     global simulation_runner, result_logger, comparison_engine
 
+    logger.info("=== /api/simulation/start called ===")
+
     try:
         data = await request.json()
         param_set_ids = data.get('param_set_ids', [])
         duration_minutes = data.get('duration_minutes', 60)
+        logger.info(f"Request data: param_set_ids={param_set_ids}, duration={duration_minutes}")
 
         if not param_set_ids:
+            logger.warning("No param_set_ids provided")
             return JSONResponse({'success': False, 'error': '請選擇至少一個參數組'})
 
         # Check if StandX adapter is available
         standx_adapter = adapters.get('STANDX')
+        logger.info(f"StandX adapter available: {standx_adapter is not None}")
         if not standx_adapter:
+            logger.warning("StandX adapter not connected")
             return JSONResponse({'success': False, 'error': 'StandX 未連接，請先連接交易所'})
 
         # Initialize components if needed
@@ -3234,19 +3498,81 @@ async def stop_simulation():
     """停止模擬"""
     global simulation_runner
 
+    logger.info("Stop simulation API called")
+
     try:
-        if simulation_runner is None or not simulation_runner.is_running():
+        if simulation_runner is None:
+            logger.info("simulation_runner is None")
+            return JSONResponse({'success': False, 'error': '沒有模擬運行器'})
+
+        if not simulation_runner.is_running():
+            logger.info("simulation_runner is not running")
             return JSONResponse({'success': False, 'error': '沒有正在運行的模擬'})
 
-        results = await simulation_runner.stop()
+        logger.info("Calling simulation_runner.stop() with timeout...")
+
+        # Add timeout to prevent hanging the web service
+        try:
+            results = await asyncio.wait_for(simulation_runner.stop(), timeout=10.0)
+            logger.info(f"Stop completed normally: {results}")
+        except asyncio.TimeoutError:
+            logger.warning("Simulation stop timed out, forcing cleanup")
+            # Force cleanup
+            simulation_runner._running = False
+            simulation_runner._executors = {}
+            simulation_runner._market_feed = None
+            simulation_runner._current_run_id = None
+            simulation_runner._auto_stop_task = None
+            results = {'timeout': True, 'message': '停止超時，已強制清理'}
+        except asyncio.CancelledError:
+            logger.warning("Simulation stop was cancelled")
+            simulation_runner._running = False
+            results = {'cancelled': True}
+
         return JSONResponse({
             'success': True,
             'results': results
         })
 
     except Exception as e:
-        logger.error(f"Failed to stop simulation: {e}")
+        logger.error(f"Failed to stop simulation: {e}", exc_info=True)
+        # Force cleanup on error
+        if simulation_runner:
+            simulation_runner._running = False
+            simulation_runner._executors = {}
+            simulation_runner._market_feed = None
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+
+@app.post("/api/simulation/force-stop")
+async def force_stop_simulation():
+    """強制停止模擬 - 不等待任何操作"""
+    global simulation_runner
+
+    logger.info("Force stop simulation API called")
+
+    if simulation_runner is None:
+        return JSONResponse({'success': True, 'message': '沒有模擬運行器'})
+
+    # Forcibly clear all state without waiting
+    simulation_runner._running = False
+
+    # Cancel auto-stop task if exists
+    if simulation_runner._auto_stop_task:
+        simulation_runner._auto_stop_task.cancel()
+        simulation_runner._auto_stop_task = None
+
+    # Clear executors and market feed references
+    simulation_runner._executors = {}
+    simulation_runner._market_feed = None
+    simulation_runner._current_run_id = None
+    simulation_runner._started_at = None
+
+    logger.info("Force stop completed")
+    return JSONResponse({
+        'success': True,
+        'message': '已強制停止模擬'
+    })
 
 
 @app.get("/api/simulation/status")
@@ -3260,7 +3586,26 @@ async def get_simulation_status():
             'message': 'No simulation runner initialized'
         })
 
-    return JSONResponse(simulation_runner.get_live_status())
+    # Run in thread pool to avoid blocking event loop (state uses locks)
+    try:
+        status = await asyncio.wait_for(
+            asyncio.to_thread(simulation_runner.get_live_status),
+            timeout=2.0
+        )
+        return JSONResponse(status)
+    except asyncio.TimeoutError:
+        logger.warning("get_live_status timed out")
+        return JSONResponse({
+            'running': True,
+            'timeout': True,
+            'message': 'Status fetch timed out - simulation may be busy'
+        })
+    except Exception as e:
+        logger.error(f"get_live_status error: {e}")
+        return JSONResponse({
+            'running': True,
+            'error': str(e)
+        })
 
 
 @app.get("/api/simulation/comparison")
@@ -3271,7 +3616,19 @@ async def get_live_simulation_comparison():
     if simulation_runner is None or not simulation_runner.is_running():
         return JSONResponse([])
 
-    return JSONResponse(simulation_runner.get_live_comparison())
+    # Run in thread pool to avoid blocking event loop (state uses locks)
+    try:
+        comparison = await asyncio.wait_for(
+            asyncio.to_thread(simulation_runner.get_live_comparison),
+            timeout=2.0
+        )
+        return JSONResponse(comparison)
+    except asyncio.TimeoutError:
+        logger.warning("get_live_comparison timed out")
+        return JSONResponse([])
+    except Exception as e:
+        logger.error(f"get_live_comparison error: {e}")
+        return JSONResponse([])
 
 
 @app.get("/api/simulation/runs")
