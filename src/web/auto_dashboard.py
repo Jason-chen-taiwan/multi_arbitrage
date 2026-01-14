@@ -1080,7 +1080,7 @@ async def root():
 
                     <!-- 模擬掛單 -->
                     <div class="card">
-                        <div class="card-title">模擬掛單 (需在 mark ± 10 bps 內)</div>
+                        <div class="card-title">模擬掛單 (需在 mark ± 30 bps 內)</div>
                         <div class="quote-box">
                             <div class="quote-label">買單價格</div>
                             <div class="quote-price quote-bid" id="mmSuggestedBid">-</div>
@@ -1955,8 +1955,9 @@ async def root():
                 const askDistBps = mmSim.getDistance('ask', midPrice);
 
                 // 顯示報價和狀態
+                const maxDistBps = mmSim.uptimeMaxDistanceBps || 30;
                 if (bidOrder) {
-                    const bidInRange = bidDistBps <= 10;
+                    const bidInRange = bidDistBps <= maxDistBps;
                     const bidStyle = bidInRange ? 'color: #10b981' : 'color: #ef4444';
                     document.getElementById('mmSuggestedBid').innerHTML = '<span style="' + bidStyle + '">$' + bidOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
 
@@ -1971,7 +1972,7 @@ async def root():
                     } else if (bidInRange) {
                         bidStatusText = '✓ ' + bidDistBps.toFixed(1) + ' bps';
                     } else {
-                        bidStatusText = '⚠️ 超出10bps (' + bidDistBps.toFixed(1) + ')';
+                        bidStatusText = '⚠️ 超出' + maxDistBps + 'bps (' + bidDistBps.toFixed(1) + ')';
                     }
                     document.getElementById('mmBidStatus').textContent = bidStatusText;
                 } else {
@@ -1980,7 +1981,7 @@ async def root():
                 }
 
                 if (askOrder) {
-                    const askInRange = askDistBps <= 10;
+                    const askInRange = askDistBps <= maxDistBps;
                     const askStyle = askInRange ? 'color: #10b981' : 'color: #ef4444';
                     document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + askOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
 
@@ -1994,7 +1995,7 @@ async def root():
                     } else if (askInRange) {
                         askStatusText = '✓ ' + askDistBps.toFixed(1) + ' bps';
                     } else {
-                        askStatusText = '⚠️ 超出10bps (' + askDistBps.toFixed(1) + ')';
+                        askStatusText = '⚠️ 超出' + maxDistBps + 'bps (' + askDistBps.toFixed(1) + ')';
                     }
                     document.getElementById('mmAskStatus').textContent = askStatusText;
                 } else {
