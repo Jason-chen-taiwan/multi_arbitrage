@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from decimal import Decimal
 from dataclasses import dataclass, field, asdict
-import yaml
+
+from ruamel.yaml import YAML
 
 
 @dataclass
@@ -150,11 +151,17 @@ class MMConfigManager:
             return
 
         try:
+            yaml = YAML()
+            yaml.preserve_quotes = True
+
             with open(self._config_path, 'r', encoding='utf-8') as f:
-                data = yaml.safe_load(f)
+                data = yaml.load(f)
 
             if data:
-                self._config = MMConfigData.from_dict(data)
+                # 保存原始 YAML 數據以保留註釋
+                self._raw_yaml = data
+                # 轉換為普通 dict 給 dataclass
+                self._config = MMConfigData.from_dict(dict(data))
                 print(f"Loaded MM config from {self._config_path}")
 
         except Exception as e:
@@ -165,13 +172,38 @@ class MMConfigManager:
         self._load_config()
 
     def save(self):
-        """保存配置到文件"""
+        """保存配置到文件 (保留註釋和格式)"""
         try:
+            yaml = YAML()
+            yaml.preserve_quotes = True
+            yaml.indent(mapping=2, sequence=4, offset=2)
+
+            # 如果有原始 YAML 數據，更新它以保留註釋
+            if hasattr(self, '_raw_yaml') and self._raw_yaml:
+                self._update_raw_yaml(self._config.to_dict())
+                data_to_save = self._raw_yaml
+            else:
+                data_to_save = self._config.to_dict()
+
             with open(self._config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(self._config.to_dict(), f, default_flow_style=False, allow_unicode=True)
+                yaml.dump(data_to_save, f)
             print(f"Saved MM config to {self._config_path}")
         except Exception as e:
             print(f"Error saving MM config: {e}")
+
+    def _update_raw_yaml(self, new_data: Dict[str, Any]):
+        """更新原始 YAML 數據，保留結構和註釋"""
+        def deep_update(original, updates):
+            for key, value in updates.items():
+                if key in original:
+                    if isinstance(value, dict) and isinstance(original[key], dict):
+                        deep_update(original[key], value)
+                    else:
+                        original[key] = value
+                else:
+                    original[key] = value
+
+        deep_update(self._raw_yaml, new_data)
 
     @property
     def config(self) -> MMConfigData:
