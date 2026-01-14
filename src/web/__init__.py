@@ -1,5 +1,5 @@
 """Web dashboard module."""
 
-from .api import create_app
+from .api import register_all_routes
 
-__all__ = ['create_app']
+__all__ = ['register_all_routes']
