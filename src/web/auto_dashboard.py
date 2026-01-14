@@ -1147,6 +1147,20 @@ async def root():
                                 <div style="color: #9ca3af; font-size: 9px;">賣撤/隊列/重掛</div>
                             </div>
                         </div>
+                        <!-- 波動率統計 -->
+                        <div style="margin-top: 10px; background: #0f1419; padding: 10px; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <span style="color: #9ca3af; font-size: 10px;">波動率</span>
+                                    <span id="mmVolatility" style="font-weight: 600; margin-left: 8px;">0.0</span>
+                                    <span style="color: #9ca3af; font-size: 10px;"> bps</span>
+                                    <span id="mmVolatilityStatus" style="margin-left: 8px; font-size: 10px; color: #10b981;">正常</span>
+                                </div>
+                                <div style="font-size: 10px; color: #9ca3af;">
+                                    暫停: <span id="mmVolatilityPauseCount">0</span>次
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 訂單操作歷史 -->
@@ -1608,6 +1622,17 @@ async def root():
                 uptimeMaxDistanceBps: null,
                 queuePositionLimit: null,
 
+                // 波動率配置 (從 API 加載)
+                volatilityWindowSec: null,     // 默認 5 秒
+                volatilityThresholdBps: null,  // 默認 5.0 bps
+
+                // 價格歷史窗口 [{time: timestamp, price: number}, ...]
+                priceWindow: [],
+
+                // 波動率統計
+                currentVolatilityBps: 0,
+                volatilityPauseCount: 0,       // 因波動率暫停次數
+
                 // 模擬掛單 (null = 無單)
                 bidOrder: null,
                 askOrder: null,
@@ -1705,6 +1730,38 @@ async def root():
                     return this.orderDistanceBps !== null;
                 },
 
+                // 更新價格窗口
+                updatePriceWindow(price) {
+                    const now = Date.now();
+                    this.priceWindow.push({ time: now, price });
+
+                    // 清理過期數據
+                    const windowMs = (this.volatilityWindowSec || 5) * 1000;
+                    const cutoff = now - windowMs;
+                    this.priceWindow = this.priceWindow.filter(p => p.time > cutoff);
+                },
+
+                // 計算波動率 (bps)
+                getVolatilityBps() {
+                    if (this.priceWindow.length < 2) {
+                        return Infinity;  // 數據不足，視為高風險
+                    }
+
+                    const prices = this.priceWindow.map(p => p.price);
+                    const max = Math.max(...prices);
+                    const min = Math.min(...prices);
+                    const latest = prices[prices.length - 1];
+
+                    if (latest === 0) return Infinity;
+                    return (max - min) / latest * 10000;
+                },
+
+                // 檢查是否應該因波動率暫停
+                shouldPauseForVolatility() {
+                    if (this.volatilityThresholdBps === null) return false;
+                    return this.getVolatilityBps() > this.volatilityThresholdBps;
+                },
+
                 // 檢查並處理訂單 (基於時間的 Uptime 計算)
                 tick(midPrice, ob) {
                     // 配置未載入時不執行
@@ -1718,6 +1775,27 @@ async def root():
                     const deltaMs = this.lastTickTime ? (now - this.lastTickTime) : 0;
                     this.lastTickTime = now;
                     this.totalTimeMs += deltaMs;
+
+                    // 更新價格窗口並計算波動率
+                    this.updatePriceWindow(midPrice);
+                    this.currentVolatilityBps = this.getVolatilityBps();
+
+                    // 波動率檢查：超過閾值則暫停掛單
+                    if (this.shouldPauseForVolatility()) {
+                        this.volatilityPauseCount++;
+                        // 撤銷現有訂單
+                        if (this.bidOrder) {
+                            this.addHistory('cancel', 'bid', this.bidOrder.price, null, midPrice, '-', '波動率過高 (' + this.currentVolatilityBps.toFixed(1) + ' bps)', {});
+                            this.bidOrder = null;
+                            this.bidCancels++;
+                        }
+                        if (this.askOrder) {
+                            this.addHistory('cancel', 'ask', this.askOrder.price, null, midPrice, '-', '波動率過高 (' + this.currentVolatilityBps.toFixed(1) + ' bps)', {});
+                            this.askOrder = null;
+                            this.askCancels++;
+                        }
+                        return { bidStatus: 'volatility_pause', askStatus: 'volatility_pause' };
+                    }
 
                     // 取得最佳買賣價
                     const bestBid = ob?.bids?.[0]?.[0] || null;
@@ -1949,12 +2027,18 @@ async def root():
                     if (config.uptime) {
                         this.uptimeMaxDistanceBps = config.uptime.max_distance_bps;
                     }
+                    if (config.volatility) {
+                        this.volatilityWindowSec = config.volatility.window_sec;
+                        this.volatilityThresholdBps = config.volatility.threshold_bps;
+                    }
                     console.log('mmSim config loaded:', {
                         orderDistanceBps: this.orderDistanceBps,
                         cancelDistanceBps: this.cancelDistanceBps,
                         rebalanceDistanceBps: this.rebalanceDistanceBps,
                         queuePositionLimit: this.queuePositionLimit,
-                        uptimeMaxDistanceBps: this.uptimeMaxDistanceBps
+                        uptimeMaxDistanceBps: this.uptimeMaxDistanceBps,
+                        volatilityWindowSec: this.volatilityWindowSec,
+                        volatilityThresholdBps: this.volatilityThresholdBps
                     });
                 }
             };
@@ -2226,6 +2310,15 @@ async def root():
                 // 撤單次數和重掛次數
                 document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidQueueCancels + '/' + mmSim.bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askQueueCancels + '/' + mmSim.askRebalances;
+
+                // 波動率顯示
+                const volBps = mmSim.currentVolatilityBps;
+                const isVolHigh = mmSim.shouldPauseForVolatility();
+                document.getElementById('mmVolatility').textContent = isFinite(volBps) ? volBps.toFixed(1) : '-';
+                document.getElementById('mmVolatilityStatus').textContent = isVolHigh ? '暫停' : '正常';
+                document.getElementById('mmVolatilityStatus').style.color = isVolHigh ? '#ef4444' : '#10b981';
+                document.getElementById('mmVolatility').style.color = isVolHigh ? '#ef4444' : '#f8fafc';
+                document.getElementById('mmVolatilityPauseCount').textContent = mmSim.volatilityPauseCount;
 
                 // 更新歷史記錄顯示
                 updateHistoryDisplay();
