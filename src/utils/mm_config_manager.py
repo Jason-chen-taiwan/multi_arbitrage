@@ -62,8 +62,8 @@ class HedgeConfig:
 
 @dataclass
 class UptimeConfig:
-    """Uptime Program 配置"""
-    max_distance_bps: int = 10
+    """Uptime Program 配置 (StandX: 0-10=100%, 10-30=50%, 30-100=10%)"""
+    max_distance_bps: int = 30
     boosted_threshold: float = 0.70
     standard_threshold: float = 0.50
 

@@ -36,8 +36,8 @@ class SimulatorConfig:
     volatility_window_sec: int = 5
     volatility_threshold_bps: float = 5.0
 
-    # Uptime parameters
-    max_distance_bps: int = 10
+    # Uptime parameters (StandX: 0-10=100%, 10-30=50%, 30-100=10%)
+    max_distance_bps: int = 30
 
     @classmethod
     def from_param_set(cls, param_set: ParamSet) -> 'SimulatorConfig':
@@ -57,7 +57,7 @@ class SimulatorConfig:
             max_position_btc=Decimal(str(position.get('max_position_btc', 0.01))),
             volatility_window_sec=volatility.get('window_sec', 5),
             volatility_threshold_bps=volatility.get('threshold_bps', 5.0),
-            max_distance_bps=uptime.get('max_distance_bps', 10),
+            max_distance_bps=uptime.get('max_distance_bps', 30),
         )
 
 
@@ -149,10 +149,13 @@ class SimulationExecutor:
         if bid_order:
             bid_distance = self._calculate_distance_bps(bid_order.price, mid_price)
 
-            # Check for simulated fill (price dropped to or below bid)
-            if tick.ask_price <= bid_order.price:
+            # Check for simulated fill:
+            # 1. Market ask dropped to our bid (someone selling at our price)
+            # 2. Market best_bid dropped BELOW our bid (price swept through our level)
+            if tick.ask_price <= bid_order.price or tick.bid_price < bid_order.price:
                 # Simulated fill!
                 spread_captured = self.config.order_distance_bps  # Approximation
+                fill_reason = '成交(ask觸及)' if tick.ask_price <= bid_order.price else '成交(價格穿越)'
                 self.state.simulate_fill(
                     side="buy",
                     fill_price=bid_order.price,
@@ -164,7 +167,7 @@ class SimulationExecutor:
                     order_price=float(bid_order.price),
                     mid_price=float(mid_price),
                     distance_bps=bid_distance,
-                    reason='成交',
+                    reason=fill_reason,
                     best_bid=best_bid, best_ask=best_ask
                 )
                 self.state.cancel_bid_order()
@@ -198,10 +201,13 @@ class SimulationExecutor:
         if ask_order:
             ask_distance = self._calculate_distance_bps(ask_order.price, mid_price)
 
-            # Check for simulated fill (price rose to or above ask)
-            if tick.bid_price >= ask_order.price:
+            # Check for simulated fill:
+            # 1. Market bid rose to our ask (someone buying at our price)
+            # 2. Market best_ask rose ABOVE our ask (price swept through our level)
+            if tick.bid_price >= ask_order.price or tick.ask_price > ask_order.price:
                 # Simulated fill!
                 spread_captured = self.config.order_distance_bps
+                fill_reason = '成交(bid觸及)' if tick.bid_price >= ask_order.price else '成交(價格穿越)'
                 self.state.simulate_fill(
                     side="sell",
                     fill_price=ask_order.price,
@@ -213,7 +219,7 @@ class SimulationExecutor:
                     order_price=float(ask_order.price),
                     mid_price=float(mid_price),
                     distance_bps=ask_distance,
-                    reason='成交',
+                    reason=fill_reason,
                     best_bid=best_bid, best_ask=best_ask
                 )
                 self.state.cancel_ask_order()

@@ -10,7 +10,7 @@ base_config:
     standx: BTC-USD
   uptime:
     boosted_threshold: 0.7
-    max_distance_bps: 10
+    max_distance_bps: 30
     standard_threshold: 0.5
   volatility:
     threshold_bps: 5.0
