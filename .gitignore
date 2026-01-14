@@ -57,3 +57,10 @@ config/local_*.yaml
 *.key
 *.pem
 wallet_*
+
+# Simulation results
+results/
+
+# Claude Code
+.claude/
+nul
