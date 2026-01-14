@@ -1723,13 +1723,31 @@ async def root():
                     const bestBid = ob?.bids?.[0]?.[0] || null;
                     const bestAsk = ob?.asks?.[0]?.[0] || null;
 
-                    // 處理買單
+                    // === 成交模擬 (最優先檢查) ===
+                    // 買單成交：市場 best_bid 跌破我的買單價 (價格穿越)
+                    if (this.bidOrder && bestBid && bestBid < this.bidOrder.price) {
+                        const fillPrice = this.bidOrder.price;
+                        const distBps = (midPrice - fillPrice) / midPrice * 10000;
+                        this.simulateFill('bid', fillPrice, midPrice, '價格穿越 (best_bid=$' + bestBid.toFixed(2) + ' < 訂單$' + fillPrice.toFixed(2) + ')');
+                        bidStatus = 'filled';
+                        this.bidOrder = null;
+                    }
+                    // 賣單成交：市場 best_ask 漲破我的賣單價 (價格穿越)
+                    if (this.askOrder && bestAsk && bestAsk > this.askOrder.price) {
+                        const fillPrice = this.askOrder.price;
+                        const distBps = (fillPrice - midPrice) / midPrice * 10000;
+                        this.simulateFill('ask', fillPrice, midPrice, '價格穿越 (best_ask=$' + bestAsk.toFixed(2) + ' > 訂單$' + fillPrice.toFixed(2) + ')');
+                        askStatus = 'filled';
+                        this.askOrder = null;
+                    }
+
+                    // 處理買單 (未成交的情況)
                     if (this.bidOrder) {
                         const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
                         const queuePos = this.getQueuePosition('bid', this.bidOrder.price, ob);
                         const extra = { queuePos, bestBid, bestAsk };
 
-                        // 優先檢查隊列位置風控
+                        // 檢查隊列位置風控
                         if (queuePos && queuePos <= this.queuePositionLimit) {
                             const oldPrice = this.bidOrder.price;
                             bidStatus = 'queue_cancel';
@@ -1758,13 +1776,13 @@ async def root():
                         }
                     }
 
-                    // 處理賣單
+                    // 處理賣單 (未成交的情況)
                     if (this.askOrder) {
                         const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
                         const queuePos = this.getQueuePosition('ask', this.askOrder.price, ob);
                         const extra = { queuePos, bestBid, bestAsk };
 
-                        // 優先檢查隊列位置風控
+                        // 檢查隊列位置風控
                         if (queuePos && queuePos <= this.queuePositionLimit) {
                             const oldPrice = this.askOrder.price;
                             askStatus = 'queue_cancel';
@@ -1791,22 +1809,6 @@ async def root():
                         } else {
                             askStatus = 'out_of_range';
                         }
-                    }
-
-                    // === 成交模擬 ===
-                    // 檢查買單是否被 sweep (市場 best_bid 低於我的買單價)
-                    if (this.bidOrder && bestBid && bestBid < this.bidOrder.price) {
-                        const fillPrice = this.bidOrder.price;
-                        this.simulateFill('bid', fillPrice, midPrice, '價格穿越 (best_bid=' + bestBid.toFixed(2) + ')');
-                        bidStatus = 'filled';
-                        this.bidOrder = null;
-                    }
-                    // 檢查賣單是否被 sweep (市場 best_ask 高於我的賣單價)
-                    if (this.askOrder && bestAsk && bestAsk > this.askOrder.price) {
-                        const fillPrice = this.askOrder.price;
-                        this.simulateFill('ask', fillPrice, midPrice, '價格穿越 (best_ask=' + bestAsk.toFixed(2) + ')');
-                        askStatus = 'filled';
-                        this.askOrder = null;
                     }
 
                     // 沒有訂單則下單，並立即檢查是否合格
