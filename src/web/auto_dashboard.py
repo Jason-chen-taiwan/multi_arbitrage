@@ -1113,14 +1113,40 @@ async def root():
 
                     <!-- 模擬統計 -->
                     <div class="card">
-                        <div class="card-title">訂單模擬</div>
+                        <div class="card-title">訂單模擬統計</div>
                         <div class="sim-grid">
                             <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0秒</div><div class="sim-label">運行時間</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">符合率</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmBidFillRate">0/0/0</div><div class="sim-label">買撤/隊列/重掛</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmAskFillRate">0/0/0</div><div class="sim-label">賣撤/隊列/重掛</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">有效積分</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmFillCount" style="color:#10b981">0</div><div class="sim-label">模擬成交</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmSimPnl" style="color:#10b981">$0.00</div><div class="sim-label">模擬 PnL</div></div>
                         </div>
-                        <p style="font-size: 9px; color: #9ca3af; text-align: center; margin-top: 10px;">撤=bps太近 / 隊列=排前3檔 / 重掛=bps太遠</p>
+                        <!-- 分層時間統計 -->
+                        <div style="margin-top: 12px; padding: 10px; background: #0f1419; border-radius: 6px;">
+                            <div style="font-size: 10px; color: #9ca3af; margin-bottom: 8px;">分層時間占比 (StandX)</div>
+                            <div style="display: flex; gap: 4px; height: 20px; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
+                                <div id="mmTierBoosted" style="background: #10b981; min-width: 0; transition: all 0.3s;" title="100% (0-10 bps)"></div>
+                                <div id="mmTierStandard" style="background: #f59e0b; min-width: 0; transition: all 0.3s;" title="50% (10-30 bps)"></div>
+                                <div id="mmTierBasic" style="background: #6366f1; min-width: 0; transition: all 0.3s;" title="10% (30-100 bps)"></div>
+                                <div id="mmTierOut" style="background: #374151; flex: 1; transition: all 0.3s;" title="超出範圍"></div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; font-size: 10px; text-align: center;">
+                                <div><span style="color: #10b981;">&#9632;</span> 100%: <span id="mmTierBoostedPct">0%</span></div>
+                                <div><span style="color: #f59e0b;">&#9632;</span> 50%: <span id="mmTierStandardPct">0%</span></div>
+                                <div><span style="color: #6366f1;">&#9632;</span> 10%: <span id="mmTierBasicPct">0%</span></div>
+                                <div><span style="color: #374151;">&#9632;</span> 超出: <span id="mmTierOutPct">0%</span></div>
+                            </div>
+                        </div>
+                        <!-- 撤單統計 -->
+                        <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
+                            <div style="background: #0f1419; padding: 8px; border-radius: 4px; text-align: center;">
+                                <div id="mmBidFillRate" style="font-weight: 600; color: #10b981;">0/0/0</div>
+                                <div style="color: #9ca3af; font-size: 9px;">買撤/隊列/重掛</div>
+                            </div>
+                            <div style="background: #0f1419; padding: 8px; border-radius: 4px; text-align: center;">
+                                <div id="mmAskFillRate" style="font-weight: 600; color: #ef4444;">0/0/0</div>
+                                <div style="color: #9ca3af; font-size: 9px;">賣撤/隊列/重掛</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 訂單操作歷史 -->
@@ -1479,13 +1505,15 @@ async def root():
                 const actionColors = {
                     'cancel': '#ef4444',     // 紅色 - 撤單
                     'rebalance': '#f59e0b',  // 黃色 - 重掛
-                    'place': '#10b981'       // 綠色 - 下單
+                    'place': '#10b981',      // 綠色 - 下單
+                    'fill': '#8b5cf6'        // 紫色 - 成交
                 };
 
                 const actionNames = {
                     'cancel': '撤單',
                     'rebalance': '重掛',
-                    'place': '下單'
+                    'place': '下單',
+                    'fill': '成交'
                 };
 
                 const sideNames = {
@@ -1587,8 +1615,19 @@ async def root():
                 // 時間統計 (毫秒)
                 startTime: Date.now(),
                 lastTickTime: null,
-                qualifiedTimeMs: 0,   // 雙邊都合格的總時間
+                qualifiedTimeMs: 0,   // 雙邊都合格的總時間 (舊版相容)
                 totalTimeMs: 0,       // 總運行時間
+
+                // 分層時間統計 (StandX: 0-10=100%, 10-30=50%, 30-100=10%)
+                boostedTimeMs: 0,     // 100% 層時間 (0-10 bps)
+                standardTimeMs: 0,    // 50% 層時間 (10-30 bps)
+                basicTimeMs: 0,       // 10% 層時間 (30-100 bps)
+                outOfRangeTimeMs: 0,  // 超出範圍時間 (>100 bps 或無單)
+
+                // 成交統計
+                fillCount: 0,         // 成交次數
+                fills: [],            // 成交記錄
+                simulatedPnlUsd: 0,   // 模擬 PnL
 
                 // 訂單操作統計
                 bidCancels: 0,
@@ -1754,28 +1793,83 @@ async def root():
                         }
                     }
 
+                    // === 成交模擬 ===
+                    // 檢查買單是否被 sweep (市場 best_bid 低於我的買單價)
+                    if (this.bidOrder && bestBid && bestBid < this.bidOrder.price) {
+                        const fillPrice = this.bidOrder.price;
+                        this.simulateFill('bid', fillPrice, midPrice, '價格穿越 (best_bid=' + bestBid.toFixed(2) + ')');
+                        bidStatus = 'filled';
+                        this.bidOrder = null;
+                    }
+                    // 檢查賣單是否被 sweep (市場 best_ask 高於我的賣單價)
+                    if (this.askOrder && bestAsk && bestAsk > this.askOrder.price) {
+                        const fillPrice = this.askOrder.price;
+                        this.simulateFill('ask', fillPrice, midPrice, '價格穿越 (best_ask=' + bestAsk.toFixed(2) + ')');
+                        askStatus = 'filled';
+                        this.askOrder = null;
+                    }
+
                     // 沒有訂單則下單，並立即檢查是否合格
                     if (!this.bidOrder) {
-                        const reason = (bidStatus === 'cancel' || bidStatus === 'queue_cancel') ? '撤單後重掛' : (bidStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        const reason = (bidStatus === 'cancel' || bidStatus === 'queue_cancel') ? '撤單後重掛' :
+                                       (bidStatus === 'rebalance' ? '重平衡重掛' :
+                                       (bidStatus === 'filled' ? '成交後重掛' : '初始下單'));
                         this.placeOrder('bid', midPrice, reason, ob);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
-                            bidStatus = 'qualified';
+                            bidStatus = bidStatus === 'filled' ? 'filled' : 'qualified';
                         }
                     }
                     if (!this.askOrder) {
-                        const reason = (askStatus === 'cancel' || askStatus === 'queue_cancel') ? '撤單後重掛' : (askStatus === 'rebalance' ? '重平衡重掛' : '初始下單');
+                        const reason = (askStatus === 'cancel' || askStatus === 'queue_cancel') ? '撤單後重掛' :
+                                       (askStatus === 'rebalance' ? '重平衡重掛' :
+                                       (askStatus === 'filled' ? '成交後重掛' : '初始下單'));
                         this.placeOrder('ask', midPrice, reason, ob);
                         if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
-                            askStatus = 'qualified';
+                            askStatus = askStatus === 'filled' ? 'filled' : 'qualified';
                         }
                     }
 
-                    // 累計合格時間 (雙邊都符合才計入)
-                    if (bidStatus === 'qualified' && askStatus === 'qualified') {
-                        this.qualifiedTimeMs += deltaMs;
+                    // === 分層時間統計 ===
+                    // 計算當前雙邊訂單的距離
+                    const bidDistBps = this.bidOrder ? (midPrice - this.bidOrder.price) / midPrice * 10000 : 999;
+                    const askDistBps = this.askOrder ? (this.askOrder.price - midPrice) / midPrice * 10000 : 999;
+                    const maxDistBps = Math.max(bidDistBps, askDistBps);
+
+                    // StandX 分層: 0-10 bps = 100% (boosted), 10-30 bps = 50% (standard), 30-100 bps = 10% (basic)
+                    if (this.bidOrder && this.askOrder && maxDistBps <= 10) {
+                        this.boostedTimeMs += deltaMs;
+                        this.qualifiedTimeMs += deltaMs;  // 舊版相容
+                    } else if (this.bidOrder && this.askOrder && maxDistBps <= 30) {
+                        this.standardTimeMs += deltaMs;
+                        this.qualifiedTimeMs += deltaMs;  // 舊版相容
+                    } else if (this.bidOrder && this.askOrder && maxDistBps <= 100) {
+                        this.basicTimeMs += deltaMs;
+                    } else {
+                        this.outOfRangeTimeMs += deltaMs;
                     }
 
-                    return { bidStatus, askStatus };
+                    return { bidStatus, askStatus, bidDistBps, askDistBps };
+                },
+
+                // 模擬成交
+                simulateFill(side, fillPrice, midPrice, reason) {
+                    const now = new Date();
+                    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
+                    const fill = {
+                        time: timeStr,
+                        side,
+                        price: fillPrice,
+                        midPrice,
+                        reason,
+                        pnlBps: side === 'bid' ? (midPrice - fillPrice) / midPrice * 10000 : (fillPrice - midPrice) / midPrice * 10000
+                    };
+                    this.fills.unshift(fill);
+                    if (this.fills.length > 50) this.fills.pop();
+                    this.fillCount++;
+                    // 假設 0.001 BTC 訂單大小
+                    const orderSizeBtc = 0.001;
+                    this.simulatedPnlUsd += fill.pnlBps / 10000 * fillPrice * orderSizeBtc;
+                    this.addHistory('fill', side, null, fillPrice, midPrice, fill.pnlBps.toFixed(2), reason, {});
                 },
 
                 // 計算距離
@@ -1795,6 +1889,16 @@ async def root():
                     this.lastTickTime = null;
                     this.qualifiedTimeMs = 0;
                     this.totalTimeMs = 0;
+                    // 分層時間
+                    this.boostedTimeMs = 0;
+                    this.standardTimeMs = 0;
+                    this.basicTimeMs = 0;
+                    this.outOfRangeTimeMs = 0;
+                    // 成交統計
+                    this.fillCount = 0;
+                    this.fills = [];
+                    this.simulatedPnlUsd = 0;
+                    // 訂單操作統計
                     this.bidCancels = 0;
                     this.askCancels = 0;
                     this.bidRebalances = 0;
@@ -1804,9 +1908,27 @@ async def root():
                     this.history = [];
                 },
 
-                // 獲取 Uptime 百分比
+                // 獲取 Uptime 百分比 (舊版相容)
                 getUptimePct() {
                     return this.totalTimeMs > 0 ? (this.qualifiedTimeMs / this.totalTimeMs * 100) : 0;
+                },
+
+                // 獲取各層時間百分比
+                getTierPcts() {
+                    const total = this.totalTimeMs || 1;
+                    return {
+                        boosted: this.boostedTimeMs / total * 100,
+                        standard: this.standardTimeMs / total * 100,
+                        basic: this.basicTimeMs / total * 100,
+                        outOfRange: this.outOfRangeTimeMs / total * 100
+                    };
+                },
+
+                // 獲取有效積分百分比 (StandX 加權計算)
+                getEffectivePointsPct() {
+                    const total = this.totalTimeMs || 1;
+                    // 100% * boosted + 50% * standard + 10% * basic
+                    return (this.boostedTimeMs * 1.0 + this.standardTimeMs * 0.5 + this.basicTimeMs * 0.1) / total * 100;
                 },
 
                 // 獲取運行時間 (秒)
@@ -2075,7 +2197,30 @@ async def root():
                     ? Math.floor(runningTimeSec / 60) + '分' + Math.floor(runningTimeSec % 60) + '秒'
                     : runningTimeSec.toFixed(0) + '秒';
                 document.getElementById('mmTotalQuotes').textContent = runningTimeStr;
-                document.getElementById('mmQualifiedRate').textContent = uptimePct.toFixed(1) + '%';
+
+                // 有效積分 (加權計算)
+                const effectivePts = mmSim.getEffectivePointsPct();
+                document.getElementById('mmQualifiedRate').textContent = effectivePts.toFixed(1) + '%';
+
+                // 成交統計
+                document.getElementById('mmFillCount').textContent = mmSim.fillCount;
+                const pnlStr = mmSim.simulatedPnlUsd >= 0
+                    ? '+$' + mmSim.simulatedPnlUsd.toFixed(2)
+                    : '-$' + Math.abs(mmSim.simulatedPnlUsd).toFixed(2);
+                document.getElementById('mmSimPnl').textContent = pnlStr;
+                document.getElementById('mmSimPnl').style.color = mmSim.simulatedPnlUsd >= 0 ? '#10b981' : '#ef4444';
+
+                // 分層時間百分比
+                const tierPcts = mmSim.getTierPcts();
+                document.getElementById('mmTierBoosted').style.width = tierPcts.boosted + '%';
+                document.getElementById('mmTierStandard').style.width = tierPcts.standard + '%';
+                document.getElementById('mmTierBasic').style.width = tierPcts.basic + '%';
+                document.getElementById('mmTierOut').style.width = tierPcts.outOfRange + '%';
+                document.getElementById('mmTierBoostedPct').textContent = tierPcts.boosted.toFixed(1) + '%';
+                document.getElementById('mmTierStandardPct').textContent = tierPcts.standard.toFixed(1) + '%';
+                document.getElementById('mmTierBasicPct').textContent = tierPcts.basic.toFixed(1) + '%';
+                document.getElementById('mmTierOutPct').textContent = tierPcts.outOfRange.toFixed(1) + '%';
+
                 // 撤單次數和重掛次數
                 document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidQueueCancels + '/' + mmSim.bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askQueueCancels + '/' + mmSim.askRebalances;
