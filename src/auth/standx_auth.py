@@ -242,14 +242,17 @@ class AsyncStandXAuth(StandXAuth):
     async def _prepare_signin(self, chain: str, address: str) -> str:
         """Async version of prepare_signin."""
         import aiohttp
-        
+
         url = f"{self.base_url}/v1/offchain/prepare-signin?chain={chain}"
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept-Encoding": "gzip, deflate"  # 不要 brotli
+        }
         data = {
             "address": address,
             "requestId": self.request_id
         }
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=data) as response:
                 response.raise_for_status()
@@ -271,7 +274,10 @@ class AsyncStandXAuth(StandXAuth):
         import aiohttp
 
         url = f"{self.base_url}/v1/offchain/login?chain={chain}"
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept-Encoding": "gzip, deflate"  # 不要 brotli
+        }
         data = {
             "signature": signature,
             "signedData": signed_data,

@@ -127,11 +127,14 @@ class StandXAdapter(BasePerpAdapter):
         headers = self.auth.get_auth_headers(
             payload=payload_str if sign_body else None
         )
-        
+
+        # 禁用 brotli 編碼
+        headers['Accept-Encoding'] = 'gzip, deflate'
+
         # Add Bearer token for authenticated endpoints
         if self.auth.access_token:
             headers['Authorization'] = f'Bearer {self.auth.access_token}'
-        
+
         # Add session ID for order operations
         if '/order' in endpoint or '/cancel' in endpoint:
             headers['x-session-id'] = self.session_id
