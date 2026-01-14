@@ -1,5 +1,6 @@
 #!/bin/bash
-# 統一啟動腳本 - 自動激活虛擬環境並運行系統
+# 套利系統啟動腳本
+# 自動激活虛擬環境並啟動 Web Dashboard
 
 # 顏色定義
 RED='\033[0;31m'
@@ -24,7 +25,7 @@ echo -e "${BLUE}🔄 激活虛擬環境...${NC}"
 source venv/bin/activate
 
 # 檢查依賴
-if ! python -c "import aiohttp" 2>/dev/null; then
+if ! python -c "import fastapi" 2>/dev/null; then
     echo -e "${YELLOW}⚠️  檢測到缺失依賴，正在安裝...${NC}"
     pip install -r requirements.txt -q
     echo -e "${GREEN}✅ 依賴安裝完成${NC}"
@@ -32,20 +33,17 @@ fi
 
 # 檢查 .env 文件
 if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}⚠️  .env 文件不存在${NC}"
     if [ -f ".env.example" ]; then
-        echo -e "${BLUE}   正在從 .env.example 創建 .env...${NC}"
+        echo -e "${BLUE}📝 從 .env.example 創建 .env...${NC}"
         cp .env.example .env
         echo -e "${GREEN}✅ .env 文件已創建${NC}"
-        echo -e "${YELLOW}💡 提示：請運行 'python arbitrage.py dashboard' 在 Web UI 中配置交易所${NC}"
     fi
 fi
 
-# 運行主程序
+# 啟動 Web Dashboard
 echo ""
-python arbitrage.py "$@"
+echo -e "${GREEN}🚀 啟動套利系統 Web Dashboard${NC}"
+echo -e "${BLUE}   訪問: http://127.0.0.1:8888${NC}"
+echo ""
 
-# 保持在虛擬環境中（如果是互動模式）
-if [ $# -eq 0 ]; then
-    exec bash
-fi
+python -m uvicorn src.web.auto_dashboard:app --host 127.0.0.1 --port 8888
