@@ -55,13 +55,27 @@ def get_settings_page() -> str:
                             </div>
                         </div>
                         <div id="dexFields" class="form-grid" style="margin-top: 15px; display: none;">
-                            <div class="form-group">
-                                <label>Private Key</label>
-                                <input type="password" id="privateKey" placeholder="錢包私鑰">
+                            <!-- StandX 字段 -->
+                            <div id="standxFields">
+                                <div class="form-group">
+                                    <label>Private Key</label>
+                                    <input type="password" id="privateKey" placeholder="錢包私鑰">
+                                </div>
+                                <div class="form-group">
+                                    <label>Wallet Address</label>
+                                    <input type="text" id="walletAddress" placeholder="錢包地址">
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label>Wallet Address</label>
-                                <input type="text" id="walletAddress" placeholder="錢包地址">
+                            <!-- GRVT 字段 -->
+                            <div id="grvtFields" style="display: none;">
+                                <div class="form-group">
+                                    <label>API Key</label>
+                                    <input type="text" id="grvtApiKey" placeholder="GRVT API Key">
+                                </div>
+                                <div class="form-group">
+                                    <label>API Secret</label>
+                                    <input type="password" id="grvtApiSecret" placeholder="GRVT API Secret">
+                                </div>
                             </div>
                         </div>
                         <button class="btn btn-primary" style="margin-top: 20px;" onclick="saveConfig()">保存並開始監控</button>

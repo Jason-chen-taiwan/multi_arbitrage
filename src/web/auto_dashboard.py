@@ -1347,6 +1347,18 @@ async def root():
                 nameSelect.onchange = () => {
                     const name = nameSelect.value;
                     document.getElementById('passphraseField').style.display = (name === 'okx' || name === 'bitget') ? 'block' : 'none';
+                    // 切換 DEX 字段顯示
+                    const standxFields = document.getElementById('standxFields');
+                    const grvtFields = document.getElementById('grvtFields');
+                    if (standxFields && grvtFields) {
+                        if (name === 'grvt') {
+                            standxFields.style.display = 'none';
+                            grvtFields.style.display = 'block';
+                        } else {
+                            standxFields.style.display = 'block';
+                            grvtFields.style.display = 'none';
+                        }
+                    }
                 };
                 nameSelect.onchange();
             }
@@ -1360,7 +1372,12 @@ async def root():
                     config.api_key = document.getElementById('apiKey').value;
                     config.api_secret = document.getElementById('apiSecret').value;
                     if (name === 'okx' || name === 'bitget') config.passphrase = document.getElementById('passphrase').value;
+                } else if (name === 'grvt') {
+                    // GRVT 使用 API Key/Secret
+                    config.api_key = document.getElementById('grvtApiKey').value;
+                    config.api_secret = document.getElementById('grvtApiSecret').value;
                 } else {
+                    // StandX 使用 Private Key
                     config.private_key = document.getElementById('privateKey').value;
                     config.address = document.getElementById('walletAddress').value;
                 }

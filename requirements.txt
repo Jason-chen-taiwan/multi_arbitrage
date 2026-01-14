@@ -13,6 +13,7 @@ base58>=2.1.1
 
 # Exchange Integration
 ccxt>=4.0.0  # Unified API for CEX exchanges
+grvt-pysdk>=0.2.0  # GRVT official SDK
 
 # Data Processing
 numpy>=1.26.0
