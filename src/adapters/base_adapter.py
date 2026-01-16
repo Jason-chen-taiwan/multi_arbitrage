@@ -52,6 +52,18 @@ class OrderStatus(Enum):
 
 
 @dataclass
+class SymbolInfo:
+    """交易對規格"""
+    symbol: str
+    min_qty: Decimal           # 最小數量
+    qty_step: Decimal          # 數量精度 (e.g., 0.0001)
+    price_tick: Decimal        # 價格精度 (e.g., 0.01)
+    min_notional: Decimal = Decimal("0")  # 最小名義價值
+    max_qty: Optional[Decimal] = None     # 最大數量
+    is_active: bool = True     # 是否可交易
+
+
+@dataclass
 class Orderbook:
     """訂單簿數據結構"""
     symbol: str
@@ -407,7 +419,62 @@ class BasePerpAdapter(ABC):
             Exception: 查詢失敗時拋出異常
         """
         pass
-    
+
+    async def health_check(self) -> dict:
+        """
+        健康檢查
+
+        檢查交易所連線和 API 是否正常運作。
+        子類應覆寫此方法以提供交易所特定的健康檢查。
+
+        Returns:
+            dict: {
+                "healthy": bool,       # 是否健康
+                "latency_ms": float,   # 延遲（毫秒）
+                "error": Optional[str], # 錯誤訊息
+                "details": dict        # 交易所特定資訊
+            }
+        """
+        # 預設實作：嘗試獲取餘額
+        import time
+        start = time.time()
+        try:
+            balance = await self.get_balance()
+            return {
+                "healthy": balance is not None,
+                "latency_ms": (time.time() - start) * 1000,
+                "error": None if balance else "無法獲取餘額",
+                "details": {}
+            }
+        except Exception as e:
+            return {
+                "healthy": False,
+                "latency_ms": (time.time() - start) * 1000,
+                "error": str(e),
+                "details": {}
+            }
+
+    async def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
+        """
+        獲取交易對規格
+
+        Args:
+            symbol: 交易對符號
+
+        Returns:
+            Optional[SymbolInfo]: 交易對規格，如果不支援則返回 None
+        """
+        # 預設實作：使用 SymbolManager
+        try:
+            return SymbolInfo(
+                symbol=symbol,
+                min_qty=self._symbol_manager.get_min_quantity(symbol),
+                qty_step=self._symbol_manager.get_min_quantity(symbol),
+                price_tick=self._symbol_manager.get_tick_size(symbol),
+            )
+        except Exception:
+            return None
+
     # 便捷方法
     async def place_limit_order(
         self,

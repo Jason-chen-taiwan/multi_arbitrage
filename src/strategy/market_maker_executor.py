@@ -54,7 +54,7 @@ class MMConfig:
     """
     # 交易對
     standx_symbol: str = "BTC-USD"
-    binance_symbol: str = "BTC/USDT:USDT"
+    hedge_symbol: str = "BTC_USDT_Perp"  # GRVT 對沖交易對
 
     # 報價參數 (優化版：8 bps 掛單距離，留緩衝給 uptime)
     order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
@@ -93,13 +93,13 @@ class MarketMakerExecutor:
     def __init__(
         self,
         standx_adapter,         # StandXAdapter
-        binance_adapter=None,   # CCXTAdapter (可選)
+        hedge_adapter=None,     # GRVT 適配器 (用於對沖)
         hedge_engine: Optional[HedgeEngine] = None,  # 可選，沒有則不對沖
         config: Optional[MMConfig] = None,
         state: Optional[MMState] = None,
     ):
         self.standx = standx_adapter
-        self.binance = binance_adapter
+        self.hedge_adapter = hedge_adapter
         self.hedge_engine = hedge_engine
         self.config = config or MMConfig()
         self.state = state or MMState(volatility_window_sec=self.config.volatility_window_sec)
@@ -193,9 +193,9 @@ class MarketMakerExecutor:
         # 同步 StandX 倉位
         await self._sync_standx_position()
 
-        # 同步 Binance 倉位 (如果有 Binance adapter)
-        if self.binance:
-            await self._sync_binance_position()
+        # 同步對沖倉位 (如果有 hedge adapter)
+        if self.hedge_adapter:
+            await self._sync_hedge_position()
 
         # 取消現有訂單
         if not self.config.dry_run:
@@ -251,6 +251,14 @@ class MarketMakerExecutor:
         # 如果正在對沖，跳過
         if self._status == ExecutorStatus.HEDGING:
             return
+
+        # 如果在 PAUSED 狀態（風控模式），檢查是否可以恢復
+        if self._status == ExecutorStatus.PAUSED and self.hedge_engine:
+            if await self.hedge_engine.check_recovery():
+                logger.info("GRVT recovered, resuming market making")
+                self._status = ExecutorStatus.RUNNING
+                if self._on_status_change:
+                    await self._on_status_change(self._status)
 
         # 獲取最新價格
         try:
@@ -770,25 +778,32 @@ class MarketMakerExecutor:
             logger.error(f"Failed to sync StandX position: {e}")
             return self.state.get_standx_position()
 
-    async def _sync_binance_position(self) -> Decimal:
-        """從 Binance 同步實際倉位"""
-        if not self.binance:
+    async def _sync_hedge_position(self) -> Decimal:
+        """從對沖交易所 (GRVT) 同步實際倉位"""
+        if not self.hedge_adapter:
             return Decimal("0")
         try:
-            positions = await self.binance.get_positions(self.config.binance_symbol)
+            # 自動匹配交易對
+            hedge_symbol = self.config.hedge_symbol
+            if self.hedge_engine:
+                hedge_symbol = self.hedge_engine._match_hedge_symbol(
+                    self.config.standx_symbol
+                ) or hedge_symbol
+
+            positions = await self.hedge_adapter.get_positions(hedge_symbol)
             for pos in positions:
-                if self.config.binance_symbol in pos.symbol:
+                if hedge_symbol in pos.symbol or pos.symbol == hedge_symbol:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
-                    self.state.set_binance_position(position_qty)
-                    logger.info(f"[Sync] Binance position: {position_qty}")
+                    self.state.set_hedge_position(position_qty)
+                    logger.info(f"[Sync] Hedge (GRVT) position: {position_qty}")
                     return position_qty
             # 沒有找到倉位，設為 0
-            self.state.set_binance_position(Decimal("0"))
-            logger.info("[Sync] Binance position: 0 (no position found)")
+            self.state.set_hedge_position(Decimal("0"))
+            logger.info("[Sync] Hedge (GRVT) position: 0 (no position found)")
             return Decimal("0")
         except Exception as e:
-            logger.error(f"Failed to sync Binance position: {e}")
-            return self.state.get_binance_position()
+            logger.error(f"Failed to sync hedge position: {e}")
+            return self.state.get_hedge_position()
 
     async def on_fill_event(self, fill: FillEvent):
         """
@@ -840,12 +855,29 @@ class MarketMakerExecutor:
                 # 記錄對沖結果
                 self.state.record_hedge(hedge_result.success)
 
-                # 對沖完成後，同步 Binance 實際倉位
-                await self._sync_binance_position()
+                # 對沖完成後，同步對沖交易所實際倉位
+                await self._sync_hedge_position()
 
                 # 如果對沖回退，重新同步 StandX 倉位
-                if hedge_result.status == HedgeStatus.FALLBACK:
+                if hedge_result.status in [HedgeStatus.FALLBACK, HedgeStatus.PARTIAL_FALLBACK]:
                     await self._sync_standx_position()
+
+                # 根據對沖結果決定狀態（風控模式）
+                if hedge_result.status in [
+                    HedgeStatus.RISK_CONTROL,
+                    HedgeStatus.WAITING_RECOVERY,
+                    HedgeStatus.PARTIAL_FALLBACK,
+                    HedgeStatus.FALLBACK_FAILED,
+                ]:
+                    # 進入 PAUSED 狀態，停止掛單
+                    self._status = ExecutorStatus.PAUSED
+                    logger.warning(f"Entering PAUSED due to hedge failure: {hedge_result.status.value}")
+                    # 撤銷所有訂單
+                    await self._cancel_all_orders()
+                    if self._on_status_change:
+                        await self._on_status_change(self._status)
+                    # 不恢復 RUNNING，等待 check_recovery
+                    return
 
                 # 觸發對沖回調
                 if self._on_hedge:
@@ -916,7 +948,7 @@ class MarketMakerExecutor:
         return {
             "config": {
                 "standx_symbol": self.config.standx_symbol,
-                "binance_symbol": self.config.binance_symbol,
+                "hedge_symbol": self.config.hedge_symbol,
                 "order_distance_bps": self.config.order_distance_bps,
                 "order_size_btc": float(self.config.order_size_btc),
                 "max_position_btc": float(self.config.max_position_btc),

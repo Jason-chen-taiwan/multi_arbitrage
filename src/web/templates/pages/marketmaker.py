@@ -122,10 +122,10 @@ def get_marketmaker_page() -> str:
                         <!-- 倉位狀態 -->
                         <div style="display: flex; gap: 15px; font-size: 11px; color: #9ca3af; padding-top: 10px; border-top: 1px solid #2a3347;">
                             <span>StandX: <span id="mmStandxPos" style="color: #e4e6eb;">0</span> BTC</span>
-                            <span>Binance: <span id="mmBinancePos" style="color: #e4e6eb;">0</span> BTC</span>
+                            <span>GRVT: <span id="mmGrvtPos" style="color: #e4e6eb;">0</span> BTC</span>
                             <span>淨敞口: <span id="mmNetPos" style="color: #10b981;">0</span></span>
                             <span>StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">0</span></span>
-                            <span>Binance USDT: $<span id="mmBinanceUsdt" style="color: #e4e6eb;">0</span></span>
+                            <span>GRVT USDT: $<span id="mmGrvtUsdt" style="color: #e4e6eb;">0</span></span>
                         </div>
                     </div>
 

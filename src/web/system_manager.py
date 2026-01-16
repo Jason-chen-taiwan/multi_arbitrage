@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 class SystemManager:
     """系統管理器 - 管理交易所連接和監控"""
 
+    # 定義必要 vs 可選的適配器
+    # 做市商需要 STANDX，對沖可選 GRVT
+    REQUIRED_ADAPTERS = {"STANDX"}     # 做市必需
+    OPTIONAL_ADAPTERS = {"GRVT"}       # 對沖可選
+
     def __init__(self, config_manager):
         """
         初始化系統管理器
@@ -36,7 +41,11 @@ class SystemManager:
             'running': False,
             'auto_execute': False,
             'dry_run': True,
-            'started_at': None
+            'started_at': None,
+            # 新增健康狀態
+            'ready_for_trading': False,
+            'hedging_available': False,
+            'health_error': None
         }
 
     async def init_system(self):
@@ -126,6 +135,9 @@ class SystemManager:
         if len(self.adapters) == 0:
             logger.warning("⚠️  沒有已配置的交易所")
             return
+
+        # === 健康檢查 ===
+        await self._perform_health_checks()
 
         # 創建監控器
         self.monitor = MultiExchangeMonitor(
@@ -240,6 +252,127 @@ class SystemManager:
 
         logger.info(f"✅ {exchange_key} 已從監控系統移除")
 
+    async def _perform_health_checks(self):
+        """
+        執行健康檢查（含 required/optional 策略）
+
+        - required adapters 不健康 → ready_for_trading = False
+        - optional adapters 不健康 → hedging_available = False，但可以繼續運行
+        """
+        logger.info("🔍 正在執行健康檢查...")
+
+        unhealthy_required = []
+        unhealthy_optional = []
+
+        for name, adapter in list(self.adapters.items()):
+            try:
+                # 檢查 adapter 是否有 health_check 方法
+                if not hasattr(adapter, 'health_check'):
+                    logger.warning(f"  ⚠️  {name} - 無健康檢查方法")
+                    continue
+
+                health = await adapter.health_check()
+
+                if not health.get("healthy", False):
+                    if name in self.REQUIRED_ADAPTERS:
+                        unhealthy_required.append(name)
+                        logger.error(
+                            f"  ❌ {name} (必要) 健康檢查失敗: {health.get('error', 'Unknown')}"
+                        )
+                    else:
+                        unhealthy_optional.append(name)
+                        logger.warning(
+                            f"  ⚠️  {name} (可選) 健康檢查失敗: {health.get('error', 'Unknown')}"
+                        )
+                else:
+                    latency = health.get("latency_ms", 0)
+                    logger.info(f"  ✅ {name} 健康檢查通過 ({latency:.0f}ms)")
+
+            except Exception as e:
+                if name in self.REQUIRED_ADAPTERS:
+                    unhealthy_required.append(name)
+                    logger.error(f"  ❌ {name} (必要) 健康檢查異常: {e}")
+                else:
+                    unhealthy_optional.append(name)
+                    logger.warning(f"  ⚠️  {name} (可選) 健康檢查異常: {e}")
+
+        # 更新系統狀態
+        if unhealthy_required:
+            self.system_status['ready_for_trading'] = False
+            self.system_status['health_error'] = f"必要交易所不可用: {unhealthy_required}"
+            logger.error(f"🚫 系統無法交易: {unhealthy_required} 不健康")
+        else:
+            self.system_status['ready_for_trading'] = True
+            self.system_status['health_error'] = None
+            logger.info("✅ 做市功能就緒")
+
+        if unhealthy_optional:
+            self.system_status['hedging_available'] = False
+            logger.warning(f"⚠️  對沖功能不可用: {unhealthy_optional}")
+
+            # 移除不健康的可選 adapter（避免後續錯誤）
+            for name in unhealthy_optional:
+                if name in self.adapters:
+                    del self.adapters[name]
+                    logger.info(f"移除不健康的可選 adapter: {name}")
+        else:
+            # 檢查是否有對沖用的 adapter
+            has_hedge_adapter = any(
+                name in self.OPTIONAL_ADAPTERS for name in self.adapters
+            )
+            self.system_status['hedging_available'] = has_hedge_adapter
+
+            if has_hedge_adapter:
+                logger.info("✅ 對沖功能就緒")
+            else:
+                logger.info("ℹ️  未配置對沖交易所")
+
+    async def check_all_health(self) -> dict:
+        """
+        檢查所有交易所健康狀態
+
+        Returns:
+            {
+                "all_healthy": bool,
+                "ready_for_trading": bool,
+                "hedging_available": bool,
+                "exchanges": {
+                    "STANDX": {...},
+                    "GRVT": {...}
+                }
+            }
+        """
+        results = {}
+
+        for name, adapter in self.adapters.items():
+            try:
+                if hasattr(adapter, 'health_check'):
+                    health = await adapter.health_check()
+                    results[name] = health
+                else:
+                    results[name] = {
+                        "healthy": True,
+                        "latency_ms": 0,
+                        "error": None,
+                        "details": {"note": "no health_check method"}
+                    }
+            except Exception as e:
+                results[name] = {
+                    "healthy": False,
+                    "latency_ms": 0,
+                    "error": str(e),
+                    "details": {}
+                }
+
+        all_healthy = all(r.get("healthy", False) for r in results.values())
+
+        return {
+            "all_healthy": all_healthy,
+            "ready_for_trading": self.system_status.get('ready_for_trading', False),
+            "hedging_available": self.system_status.get('hedging_available', False),
+            "exchanges": results
+        }
+
     async def shutdown(self):
         """關閉系統"""
         if self.monitor:
@@ -256,4 +389,6 @@ class SystemManager:
                     pass
 
         self.system_status['running'] = False
+        self.system_status['ready_for_trading'] = False
+        self.system_status['hedging_available'] = False
         logger.info("系統已關閉")

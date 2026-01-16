@@ -54,36 +54,36 @@ def register_mm_routes(app, dependencies):
                 return JSONResponse({'success': False, 'error': 'StandX 未連接'})
 
             standx = adapters['STANDX']
-            binance = adapters.get('BINANCE')  # 可選，沒有則不對沖
+            grvt = adapters.get('GRVT')  # 可選，沒有則不對沖
 
             # 創建配置
             config = MMConfig(
                 standx_symbol="BTC-USD",
-                binance_symbol="BTC/USDT:USDT",
+                hedge_symbol="BTC_USDT_Perp",
                 order_size_btc=order_size,
                 order_distance_bps=order_distance,
                 dry_run=dry_run,
             )
 
-            # 創建對沖引擎 (如果有 Binance)
+            # 創建對沖引擎 (如果有 GRVT)
             hedge_engine = None
-            if binance:
+            if grvt:
                 hedge_engine = HedgeEngine(
-                    binance_adapter=binance,
+                    hedge_adapter=grvt,
                     standx_adapter=standx,
                 )
 
             # 創建執行器
             mm_executor = MarketMakerExecutor(
                 standx_adapter=standx,
-                binance_adapter=binance,
+                hedge_adapter=grvt,
                 hedge_engine=hedge_engine,
                 config=config,
             )
 
-            # 如果沒有 Binance，警告但繼續
-            if not binance:
-                logger.warning("Binance 未連接，做市商將不會對沖")
+            # 如果沒有 GRVT，警告但繼續
+            if not grvt:
+                logger.warning("GRVT 未連接，做市商將不會對沖")
 
             # 設置回調
             async def on_status_change(status: ExecutorStatus):
@@ -147,7 +147,7 @@ def register_mm_routes(app, dependencies):
             adapters = adapters_getter()
             positions = {
                 'standx': {'btc': 0, 'equity': 0},
-                'binance': {'btc': 0, 'usdt': 0},
+                'grvt': {'btc': 0, 'usdt': 0},
             }
 
             # 查詢 StandX 倉位
@@ -168,26 +168,26 @@ def register_mm_routes(app, dependencies):
                 except Exception as e:
                     logger.warning(f"查詢 StandX 倉位失敗: {e}")
 
-            # 查詢 Binance 倉位
-            if 'BINANCE' in adapters:
+            # 查詢 GRVT 倉位
+            if 'GRVT' in adapters:
                 try:
-                    binance = adapters['BINANCE']
-                    binance_positions = await binance.get_positions('BTC/USDT:USDT')
-                    for pos in binance_positions:
+                    grvt = adapters['GRVT']
+                    grvt_positions = await grvt.get_positions('BTC_USDT_Perp')
+                    for pos in grvt_positions:
                         if 'BTC' in pos.symbol:
                             qty = float(pos.size)
                             if pos.side == 'short':
                                 qty = -qty
-                            positions['binance']['btc'] = qty
+                            positions['grvt']['btc'] = qty
 
-                    # 查詢 USDT 餘額
-                    balance = await binance.get_balance()
-                    positions['binance']['usdt'] = float(balance.available_balance)
+                    # 查詢餘額
+                    balance = await grvt.get_balance()
+                    positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
                 except Exception as e:
-                    logger.warning(f"查詢 Binance 倉位失敗: {e}")
+                    logger.warning(f"查詢 GRVT 倉位失敗: {e}")
 
             # 計算淨敞口
-            positions['net_btc'] = positions['standx']['btc'] + positions['binance']['btc']
+            positions['net_btc'] = positions['standx']['btc'] + positions['grvt']['btc']
             positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
 
             return JSONResponse(serialize_for_json(positions))

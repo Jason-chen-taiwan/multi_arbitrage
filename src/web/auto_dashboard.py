@@ -187,7 +187,7 @@ async def broadcast_data():
                 # 做市商實時倉位
                 positions = {
                     'standx': {'btc': 0, 'equity': 0},
-                    'binance': {'btc': 0, 'usdt': 0},
+                    'grvt': {'btc': 0, 'usdt': 0},
                 }
                 if 'STANDX' in adapters:
                     try:
@@ -204,21 +204,21 @@ async def broadcast_data():
                         positions['standx']['equity'] = float(balance.equity)
                     except Exception as e:
                         logger.warning(f"查詢 StandX 倉位失敗: {e}")
-                if 'BINANCE' in adapters:
+                if 'GRVT' in adapters:
                     try:
-                        binance = adapters['BINANCE']
-                        binance_positions = await binance.get_positions('BTC/USDT:USDT')
-                        for pos in binance_positions:
+                        grvt = adapters['GRVT']
+                        grvt_positions = await grvt.get_positions('BTC_USDT_Perp')
+                        for pos in grvt_positions:
                             if 'BTC' in pos.symbol:
                                 qty = float(pos.size)
                                 if pos.side == 'short':
                                     qty = -qty
-                                positions['binance']['btc'] = qty
-                        balance = await binance.get_balance()
-                        positions['binance']['usdt'] = float(balance.available_balance)
+                                positions['grvt']['btc'] = qty
+                        balance = await grvt.get_balance()
+                        positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
                     except Exception as e:
-                        logger.debug(f"查詢 Binance 倉位失敗: {e}")
-                positions['net_btc'] = positions['standx']['btc'] + positions['binance']['btc']
+                        logger.debug(f"查詢 GRVT 倉位失敗: {e}")
+                positions['net_btc'] = positions['standx']['btc'] + positions['grvt']['btc']
                 positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
                 data['mm_positions'] = positions
 
@@ -590,9 +590,9 @@ async def root():
                 if (data.mm_positions) {
                     const pos = data.mm_positions;
                     document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
-                    document.getElementById('mmBinancePos').textContent = (pos.binance?.btc || 0).toFixed(4);
+                    document.getElementById('mmGrvtPos').textContent = (pos.grvt?.btc || 0).toFixed(4);
                     document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
-                    document.getElementById('mmBinanceUsdt').textContent = (pos.binance?.usdt || 0).toFixed(2);
+                    document.getElementById('mmGrvtUsdt').textContent = (pos.grvt?.usdt || 0).toFixed(2);
 
                     const netPos = pos.net_btc || 0;
                     const netEl = document.getElementById('mmNetPos');

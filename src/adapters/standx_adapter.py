@@ -3,7 +3,9 @@ StandX Exchange Adapter Implementation
 
 This module implements BasePerpAdapter for StandX exchange.
 """
+import asyncio
 import json
+import logging
 import time
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
@@ -13,8 +15,14 @@ from uuid import uuid4
 import aiohttp
 from eth_account import Account
 
-from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook
+from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook, SymbolInfo
+from .order_validator import validate_and_normalize_order
 from ..auth import AsyncStandXAuth
+
+logger = logging.getLogger(__name__)
+
+# 敏感資訊 key 列表（用於日誌遮罩）
+SENSITIVE_KEYS = {"api_key", "secret", "signature", "authorization", "private_key", "ed25519", "token"}
 
 
 class StandXAdapter(BasePerpAdapter):
@@ -27,6 +35,30 @@ class StandXAdapter(BasePerpAdapter):
     1. Token 模式 (推薦): api_token + ed25519_private_key
     2. 錢包簽名模式: private_key (錢包私鑰)
     """
+
+    # Symbol 規格 TTL (秒)
+    SYMBOL_SPECS_TTL_SEC = 3600  # 1 小時
+
+    # 健康檢查超時 (秒)
+    HEALTH_CHECK_TIMEOUT_SEC = 5.0
+
+    # Fallback symbol specs (API 失敗時使用)
+    _FALLBACK_SPECS = {
+        "BTC-USD": SymbolInfo(
+            symbol="BTC-USD",
+            min_qty=Decimal("0.0001"),
+            qty_step=Decimal("0.0001"),
+            price_tick=Decimal("0.01"),
+            min_notional=Decimal("1"),
+        ),
+        "ETH-USD": SymbolInfo(
+            symbol="ETH-USD",
+            min_qty=Decimal("0.001"),
+            qty_step=Decimal("0.001"),
+            price_tick=Decimal("0.01"),
+            min_notional=Decimal("1"),
+        ),
+    }
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -84,6 +116,10 @@ class StandXAdapter(BasePerpAdapter):
         # Session management
         self.session: Optional[aiohttp.ClientSession] = None
         self.session_id = str(uuid4())
+
+        # Symbol specs cache
+        self._symbol_specs: Dict[str, SymbolInfo] = {}
+        self._symbol_specs_ts: Dict[str, float] = {}
     
     async def connect(self) -> bool:
         """連接到 StandX 並完成認證"""
@@ -140,7 +176,112 @@ class StandXAdapter(BasePerpAdapter):
         except Exception as e:
             print(f"❌ Failed to disconnect from StandX: {e}")
             return False
-    
+
+    def _redact_sensitive(self, data: dict) -> dict:
+        """遮罩敏感資訊"""
+        if not isinstance(data, dict):
+            return data
+
+        redacted = {}
+        for k, v in data.items():
+            if k.lower() in SENSITIVE_KEYS:
+                redacted[k] = "***REDACTED***"
+            elif isinstance(v, dict):
+                redacted[k] = self._redact_sensitive(v)
+            else:
+                redacted[k] = v
+        return redacted
+
+    async def health_check(self) -> dict:
+        """
+        健康檢查（帶超時）
+
+        檢查 StandX API 連線和憑證是否正常。
+        """
+        start = time.time()
+
+        try:
+            # 1. 測試市場資料 API（公開 API）
+            orderbook = await asyncio.wait_for(
+                self.get_orderbook("BTC-USD", depth=1),
+                timeout=self.HEALTH_CHECK_TIMEOUT_SEC / 2
+            )
+            if not orderbook or not orderbook.bids:
+                return {
+                    "healthy": False,
+                    "latency_ms": (time.time() - start) * 1000,
+                    "error": "無法獲取訂單簿",
+                    "details": {}
+                }
+
+            # 2. 測試帳戶 API（需認證）
+            balance = await asyncio.wait_for(
+                self.get_balance(),
+                timeout=self.HEALTH_CHECK_TIMEOUT_SEC / 2
+            )
+            if balance is None:
+                return {
+                    "healthy": False,
+                    "latency_ms": (time.time() - start) * 1000,
+                    "error": "無法獲取帳戶餘額，請檢查 API 憑證",
+                    "details": {}
+                }
+
+            return {
+                "healthy": True,
+                "latency_ms": (time.time() - start) * 1000,
+                "error": None,
+                "details": {
+                    "equity": float(balance.equity),
+                    "available": float(balance.available_balance),
+                    "btc_price": float(orderbook.bids[0][0]),
+                }
+            }
+
+        except asyncio.TimeoutError:
+            return {
+                "healthy": False,
+                "latency_ms": (time.time() - start) * 1000,
+                "error": f"健康檢查超時 ({self.HEALTH_CHECK_TIMEOUT_SEC}s)",
+                "details": {}
+            }
+        except Exception as e:
+            return {
+                "healthy": False,
+                "latency_ms": (time.time() - start) * 1000,
+                "error": str(e),
+                "details": {}
+            }
+
+    async def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
+        """
+        獲取交易對規格（帶 TTL 快取）
+
+        Args:
+            symbol: 交易對符號
+
+        Returns:
+            Optional[SymbolInfo]: 交易對規格
+        """
+        now = time.time()
+
+        # 檢查快取是否有效
+        if (symbol in self._symbol_specs and
+            symbol in self._symbol_specs_ts and
+            now - self._symbol_specs_ts[symbol] < self.SYMBOL_SPECS_TTL_SEC):
+            return self._symbol_specs[symbol]
+
+        # TODO: 從 StandX API 拉取規格（如果有 instruments API）
+        # 目前先使用 fallback specs
+
+        # 返回 fallback
+        if symbol in self._FALLBACK_SPECS:
+            self._symbol_specs[symbol] = self._FALLBACK_SPECS[symbol]
+            self._symbol_specs_ts[symbol] = now
+            return self._symbol_specs[symbol]
+
+        return None
+
     async def _request(
         self,
         method: str,
@@ -180,7 +321,23 @@ class StandXAdapter(BasePerpAdapter):
             json=data if data else None,
             headers=headers
         ) as response:
-            response.raise_for_status()
+            # 處理錯誤狀態碼
+            if response.status >= 400:
+                error_text = await response.text()
+
+                # 400 錯誤：詳細記錄請求資料（遮罩敏感資訊）
+                if response.status == 400:
+                    safe_body = self._redact_sensitive(data or {})
+                    logger.error(
+                        f"StandX API 400 Bad Request:\n"
+                        f"  URL: {url}\n"
+                        f"  Method: {method}\n"
+                        f"  Request Body: {json.dumps(safe_body, indent=2)}\n"
+                        f"  Response: {error_text}"
+                    )
+
+                response.raise_for_status()
+
             return await response.json()
     
     async def get_balance(self) -> Balance:
@@ -248,10 +405,43 @@ class StandXAdapter(BasePerpAdapter):
         client_order_id: Optional[str] = None,
         **kwargs
     ) -> Order:
-        """下單"""
+        """下單（含驗證）"""
         if order_type == "limit" and price is None:
             raise ValueError("限價單必須指定價格")
-        
+
+        # === 訂單驗證 ===
+        spec = await self.get_symbol_info(symbol)
+
+        # 獲取 orderbook 用於市價單估算 notional
+        best_bid, best_ask = None, None
+        if price is None and spec and spec.min_notional:
+            try:
+                ob = await self.get_orderbook(symbol, depth=1)
+                if ob and ob.bids and ob.asks:
+                    best_bid = Decimal(str(ob.bids[0][0]))
+                    best_ask = Decimal(str(ob.asks[0][0]))
+            except Exception:
+                pass
+
+        # 執行驗證
+        validation = validate_and_normalize_order(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=price,
+            spec=spec,
+            best_bid=best_bid,
+            best_ask=best_ask,
+        )
+
+        if not validation.ok:
+            raise ValueError(f"訂單驗證失敗: {validation.reason}")
+
+        # 使用正規化後的值
+        quantity = validation.normalized_qty
+        if validation.normalized_price is not None:
+            price = validation.normalized_price
+
         try:
             # 轉換 side: "long"/"short" -> "buy"/"sell"
             if side in ["long", "buy"]:
@@ -260,14 +450,14 @@ class StandXAdapter(BasePerpAdapter):
                 side_str = "sell"
             else:
                 side_str = side
-            
+
             # 轉換 order_type
             if order_type == "post_only":
                 order_type_str = "limit"
                 time_in_force = "post_only"
             else:
                 order_type_str = order_type
-            
+
             # Prepare order data
             order_data = {
                 "symbol": symbol,
@@ -277,7 +467,7 @@ class StandXAdapter(BasePerpAdapter):
                 "time_in_force": time_in_force,
                 "reduce_only": reduce_only
             }
-            
+
             # Add price for limit orders
             if price:
                 order_data["price"] = str(price)

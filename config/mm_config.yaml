@@ -4,7 +4,7 @@
 # 交易對設定
 symbols:
   standx: "BTC-USD"
-  binance: "BTC/USDT:USDT"
+  hedge: "BTC_USDT_Perp"  # GRVT 對沖交易對
 
 # 報價參數
 quote:
@@ -60,8 +60,21 @@ execution:
   # 需要配合 StandX API 延遲調整，建議 >= 2.0 秒
   disappear_time_sec: 2.0
 
-# 對沖參數
+# 對沖參數 (GRVT)
 hedge:
+  # 對沖交易所
+  exchange: "grvt"
+
+  # 是否自動匹配交易對
+  # true: 自動將 StandX BTC-USD 匹配到 GRVT BTC_USDT_Perp
+  auto_match_symbol: true
+
+  # 明確的交易對映射（優先使用）
+  symbol_map:
+    "BTC-USD": "BTC_USDT_Perp"
+    "ETH-USD": "ETH_USDT_Perp"
+    "SOL-USD": "SOL_USDT_Perp"
+
   # 對沖超時 (毫秒)
   timeout_ms: 1000
 
@@ -70,6 +83,10 @@ hedge:
 
   # 重試間隔 (毫秒)
   retry_delay_ms: 100
+
+  # 最大未對沖倉位 (BTC)
+  # 超過此值會部分平倉
+  max_unhedged_position: 0.01
 
 # Uptime Program 參數 (StandX 官方要求)
 uptime:

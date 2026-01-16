@@ -82,7 +82,7 @@ class MMState:
 
         # 倉位追蹤
         self._standx_position: Decimal = Decimal("0")
-        self._binance_position: Decimal = Decimal("0")
+        self._hedge_position: Decimal = Decimal("0")  # GRVT 對沖倉位
 
         # 價格歷史 (用於波動率計算)
         self._price_history: List[Tuple[float, Decimal]] = []
@@ -201,36 +201,36 @@ class MMState:
         with self._lock:
             self._standx_position = position
 
-    def update_binance_position(self, delta: Decimal):
-        """更新 Binance 倉位"""
+    def update_hedge_position(self, delta: Decimal):
+        """更新對沖倉位 (GRVT)"""
         with self._lock:
-            self._binance_position += delta
-            logger.info(f"Binance position: {self._binance_position} (delta: {delta})")
+            self._hedge_position += delta
+            logger.info(f"Hedge (GRVT) position: {self._hedge_position} (delta: {delta})")
 
-    def set_binance_position(self, position: Decimal):
-        """設置 Binance 倉位"""
+    def set_hedge_position(self, position: Decimal):
+        """設置對沖倉位 (GRVT)"""
         with self._lock:
-            self._binance_position = position
+            self._hedge_position = position
 
     def get_standx_position(self) -> Decimal:
         """獲取 StandX 倉位"""
         with self._lock:
             return self._standx_position
 
-    def get_binance_position(self) -> Decimal:
-        """獲取 Binance 倉位"""
+    def get_hedge_position(self) -> Decimal:
+        """獲取對沖倉位 (GRVT)"""
         with self._lock:
-            return self._binance_position
+            return self._hedge_position
 
     def get_net_position(self) -> Decimal:
-        """獲取淨敞口 (StandX + Binance)"""
+        """獲取淨敞口 (StandX + GRVT)"""
         with self._lock:
-            return self._standx_position + self._binance_position
+            return self._standx_position + self._hedge_position
 
     def is_position_balanced(self, tolerance: Decimal = Decimal("0.0001")) -> bool:
         """倉位是否平衡"""
         with self._lock:
-            net = abs(self._standx_position + self._binance_position)
+            net = abs(self._standx_position + self._hedge_position)
             return net <= tolerance
 
     # ==================== 價格和波動率 ====================
@@ -466,8 +466,8 @@ class MMState:
         """獲取統計數據"""
         with self._lock:
             standx_pos = float(self._standx_position)
-            binance_pos = float(self._binance_position)
-            net_pos = standx_pos + binance_pos
+            hedge_pos = float(self._hedge_position)
+            net_pos = standx_pos + hedge_pos
             total_time = self._total_time_ms or 1
             return {
                 "total_fills": self._total_fills,
@@ -479,7 +479,7 @@ class MMState:
                     if self._total_hedges > 0 else 0
                 ),
                 "standx_position": standx_pos,
-                "binance_position": binance_pos,
+                "hedge_position": hedge_pos,
                 "net_position": net_pos,
                 "is_balanced": abs(net_pos) <= 0.0001,
                 # 詳細統計
@@ -519,7 +519,7 @@ class MMState:
             bid_order = self._bid_order
             ask_order = self._ask_order
             standx_pos = float(self._standx_position)
-            binance_pos = float(self._binance_position)
+            hedge_pos = float(self._hedge_position)
             last_price = float(self._last_price) if self._last_price else None
 
             # 計算波動率 (在鎖內計算避免再次獲取鎖)
@@ -544,9 +544,9 @@ class MMState:
                     if self._total_hedges > 0 else 0
                 ),
                 "standx_position": standx_pos,
-                "binance_position": binance_pos,
-                "net_position": standx_pos + binance_pos,
-                "is_balanced": abs(standx_pos + binance_pos) <= 0.0001,
+                "hedge_position": hedge_pos,
+                "net_position": standx_pos + hedge_pos,
+                "is_balanced": abs(standx_pos + hedge_pos) <= 0.0001,
                 # 詳細統計
                 "bid_cancels": self._bid_cancels,
                 "ask_cancels": self._ask_cancels,
@@ -591,8 +591,8 @@ class MMState:
                 "status": ask_order.status,
             } if ask_order else None,
             "standx_position": standx_pos,
-            "binance_position": binance_pos,
-            "net_position": standx_pos + binance_pos,
+            "hedge_position": hedge_pos,
+            "net_position": standx_pos + hedge_pos,
             "last_price": last_price,
             "volatility_bps": volatility,
             "fill_count": self._fill_count,
