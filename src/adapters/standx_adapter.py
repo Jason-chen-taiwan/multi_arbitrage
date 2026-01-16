@@ -392,7 +392,7 @@ class StandXAdapter(BasePerpAdapter):
         try:
             result = await self._request(
                 'GET', '/api/query_depth_book',
-                params={'symbol': symbol}
+                params={'symbol': symbol, 'depth': depth}
             )
 
             return Orderbook(

@@ -149,10 +149,10 @@ async def broadcast_data():
                 if 'STANDX' in adapters:
                     try:
                         standx = adapters['STANDX']
-                        ob = await standx.get_orderbook('BTC-USD')
+                        ob = await standx.get_orderbook('BTC-USD', depth=50)
                         if ob and ob.bids and ob.asks:
-                            bids = [[float(b[0]), float(b[1])] for b in ob.bids[:10]]
-                            asks = [[float(a[0]), float(a[1])] for a in ob.asks[:10]]
+                            bids = [[float(b[0]), float(b[1])] for b in ob.bids[:50]]
+                            asks = [[float(a[0]), float(a[1])] for a in ob.asks[:50]]
                             data['orderbooks']['STANDX'] = {
                                 'BTC-USD': {
                                     'bids': bids,
