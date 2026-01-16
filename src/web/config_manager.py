@@ -26,11 +26,28 @@ class ConfigManager:
         configs = {'dex': {}, 'cex': {}}
 
         # DEX 配置
-        if os.getenv('WALLET_PRIVATE_KEY'):
+        # StandX: 支援 Token 模式 (推薦) 和 錢包簽名模式
+        standx_api_token = os.getenv('STANDX_API_TOKEN')
+        standx_ed25519_key = os.getenv('STANDX_ED25519_PRIVATE_KEY')
+        wallet_private_key = os.getenv('WALLET_PRIVATE_KEY')
+
+        if standx_api_token and standx_ed25519_key:
+            # Token 模式 (推薦)
             configs['dex']['standx'] = {
                 'name': 'StandX',
                 'configured': True,
-                'private_key_masked': self._mask_key(os.getenv('WALLET_PRIVATE_KEY', '')),
+                'auth_mode': 'token',
+                'api_token_masked': self._mask_key(standx_api_token),
+                'ed25519_key_masked': self._mask_key(standx_ed25519_key),
+                'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
+            }
+        elif wallet_private_key:
+            # 錢包簽名模式 (舊方式)
+            configs['dex']['standx'] = {
+                'name': 'StandX',
+                'configured': True,
+                'auth_mode': 'wallet',
+                'private_key_masked': self._mask_key(wallet_private_key),
                 'address': os.getenv('WALLET_ADDRESS', ''),
                 'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
             }
@@ -66,8 +83,22 @@ class ConfigManager:
         # 使用 quote_mode='never' 避免添加引號
         if exchange_type == 'dex':
             if exchange_name == 'standx':
-                set_key(self.env_file, 'WALLET_PRIVATE_KEY', config.get('private_key', ''), quote_mode='never')
-                set_key(self.env_file, 'WALLET_ADDRESS', config.get('address', ''), quote_mode='never')
+                # 支援兩種認證模式
+                auth_mode = config.get('auth_mode', 'token')
+                if auth_mode == 'token':
+                    # Token 模式
+                    set_key(self.env_file, 'STANDX_API_TOKEN', config.get('api_token', ''), quote_mode='never')
+                    set_key(self.env_file, 'STANDX_ED25519_PRIVATE_KEY', config.get('ed25519_private_key', ''), quote_mode='never')
+                    # 清除舊的錢包模式配置
+                    unset_key(self.env_file, 'WALLET_PRIVATE_KEY')
+                    unset_key(self.env_file, 'WALLET_ADDRESS')
+                else:
+                    # 錢包簽名模式
+                    set_key(self.env_file, 'WALLET_PRIVATE_KEY', config.get('private_key', ''), quote_mode='never')
+                    set_key(self.env_file, 'WALLET_ADDRESS', config.get('address', ''), quote_mode='never')
+                    # 清除 Token 模式配置
+                    unset_key(self.env_file, 'STANDX_API_TOKEN')
+                    unset_key(self.env_file, 'STANDX_ED25519_PRIVATE_KEY')
                 set_key(self.env_file, 'STANDX_TESTNET', str(testnet).lower(), quote_mode='never')
             elif exchange_name == 'grvt':
                 set_key(self.env_file, 'GRVT_API_KEY', config.get('api_key', ''), quote_mode='never')
@@ -90,7 +121,12 @@ class ConfigManager:
         """刪除配置"""
         if exchange_type == 'dex':
             if exchange_name == 'standx':
-                keys = ['WALLET_PRIVATE_KEY', 'WALLET_ADDRESS', 'STANDX_TESTNET']
+                # 刪除兩種模式的所有配置
+                keys = [
+                    'STANDX_API_TOKEN', 'STANDX_ED25519_PRIVATE_KEY',  # Token 模式
+                    'WALLET_PRIVATE_KEY', 'WALLET_ADDRESS',  # 錢包模式
+                    'STANDX_TESTNET'
+                ]
             else:  # grvt
                 keys = ['GRVT_API_KEY', 'GRVT_API_SECRET', 'GRVT_TESTNET']
         else:

@@ -42,7 +42,16 @@ def create_adapter(config: Dict[str, Any]) -> BasePerpAdapter:
         ValueError: 如果交易所名稱不支持或配置無效
 
     Example:
-        >>> # DEX 示例（StandX）
+        >>> # StandX - Token 模式 (推薦)
+        >>> config = {
+        ...     "exchange_name": "standx",
+        ...     "api_token": "eyJhbGci...",
+        ...     "ed25519_private_key": "3cqUwpXqkE9gA5..."
+        ... }
+        >>> adapter = create_adapter(config)
+        >>> await adapter.connect()
+
+        >>> # StandX - 錢包簽名模式 (舊方式)
         >>> config = {
         ...     "exchange_name": "standx",
         ...     "private_key": "0x...",

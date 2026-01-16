@@ -22,37 +22,65 @@ class StandXAdapter(BasePerpAdapter):
     StandX 交易所適配器實現
 
     Symbol 映射由 SymbolManager 統一管理 (config/symbols.yaml)
+
+    支援兩種認證方式:
+    1. Token 模式 (推薦): api_token + ed25519_private_key
+    2. 錢包簽名模式: private_key (錢包私鑰)
     """
 
     def __init__(self, config: Dict[str, Any]):
         """
         初始化 StandX 適配器
-        
+
         Args:
-            config: 配置字典，必須包含：
-                - exchange_name: "standx"
+            config: 配置字典
+
+            Token 模式 (推薦):
+                - api_token: StandX 提供的 API Token
+                - ed25519_private_key: StandX 提供的 Ed25519 Private Key
+
+            錢包簽名模式:
                 - private_key: 錢包私鑰
                 - chain: 鏈名稱，如 "bsc" 或 "solana"
+
+            通用參數:
                 - base_url: API 基礎 URL（可選，默認 https://api.standx.com）
                 - perps_url: Perps API URL（可選，默認 https://perps.standx.com）
         """
         super().__init__(config)
-        
+
         self.chain = config.get("chain", "bsc")
         self.base_url = config.get("base_url", "https://api.standx.com")
         self.perps_url = config.get("perps_url", "https://perps.standx.com")
-        
-        # Initialize wallet
-        private_key = config.get("private_key") or config.get("wallet_private_key")
-        if not private_key:
-            raise ValueError("配置中必須包含 private_key 或 wallet_private_key")
-        
-        self.account = Account.from_key(private_key)
-        self.wallet_address = self.account.address
-        
-        # Initialize auth manager
-        self.auth = AsyncStandXAuth(base_url=self.base_url)
-        
+
+        # 檢測認證模式
+        api_token = config.get("api_token")
+        ed25519_key = config.get("ed25519_private_key")
+        wallet_private_key = config.get("private_key") or config.get("wallet_private_key")
+
+        if api_token and ed25519_key:
+            # Token 模式
+            self._auth_mode = "token"
+            self.account = None
+            self.wallet_address = None
+            self.auth = AsyncStandXAuth(
+                base_url=self.base_url,
+                api_token=api_token,
+                ed25519_private_key=ed25519_key,
+            )
+        elif wallet_private_key:
+            # 錢包簽名模式
+            self._auth_mode = "wallet"
+            self.account = Account.from_key(wallet_private_key)
+            self.wallet_address = self.account.address
+            self.auth = AsyncStandXAuth(base_url=self.base_url)
+        else:
+            raise ValueError(
+                "配置錯誤：必須提供以下其中一組認證資訊:\n"
+                "  Token 模式: api_token + ed25519_private_key\n"
+                "  錢包模式: private_key"
+            )
+
         # Session management
         self.session: Optional[aiohttp.ClientSession] = None
         self.session_id = str(uuid4())
@@ -62,8 +90,13 @@ class StandXAdapter(BasePerpAdapter):
         try:
             # Create HTTP session
             self.session = aiohttp.ClientSession()
-            
-            # Authenticate with wallet signature
+
+            if self._auth_mode == "token":
+                # Token 模式: 無需認證，直接使用提供的 token
+                print(f"✅ Connected to StandX (Token mode)")
+                return True
+
+            # 錢包簽名模式: 需要錢包簽名認證
             async def sign_message(message: str) -> str:
                 """Sign message with wallet."""
                 from eth_account.messages import encode_defunct
@@ -75,21 +108,21 @@ class StandXAdapter(BasePerpAdapter):
                 if not sig_hex.startswith('0x'):
                     sig_hex = '0x' + sig_hex
                 return sig_hex
-            
+
             # Perform authentication
             login_response = await self.auth.authenticate(
                 chain=self.chain,
                 wallet_address=self.wallet_address,
                 sign_message_fn=sign_message
             )
-            
+
             # Store the access token
             if 'token' in login_response:
                 self.auth.access_token = login_response['token']
-            
+
             print(f"✅ Connected to StandX as {login_response.get('alias', 'Unknown')}")
             return True
-            
+
         except Exception as e:
             print(f"❌ Failed to connect to StandX: {e}")
             if self.session:

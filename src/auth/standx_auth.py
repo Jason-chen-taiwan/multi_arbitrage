@@ -1,12 +1,18 @@
 """
 StandX Authentication Module
 
-Implements the complete authentication flow for StandX Perps API:
-1. Generate ed25519 key pair
-2. Obtain signature data
-3. Sign with wallet
-4. Get access token
-5. Sign request bodies
+Implements authentication for StandX Perps API:
+
+方式 1: Token 模式 (推薦)
+  - 直接使用 StandX 提供的 API Token + Ed25519 Private Key
+  - 無需錢包簽名
+
+方式 2: 錢包簽名模式 (舊方式)
+  1. Generate ed25519 key pair
+  2. Obtain signature data
+  3. Sign with wallet
+  4. Get access token
+  5. Sign request bodies
 """
 
 import time
@@ -22,29 +28,105 @@ import requests
 class StandXAuth:
     """
     StandX API Authentication Manager
-    
+
     Handles JWT token generation and request signing for StandX Perps API.
+
+    支援兩種認證方式:
+    1. Token 模式: 直接使用 API Token + Ed25519 Private Key
+    2. 錢包簽名模式: 使用錢包私鑰進行簽名認證
     """
-    
-    def __init__(self, base_url: str = "https://api.standx.com"):
+
+    def __init__(
+        self,
+        base_url: str = "https://api.standx.com",
+        api_token: Optional[str] = None,
+        ed25519_private_key: Optional[str] = None,
+    ):
         """
         Initialize the authentication manager.
-        
+
         Args:
             base_url: StandX API base URL
+            api_token: API Token (Token 模式)
+            ed25519_private_key: Ed25519 Private Key (Token 模式)
         """
         self.base_url = base_url
-        
-        # Generate ed25519 key pair for request signing
-        self.signing_key = SigningKey.generate()
-        self.verify_key = self.signing_key.verify_key
-        
-        # Encode public key as requestId (base58)
-        self.request_id = base58.b58encode(bytes(self.verify_key)).decode('utf-8')
-        
+
         # Token storage
         self.access_token: Optional[str] = None
         self.token_expiry: Optional[int] = None
+
+        # Token 模式: 使用提供的 API Token 和 Ed25519 Private Key
+        if api_token and ed25519_private_key:
+            self.access_token = api_token
+            self.token_expiry = int(time.time()) + 86400 * 365  # 假設 1 年有效
+
+            # 從提供的 private key 恢復 signing key
+            self.signing_key = self._load_ed25519_key(ed25519_private_key)
+            self.verify_key = self.signing_key.verify_key
+            self.request_id = base58.b58encode(bytes(self.verify_key)).decode('utf-8')
+            self._token_mode = True
+        else:
+            # 錢包簽名模式: 生成新的 ed25519 key pair
+            self.signing_key = SigningKey.generate()
+            self.verify_key = self.signing_key.verify_key
+            self.request_id = base58.b58encode(bytes(self.verify_key)).decode('utf-8')
+            self._token_mode = False
+
+    def _load_ed25519_key(self, private_key_str: str) -> SigningKey:
+        """
+        從字符串加載 Ed25519 private key
+
+        支援格式:
+        - Base58 編碼 (StandX 默認)
+        - Base64 編碼
+        - Hex 編碼 (帶或不帶 0x 前綴)
+        """
+        # 移除空白
+        key_str = private_key_str.strip()
+
+        # 嘗試 Base58 解碼 (StandX 默認格式)
+        try:
+            key_bytes = base58.b58decode(key_str)
+            if len(key_bytes) == 32:
+                return SigningKey(key_bytes)
+            elif len(key_bytes) == 64:
+                # 有些格式包含 public key，取前 32 bytes
+                return SigningKey(key_bytes[:32])
+        except Exception:
+            pass
+
+        # 嘗試 Base64 解碼
+        try:
+            key_bytes = base64.b64decode(key_str)
+            if len(key_bytes) == 32:
+                return SigningKey(key_bytes)
+            elif len(key_bytes) == 64:
+                return SigningKey(key_bytes[:32])
+        except Exception:
+            pass
+
+        # 嘗試 Hex 解碼
+        try:
+            if key_str.startswith('0x'):
+                key_str = key_str[2:]
+            key_bytes = bytes.fromhex(key_str)
+            if len(key_bytes) == 32:
+                return SigningKey(key_bytes)
+            elif len(key_bytes) == 64:
+                return SigningKey(key_bytes[:32])
+        except Exception:
+            pass
+
+        raise ValueError(
+            f"無法解析 Ed25519 private key，支援格式: Base58, Base64, Hex。"
+            f"長度應為 32 bytes (64 hex chars)。收到: {len(key_str)} chars"
+        )
+
+    @property
+    def is_token_mode(self) -> bool:
+        """是否使用 Token 模式認證"""
+        return self._token_mode
     
     async def authenticate(
         self,
@@ -237,8 +319,35 @@ class StandXAuth:
 
 
 class AsyncStandXAuth(StandXAuth):
-    """Async version using aiohttp for better performance."""
-    
+    """
+    Async version using aiohttp for better performance.
+
+    使用方式:
+
+    # Token 模式 (推薦)
+    auth = AsyncStandXAuth(
+        api_token="eyJhbGci...",
+        ed25519_private_key="3cqUwpXqkE9gA5CmSDBKCJdv8TytJERNUy9im5tASjSX"
+    )
+    # 無需調用 authenticate()，直接使用
+
+    # 錢包簽名模式
+    auth = AsyncStandXAuth()
+    await auth.authenticate(chain="bsc", wallet_address="0x...", sign_message_fn=sign_fn)
+    """
+
+    def __init__(
+        self,
+        base_url: str = "https://api.standx.com",
+        api_token: Optional[str] = None,
+        ed25519_private_key: Optional[str] = None,
+    ):
+        super().__init__(
+            base_url=base_url,
+            api_token=api_token,
+            ed25519_private_key=ed25519_private_key,
+        )
+
     async def _prepare_signin(self, chain: str, address: str) -> str:
         """Async version of prepare_signin."""
         import aiohttp

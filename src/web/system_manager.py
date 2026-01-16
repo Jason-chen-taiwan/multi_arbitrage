@@ -60,12 +60,20 @@ class SystemManager:
                 }
 
                 if exchange_name == 'standx':
-                    private_key = os.getenv('WALLET_PRIVATE_KEY')
-                    address = os.getenv('WALLET_ADDRESS')
-                    if private_key:
-                        adapter_config['private_key'] = private_key
-                    if address:
-                        adapter_config['wallet_address'] = address
+                    # 優先使用 Token 模式
+                    api_token = os.getenv('STANDX_API_TOKEN')
+                    ed25519_key = os.getenv('STANDX_ED25519_PRIVATE_KEY')
+                    if api_token and ed25519_key:
+                        adapter_config['api_token'] = api_token
+                        adapter_config['ed25519_private_key'] = ed25519_key
+                    else:
+                        # 回退到錢包簽名模式
+                        private_key = os.getenv('WALLET_PRIVATE_KEY')
+                        address = os.getenv('WALLET_ADDRESS')
+                        if private_key:
+                            adapter_config['private_key'] = private_key
+                        if address:
+                            adapter_config['wallet_address'] = address
                 elif exchange_name == 'grvt':
                     api_key = os.getenv('GRVT_API_KEY')
                     api_secret = os.getenv('GRVT_API_SECRET')
@@ -159,12 +167,20 @@ class SystemManager:
                 }
 
                 if exchange_name == 'standx':
-                    private_key = os.getenv('WALLET_PRIVATE_KEY')
-                    address = os.getenv('WALLET_ADDRESS')
-                    if private_key:
-                        adapter_config['private_key'] = private_key
-                    if address:
-                        adapter_config['wallet_address'] = address
+                    # 優先使用 Token 模式
+                    api_token = os.getenv('STANDX_API_TOKEN')
+                    ed25519_key = os.getenv('STANDX_ED25519_PRIVATE_KEY')
+                    if api_token and ed25519_key:
+                        adapter_config['api_token'] = api_token
+                        adapter_config['ed25519_private_key'] = ed25519_key
+                    else:
+                        # 回退到錢包簽名模式
+                        private_key = os.getenv('WALLET_PRIVATE_KEY')
+                        address = os.getenv('WALLET_ADDRESS')
+                        if private_key:
+                            adapter_config['private_key'] = private_key
+                        if address:
+                            adapter_config['wallet_address'] = address
                 elif exchange_name == 'grvt':
                     api_key = os.getenv('GRVT_API_KEY')
                     api_secret = os.getenv('GRVT_API_SECRET')
