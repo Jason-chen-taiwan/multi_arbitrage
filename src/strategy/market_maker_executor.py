@@ -296,6 +296,9 @@ class MarketMakerExecutor:
         # 檢查訂單狀態 (輪詢模式：檢測成交)
         if not self.config.dry_run:
             await self._check_order_status()
+            # 如果成交後進入對沖狀態，不繼續下單
+            if self._status == ExecutorStatus.HEDGING:
+                return
 
         # 檢查波動率
         volatility = self.state.get_volatility_bps()
@@ -349,6 +352,11 @@ class MarketMakerExecutor:
 
     async def _place_orders(self, mid_price: Decimal, best_bid: Optional[Decimal] = None, best_ask: Optional[Decimal] = None):
         """掛雙邊訂單"""
+        # 防禦性檢查：只在 RUNNING 狀態下掛單
+        if self._status != ExecutorStatus.RUNNING:
+            logger.debug(f"Skipping order placement, status={self._status}")
+            return
+
         # 獲取當前倉位 (正=long, 負=short)
         current_position = self.state.get_standx_position()
         max_pos = self.config.max_position_btc
@@ -359,13 +367,17 @@ class MarketMakerExecutor:
         # 掛買單 - 如果已經 long 太多，不再買入
         if current_position >= max_pos:
             logger.debug(f"Position too long ({current_position}), skipping bid")
-        elif not self.state.has_bid_order():
+        elif self.state.has_bid_order():
+            logger.debug("Already have bid order, skipping")
+        else:
             await self._place_bid(bid_price)
 
         # 掛賣單 - 如果已經 short 太多，不再賣出
         if current_position <= -max_pos:
             logger.debug(f"Position too short ({current_position}), skipping ask")
-        elif not self.state.has_ask_order():
+        elif self.state.has_ask_order():
+            logger.debug("Already have ask order, skipping")
+        else:
             await self._place_ask(ask_price)
 
     def _calculate_prices(
