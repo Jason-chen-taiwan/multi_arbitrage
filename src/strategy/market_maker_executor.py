@@ -214,26 +214,36 @@ class MarketMakerExecutor:
 
         # 取消現有訂單
         if not self.config.dry_run:
+            logger.info(f"[Init] Checking existing orders (dry_run={self.config.dry_run})")
             await self._cancel_all_existing_orders()
+        else:
+            logger.info(f"[Init] Skipping order cancel in dry_run mode")
 
         logger.info("Executor initialized")
 
     async def _cancel_all_existing_orders(self):
         """取消交易所上的所有現有訂單"""
+        logger.info(f"[Cancel] Querying open orders for {self.config.standx_symbol}")
         try:
             open_orders = await self.standx.get_open_orders(self.config.standx_symbol)
+            logger.info(f"[Cancel] Found {len(open_orders)} open orders")
             if open_orders:
                 logger.info(f"Cancelling {len(open_orders)} existing orders on StandX")
                 for order in open_orders:
                     try:
-                        await self.standx.cancel_order(self.config.standx_symbol, order.client_order_id)
+                        logger.info(f"[Cancel] Cancelling order: {order.client_order_id} (order_id={order.order_id}) @ {order.price}")
+                        # 使用 client_order_id 作為關鍵字參數
+                        await self.standx.cancel_order(
+                            symbol=self.config.standx_symbol,
+                            client_order_id=order.client_order_id
+                        )
                         logger.info(f"Cancelled existing order: {order.client_order_id}")
                     except Exception as e:
                         logger.warning(f"Failed to cancel order {order.client_order_id}: {e}")
             else:
                 logger.info("No existing orders to cancel")
         except Exception as e:
-            logger.warning(f"Failed to get existing orders: {e}")
+            logger.error(f"Failed to get existing orders: {e}", exc_info=True)
 
     # ==================== 主循環 ====================
 
@@ -271,6 +281,13 @@ class MarketMakerExecutor:
             self._last_best_bid = best_bid
             self._last_best_ask = best_ask
             self.state.update_price(mid_price)
+
+            # 更新 uptime 統計
+            bid_order = self.state.get_bid_order()
+            ask_order = self.state.get_ask_order()
+            bid_price = bid_order.price if bid_order else None
+            ask_price = ask_order.price if ask_order else None
+            self.state.update_uptime(mid_price, bid_price, ask_price)
 
         except Exception as e:
             logger.error(f"Failed to get orderbook: {e}")

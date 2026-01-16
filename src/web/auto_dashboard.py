@@ -1264,7 +1264,7 @@ async def root():
                     const stats = executor.stats;
                     const stateStats = executor.state?.stats || {};
                     runningTimeSec = stats.uptime_seconds || 0;
-                    effectivePts = 0;  // 後端暫無分層統計
+                    effectivePts = stateStats.effective_pts_pct || stats.effective_pts_pct || 0;
                     fillCount = stateStats.fill_count || executor.state?.fill_count || 0;
                     pnlUsd = stateStats.pnl_usd || executor.state?.pnl_usd || 0;
                     bidCancels = stateStats.bid_cancels || 0;
@@ -1306,8 +1306,19 @@ async def root():
                 document.getElementById('mmSimPnl').textContent = pnlStr;
                 document.getElementById('mmSimPnl').style.color = pnlUsd >= 0 ? '#10b981' : '#ef4444';
 
-                // 分層時間百分比 (目前只有模擬模式支持)
-                const tierPcts = isLiveMode ? {boosted: 0, standard: 0, basic: 0, outOfRange: 100} : mmSim.getTierPcts();
+                // 分層時間百分比
+                let tierPcts;
+                if (isLiveMode && executor && executor.state?.stats) {
+                    const s = executor.state.stats;
+                    tierPcts = {
+                        boosted: s.boosted_pct || 0,
+                        standard: s.standard_pct || 0,
+                        basic: s.basic_pct || 0,
+                        outOfRange: s.out_of_range_pct || 0
+                    };
+                } else {
+                    tierPcts = mmSim.getTierPcts();
+                }
                 document.getElementById('mmTierBoosted').style.width = tierPcts.boosted + '%';
                 document.getElementById('mmTierStandard').style.width = tierPcts.standard + '%';
                 document.getElementById('mmTierBasic').style.width = tierPcts.basic + '%';

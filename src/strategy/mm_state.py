@@ -92,6 +92,14 @@ class MMState:
         self._realized_pnl = Decimal("0")
         self._fill_count = 0
 
+        # Uptime 分層時間追蹤 (毫秒)
+        self._boosted_time_ms = 0      # 100% 層 (0-10 bps)
+        self._standard_time_ms = 0     # 50% 層 (10-30 bps)
+        self._basic_time_ms = 0        # 10% 層 (30-100 bps)
+        self._out_of_range_time_ms = 0 # 超出範圍 (>100 bps 或無單)
+        self._total_time_ms = 0
+        self._last_uptime_check: Optional[float] = None
+
     # ==================== 訂單管理 ====================
 
     def set_bid_order(self, order: Optional[OrderInfo]):
@@ -341,12 +349,82 @@ class MMState:
         with self._lock:
             self._volatility_pause_count += 1
 
+    def update_uptime(self, mid_price: Decimal, bid_price: Optional[Decimal], ask_price: Optional[Decimal]):
+        """
+        更新 uptime 分層時間
+
+        根據訂單距離中間價的 bps 分類:
+        - Boosted (100%): 0-10 bps
+        - Standard (50%): 10-30 bps
+        - Basic (10%): 30-100 bps
+        - Out of range: >100 bps 或無訂單
+        """
+        now = time.time()
+        with self._lock:
+            if self._last_uptime_check is None:
+                self._last_uptime_check = now
+                return
+
+            delta_ms = int((now - self._last_uptime_check) * 1000)
+            self._last_uptime_check = now
+            self._total_time_ms += delta_ms
+
+            # 如果沒有訂單，算作 out of range
+            if bid_price is None and ask_price is None:
+                self._out_of_range_time_ms += delta_ms
+                return
+
+            # 計算訂單距離 (取買賣單中較遠的那個)
+            max_distance_bps = 0
+            if bid_price is not None and mid_price > 0:
+                bid_dist = float((mid_price - bid_price) / mid_price * 10000)
+                max_distance_bps = max(max_distance_bps, bid_dist)
+            if ask_price is not None and mid_price > 0:
+                ask_dist = float((ask_price - mid_price) / mid_price * 10000)
+                max_distance_bps = max(max_distance_bps, ask_dist)
+
+            # 根據距離分類
+            if max_distance_bps <= 10:
+                self._boosted_time_ms += delta_ms
+            elif max_distance_bps <= 30:
+                self._standard_time_ms += delta_ms
+            elif max_distance_bps <= 100:
+                self._basic_time_ms += delta_ms
+            else:
+                self._out_of_range_time_ms += delta_ms
+
+    def get_uptime_stats(self) -> Dict:
+        """獲取 uptime 統計"""
+        with self._lock:
+            total = self._total_time_ms or 1
+            boosted_pct = self._boosted_time_ms / total * 100
+            standard_pct = self._standard_time_ms / total * 100
+            basic_pct = self._basic_time_ms / total * 100
+            out_of_range_pct = self._out_of_range_time_ms / total * 100
+
+            # 有效積分百分比 (加權計算)
+            effective_pts_pct = (
+                self._boosted_time_ms * 1.0 +
+                self._standard_time_ms * 0.5 +
+                self._basic_time_ms * 0.1
+            ) / total * 100
+
+            return {
+                "boosted_pct": boosted_pct,
+                "standard_pct": standard_pct,
+                "basic_pct": basic_pct,
+                "out_of_range_pct": out_of_range_pct,
+                "effective_pts_pct": effective_pts_pct,
+                "total_time_ms": self._total_time_ms,
+            }
+
     def get_stats(self) -> Dict:
         """獲取統計數據"""
         with self._lock:
             standx_pos = float(self._standx_position)
             binance_pos = float(self._binance_position)
             net_pos = standx_pos + binance_pos
+            total_time = self._total_time_ms or 1
             return {
                 "total_fills": self._total_fills,
                 "fill_count": self._fill_count,
@@ -369,6 +447,20 @@ class MMState:
                 "ask_queue_cancels": self._ask_queue_cancels,
                 "volatility_pause_count": self._volatility_pause_count,
                 "pnl_usd": float(self._realized_pnl),
+                # Uptime 分層統計
+                "boosted_time_ms": self._boosted_time_ms,
+                "standard_time_ms": self._standard_time_ms,
+                "basic_time_ms": self._basic_time_ms,
+                "out_of_range_time_ms": self._out_of_range_time_ms,
+                "total_time_ms": self._total_time_ms,
+                "boosted_pct": self._boosted_time_ms / total_time * 100,
+                "standard_pct": self._standard_time_ms / total_time * 100,
+                "basic_pct": self._basic_time_ms / total_time * 100,
+                "out_of_range_pct": self._out_of_range_time_ms / total_time * 100,
+                "effective_pts_pct": (
+                    (self._boosted_time_ms * 1.0 + self._standard_time_ms * 0.5 + self._basic_time_ms * 0.1)
+                    / total_time * 100
+                ),
             }
 
     def to_dict(self) -> Dict:
@@ -391,7 +483,8 @@ class MMState:
                 avg_price = sum(prices) / len(prices)
                 volatility = float((max_price - min_price) / avg_price * 10000) if avg_price != 0 else 0.0
 
-            # 統計數據
+            # 統計數據 (包含 uptime 分層統計)
+            total_time = self._total_time_ms or 1  # 避免除以 0
             stats = {
                 "total_fills": self._total_fills,
                 "fill_count": self._fill_count,
@@ -414,6 +507,20 @@ class MMState:
                 "ask_queue_cancels": self._ask_queue_cancels,
                 "volatility_pause_count": self._volatility_pause_count,
                 "pnl_usd": float(self._realized_pnl),
+                # Uptime 分層統計
+                "boosted_time_ms": self._boosted_time_ms,
+                "standard_time_ms": self._standard_time_ms,
+                "basic_time_ms": self._basic_time_ms,
+                "out_of_range_time_ms": self._out_of_range_time_ms,
+                "total_time_ms": self._total_time_ms,
+                "boosted_pct": self._boosted_time_ms / total_time * 100,
+                "standard_pct": self._standard_time_ms / total_time * 100,
+                "basic_pct": self._basic_time_ms / total_time * 100,
+                "out_of_range_pct": self._out_of_range_time_ms / total_time * 100,
+                "effective_pts_pct": (
+                    (self._boosted_time_ms * 1.0 + self._standard_time_ms * 0.5 + self._basic_time_ms * 0.1)
+                    / total_time * 100
+                ),
             }
 
         return {
