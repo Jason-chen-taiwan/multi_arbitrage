@@ -74,7 +74,11 @@ def get_settings_page() -> str:
                                 </div>
                                 <div class="form-group">
                                     <label>API Secret</label>
-                                    <input type="password" id="grvtApiSecret" placeholder="GRVT API Secret">
+                                    <input type="password" id="grvtApiSecret" placeholder="GRVT API Secret (Private Key)">
+                                </div>
+                                <div class="form-group">
+                                    <label>Trading Account ID</label>
+                                    <input type="text" id="grvtTradingAccountId" placeholder="子帳戶 ID (從 GRVT API 管理頁面獲取)">
                                 </div>
                             </div>
                         </div>

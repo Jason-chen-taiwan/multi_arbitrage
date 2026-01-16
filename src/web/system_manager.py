@@ -86,10 +86,13 @@ class SystemManager:
                 elif exchange_name == 'grvt':
                     api_key = os.getenv('GRVT_API_KEY')
                     api_secret = os.getenv('GRVT_API_SECRET')
+                    trading_account_id = os.getenv('GRVT_TRADING_ACCOUNT_ID')
                     if api_key:
                         adapter_config['api_key'] = api_key
                     if api_secret:
                         adapter_config['api_secret'] = api_secret
+                    if trading_account_id:
+                        adapter_config['trading_account_id'] = trading_account_id
 
                 adapter = create_adapter(adapter_config)
 
@@ -196,10 +199,13 @@ class SystemManager:
                 elif exchange_name == 'grvt':
                     api_key = os.getenv('GRVT_API_KEY')
                     api_secret = os.getenv('GRVT_API_SECRET')
+                    trading_account_id = os.getenv('GRVT_TRADING_ACCOUNT_ID')
                     if api_key:
                         adapter_config['api_key'] = api_key
                     if api_secret:
                         adapter_config['api_secret'] = api_secret
+                    if trading_account_id:
+                        adapter_config['trading_account_id'] = trading_account_id
             else:
                 adapter_config = {
                     'exchange_name': exchange_name,

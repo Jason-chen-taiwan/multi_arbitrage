@@ -57,6 +57,7 @@ class ConfigManager:
                 'name': 'GRVT',
                 'configured': True,
                 'api_key_masked': self._mask_key(os.getenv('GRVT_API_KEY', '')),
+                'trading_account_id': os.getenv('GRVT_TRADING_ACCOUNT_ID', ''),
                 'testnet': os.getenv('GRVT_TESTNET', 'false').lower() == 'true'
             }
 
@@ -103,6 +104,7 @@ class ConfigManager:
             elif exchange_name == 'grvt':
                 set_key(self.env_file, 'GRVT_API_KEY', config.get('api_key', ''), quote_mode='never')
                 set_key(self.env_file, 'GRVT_API_SECRET', config.get('api_secret', ''), quote_mode='never')
+                set_key(self.env_file, 'GRVT_TRADING_ACCOUNT_ID', config.get('trading_account_id', ''), quote_mode='never')
                 set_key(self.env_file, 'GRVT_TESTNET', str(testnet).lower(), quote_mode='never')
         else:
             prefix = exchange_name.upper()
@@ -128,7 +130,7 @@ class ConfigManager:
                     'STANDX_TESTNET'
                 ]
             else:  # grvt
-                keys = ['GRVT_API_KEY', 'GRVT_API_SECRET', 'GRVT_TESTNET']
+                keys = ['GRVT_API_KEY', 'GRVT_API_SECRET', 'GRVT_TRADING_ACCOUNT_ID', 'GRVT_TESTNET']
         else:
             prefix = exchange_name.upper()
             keys = [f'{prefix}_API_KEY', f'{prefix}_API_SECRET', f'{prefix}_TESTNET']

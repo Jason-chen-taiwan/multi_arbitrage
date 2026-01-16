@@ -947,9 +947,10 @@ async def root():
                     config.api_secret = document.getElementById('apiSecret').value;
                     if (name === 'okx' || name === 'bitget') config.passphrase = document.getElementById('passphrase').value;
                 } else if (name === 'grvt') {
-                    // GRVT 使用 API Key/Secret
+                    // GRVT 使用 API Key/Secret + Trading Account ID
                     config.api_key = document.getElementById('grvtApiKey').value;
                     config.api_secret = document.getElementById('grvtApiSecret').value;
+                    config.trading_account_id = document.getElementById('grvtTradingAccountId').value;
                 } else {
                     // StandX 使用 Private Key
                     config.private_key = document.getElementById('privateKey').value;
