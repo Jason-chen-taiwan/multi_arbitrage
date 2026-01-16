@@ -46,7 +46,7 @@ connected_clients: List[WebSocket] = []
 mm_status = {
     'running': False,
     'status': 'stopped',
-    'dry_run': True,
+    'dry_run': False,  # 實盤模式
     'order_size_btc': 0.001,
     'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
 }
@@ -398,7 +398,7 @@ async def root():
                             threshold_bps: parseFloat(document.getElementById('mmVolatilityThreshold').value),
                         },
                         execution: {
-                            dry_run: mmDryRun,
+                            dry_run: false,  // 實盤模式
                         }
                     };
 
@@ -468,17 +468,6 @@ async def root():
                 if (mmConfig.volatility) {
                     document.getElementById('mmVolatilityWindow').value = mmConfig.volatility.window_sec;
                     document.getElementById('mmVolatilityThreshold').value = mmConfig.volatility.threshold_bps;
-                }
-
-                // 執行參數
-                if (mmConfig.execution) {
-                    mmDryRun = mmConfig.execution.dry_run;
-                    const toggle = document.getElementById('mmDryRunToggle');
-                    if (mmDryRun) {
-                        toggle.classList.add('active');
-                    } else {
-                        toggle.classList.remove('active');
-                    }
                 }
 
                 // 更新策略說明
@@ -1058,13 +1047,12 @@ async def root():
             }
 
             // ===== 做市商控制 =====
-            let mmDryRun = true;
-
             async function startMM() {
                 const orderSize = document.getElementById('mmOrderSize').value;
                 const orderDistance = document.getElementById('mmOrderDistance').value;
 
-                if (!mmDryRun && !confirm('⚠️ 確定啟用實盤模式？將使用真實資金進行交易！')) {
+                // 實盤模式確認
+                if (!confirm('⚠️ 確定啟動做市商？將使用真實資金進行交易！')) {
                     return;
                 }
 
@@ -1074,15 +1062,15 @@ async def root():
                     body: JSON.stringify({
                         order_size: parseFloat(orderSize),
                         order_distance: parseInt(orderDistance),
-                        dry_run: mmDryRun
+                        dry_run: false  // 實盤模式
                     })
                 });
                 const result = await res.json();
                 if (result.success) {
                     document.getElementById('mmStartBtn').style.display = 'none';
                     document.getElementById('mmStopBtn').style.display = 'block';
-                    document.getElementById('mmStatusBadge').textContent = mmDryRun ? '模擬中' : '運行中';
-                    document.getElementById('mmStatusBadge').style.background = mmDryRun ? '#f59e0b' : '#10b981';
+                    document.getElementById('mmStatusBadge').textContent = '運行中';
+                    document.getElementById('mmStatusBadge').style.background = '#10b981';
                 } else {
                     alert('啟動失敗: ' + result.error);
                 }
@@ -1097,12 +1085,6 @@ async def root():
                     document.getElementById('mmStatusBadge').textContent = '停止';
                     document.getElementById('mmStatusBadge').style.background = '#2a3347';
                 }
-            }
-
-            function toggleMMDryRun() {
-                const toggle = document.getElementById('mmDryRunToggle');
-                toggle.classList.toggle('active');
-                mmDryRun = toggle.classList.contains('active');
             }
 
             // ===== 參數比較模擬功能 =====

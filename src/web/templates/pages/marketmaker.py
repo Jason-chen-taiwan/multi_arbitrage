@@ -113,15 +113,9 @@ def get_marketmaker_page() -> str:
                             <!-- 執行控制 -->
                             <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
                                 <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">執行控制</div>
-                                <div style="display: flex; flex-direction: column; gap: 8px;">
-                                    <div style="display: flex; align-items: center; justify-content: space-between;">
-                                        <label style="font-size: 11px; color: #9ca3af;">模擬模式</label>
-                                        <div class="toggle active" id="mmDryRunToggle" onclick="toggleMMDryRun()" style="transform: scale(0.8);"></div>
-                                    </div>
-                                    <div style="display: flex; gap: 8px; margin-top: 4px;">
-                                        <button class="btn btn-primary" onclick="saveMMConfig()" style="flex: 1; font-size: 11px; padding: 6px;">保存配置</button>
-                                        <button class="btn" onclick="loadMMConfig()" style="flex: 1; font-size: 11px; padding: 6px; background: #2a3347;">重載</button>
-                                    </div>
+                                <div style="display: flex; gap: 8px;">
+                                    <button class="btn btn-primary" onclick="saveMMConfig()" style="flex: 1; font-size: 11px; padding: 6px;">保存配置</button>
+                                    <button class="btn" onclick="loadMMConfig()" style="flex: 1; font-size: 11px; padding: 6px; background: #2a3347;">重載</button>
                                 </div>
                             </div>
                         </div>
