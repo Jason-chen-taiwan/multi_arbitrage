@@ -349,21 +349,23 @@ class MarketMakerExecutor:
 
     async def _place_orders(self, mid_price: Decimal, best_bid: Optional[Decimal] = None, best_ask: Optional[Decimal] = None):
         """掛雙邊訂單"""
-        # 檢查倉位限制
-        current_position = abs(self.state.get_standx_position())
-        if current_position >= self.config.max_position_btc:
-            logger.warning(f"Position limit reached: {current_position}")
-            return
+        # 獲取當前倉位 (正=long, 負=short)
+        current_position = self.state.get_standx_position()
+        max_pos = self.config.max_position_btc
 
         # 計算報價
         bid_price, ask_price = self._calculate_prices(mid_price, best_bid, best_ask)
 
-        # 掛買單
-        if not self.state.has_bid_order():
+        # 掛買單 - 如果已經 long 太多，不再買入
+        if current_position >= max_pos:
+            logger.debug(f"Position too long ({current_position}), skipping bid")
+        elif not self.state.has_bid_order():
             await self._place_bid(bid_price)
 
-        # 掛賣單
-        if not self.state.has_ask_order():
+        # 掛賣單 - 如果已經 short 太多，不再賣出
+        if current_position <= -max_pos:
+            logger.debug(f"Position too short ({current_position}), skipping ask")
+        elif not self.state.has_ask_order():
             await self._place_ask(ask_price)
 
     def _calculate_prices(
