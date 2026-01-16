@@ -42,9 +42,15 @@ from pysdk.grvt_raw_types import (
     ApiOrderbookLevelsRequest,
     ApiPositionsRequest,
     ApiGetOrderRequest,
+    ApiGetAllInstrumentsRequest,
     OrderLeg,
     OrderMetadata,
+    Order as GrvtOrder,
+    TimeInForce as GrvtTimeInForce,
+    Signature,
 )
+from pysdk.grvt_raw_signing import sign_order
+from eth_account import Account as EthAccount
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +132,18 @@ class GRVTAdapter(BasePerpAdapter):
 
         # SDK 客戶端
         self._client: Optional[GrvtRawSync] = None
+        self._sdk_config: Optional[GrvtApiConfig] = None
         self._connected = False
         self._main_account_id: Optional[str] = None
 
+        # Ethereum 帳戶 (用於簽名)
+        self._eth_account = EthAccount.from_key(self.api_secret)
+
         # 合約規格快取
         self._contract_specs: Dict[str, ContractSpec] = {}
+
+        # Instruments 快取 (用於簽名)
+        self._instruments: Dict[str, Any] = {}
 
         # Symbol specs cache (for SymbolInfo)
         self._symbol_specs: Dict[str, SymbolInfo] = {}
@@ -142,7 +155,7 @@ class GRVTAdapter(BasePerpAdapter):
         """連接到 GRVT"""
         try:
             # 創建 SDK 配置
-            sdk_config = GrvtApiConfig(
+            self._sdk_config = GrvtApiConfig(
                 env=self.env,
                 trading_account_id=self.trading_account_id,
                 private_key=self.api_secret,
@@ -151,7 +164,7 @@ class GRVTAdapter(BasePerpAdapter):
             )
 
             # 初始化客戶端（同步操作，但很快）
-            self._client = GrvtRawSync(sdk_config)
+            self._client = GrvtRawSync(self._sdk_config)
 
             # 測試連接 - 使用 to_thread 包裝
             result = await asyncio.to_thread(
@@ -165,14 +178,38 @@ class GRVTAdapter(BasePerpAdapter):
             self._main_account_id = result.result.main_account_id
             self._connected = True
 
+            # 獲取 instruments (用於訂單簽名)
+            await self._fetch_instruments()
+
             logger.info(f"Connected to GRVT ({'Testnet' if self.testnet else 'Mainnet'})")
             logger.info(f"Main Account: {self._main_account_id}")
+            logger.info(f"Loaded {len(self._instruments)} instruments")
             return True
 
         except Exception as e:
             logger.error(f"Failed to connect to GRVT: {e}")
             self._client = None
             return False
+
+    async def _fetch_instruments(self):
+        """獲取所有 instruments (用於訂單簽名)"""
+        try:
+            result = await asyncio.to_thread(
+                self._client.get_all_instruments_v1,
+                ApiGetAllInstrumentsRequest(is_active=True)
+            )
+
+            if isinstance(result, GrvtError):
+                logger.warning(f"Failed to fetch instruments: {result}")
+                return
+
+            # 構建 instrument 字典
+            for inst in result.result:
+                self._instruments[inst.instrument] = inst
+                logger.debug(f"Loaded instrument: {inst.instrument}")
+
+        except Exception as e:
+            logger.warning(f"Error fetching instruments: {e}")
 
     async def disconnect(self) -> bool:
         """斷開連接"""
@@ -382,57 +419,132 @@ class GRVTAdapter(BasePerpAdapter):
         client_order_id: Optional[str]
     ) -> Order:
         """同步下單"""
+        import uuid
+
+        # 標準化 symbol
+        grvt_symbol = self._normalize_symbol(symbol)
+
+        # 檢查 instrument 是否存在
+        if grvt_symbol not in self._instruments:
+            raise Exception(f"Unknown instrument: {grvt_symbol}. Available: {list(self._instruments.keys())[:5]}...")
+
         # 轉換參數
         is_bid = side in [OrderSide.BUY, "buy", "long"]
 
         # 構建訂單腿
         legs = [OrderLeg(
-            instrument=symbol,
+            instrument=grvt_symbol,
             is_buying_asset=is_bid,
             size=str(quantity),
             limit_price=str(price) if price else "0"
         )]
 
-        # 時間有效性映射
+        # 時間有效性映射 (使用 SDK 的 TimeInForce enum)
         tif_map = {
-            TimeInForce.GTC: "GOOD_TILL_TIME",
-            TimeInForce.IOC: "IMMEDIATE_OR_CANCEL",
-            TimeInForce.FOK: "FILL_OR_KILL",
+            TimeInForce.GTC: GrvtTimeInForce.GOOD_TILL_TIME,
+            TimeInForce.IOC: GrvtTimeInForce.IMMEDIATE_OR_CANCEL,
+            TimeInForce.FOK: GrvtTimeInForce.FILL_OR_KILL,
+            "gtc": GrvtTimeInForce.GOOD_TILL_TIME,
+            "ioc": GrvtTimeInForce.IMMEDIATE_OR_CANCEL,
+            "fok": GrvtTimeInForce.FILL_OR_KILL,
         }
+        grvt_tif = tif_map.get(time_in_force, GrvtTimeInForce.GOOD_TILL_TIME)
 
-        req = ApiCreateOrderRequest(
+        # 生成 client_order_id (必須是數字字串，使用 uint32 範圍)
+        import random
+        if not client_order_id:
+            client_order_id = str(random.randint(0, 2**32 - 1))
+
+        # 生成簽名所需的 expiration 和 nonce
+        # expiration: 1 小時後，nanoseconds 格式
+        expiration_ns = str(int((time.time() + 3600) * 1_000_000_000))
+        # nonce: 當前時間的秒數 (必須是 32-bit unsigned integer)
+        nonce = int(time.time())
+
+        # 創建未簽名的訂單
+        unsigned_order = GrvtOrder(
             sub_account_id=self.trading_account_id or self._main_account_id,
-            is_market=order_type == OrderType.MARKET,
-            time_in_force=tif_map.get(time_in_force, "GOOD_TILL_TIME"),
+            time_in_force=grvt_tif,
+            legs=legs,
+            signature=Signature(signer="", r="", s="", v=0, expiration=expiration_ns, nonce=nonce),
+            metadata=OrderMetadata(client_order_id=client_order_id),
+            is_market=(order_type == OrderType.MARKET),
             post_only=post_only,
             reduce_only=reduce_only,
-            legs=legs,
-            metadata=OrderMetadata(
-                client_order_id=client_order_id or ""
-            ) if client_order_id else None
         )
 
-        result = self._client.create_order_v1(req)
+        # 簽名訂單
+        signed_order = sign_order(
+            order=unsigned_order,
+            config=self._sdk_config,
+            account=self._eth_account,
+            instruments=self._instruments
+        )
 
-        if isinstance(result, GrvtError):
-            raise Exception(f"API Error: {result}")
+        # 構建乾淨的請求 payload（使用 snake_case，與 CCXT SDK 一致）
+        payload = {
+            "order": {
+                "sub_account_id": str(signed_order.sub_account_id),
+                "is_market": signed_order.is_market or False,
+                "time_in_force": signed_order.time_in_force.name,
+                "post_only": signed_order.post_only or False,
+                "reduce_only": signed_order.reduce_only or False,
+                "legs": [
+                    {
+                        "instrument": leg.instrument,
+                        "size": str(leg.size),
+                        "limit_price": str(leg.limit_price),
+                        "is_buying_asset": bool(leg.is_buying_asset),
+                    }
+                    for leg in signed_order.legs
+                ],
+                "signature": {
+                    "r": signed_order.signature.r,
+                    "s": signed_order.signature.s,
+                    "v": signed_order.signature.v,
+                    "expiration": signed_order.signature.expiration,
+                    "nonce": signed_order.signature.nonce,
+                    "signer": signed_order.signature.signer,
+                },
+                "metadata": {
+                    "client_order_id": signed_order.metadata.client_order_id,
+                },
+            }
+        }
 
-        order_data = result.result
+        # 直接發送請求（需要先刷新 cookie）
+        import json
+        import requests
+        self._client._refresh_cookie()  # 確保 auth cookie 有效
+        resp = self._client._session.post(
+            f"{self._client.td_rpc}/full/v1/create_order",
+            data=json.dumps(payload),
+            timeout=5
+        )
+        resp_json = resp.json()
+
+        if resp_json.get("code"):
+            raise Exception(f"API Error: {resp_json}")
+
+        result = resp_json
+
+        # 從 dict 響應中獲取 order_id
+        order_data = result.get("result", {})
+        order_id_result = order_data.get("order_id") or order_data.get("order", {}).get("order_id")
 
         return Order(
-            order_id=order_data.order_id,
+            order_id=order_id_result,
+            client_order_id=client_order_id,
             symbol=symbol,
             side=side.value if hasattr(side, 'value') else str(side),
             order_type=order_type.value if hasattr(order_type, 'value') else str(order_type),
             price=price,
-            quantity=quantity,
-            filled_quantity=Decimal("0"),
-            remaining_quantity=quantity,
+            qty=quantity,
+            filled_qty=Decimal("0"),
             status="NEW",
-            timestamp=datetime.now(),
             time_in_force=time_in_force.value if hasattr(time_in_force, 'value') else str(time_in_force),
             reduce_only=reduce_only,
-            post_only=post_only
+            created_at=int(time.time() * 1000),
         )
 
     # ==================== 取消訂單 ====================
