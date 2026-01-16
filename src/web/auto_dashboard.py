@@ -199,10 +199,11 @@ async def broadcast_data():
                                 if pos.side == 'short':
                                     qty = -qty
                                 positions['standx']['btc'] = qty
+                                logger.debug(f"StandX position: {pos.symbol} {pos.side} {pos.size} -> {qty}")
                         balance = await standx.get_balance()
                         positions['standx']['equity'] = float(balance.equity)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"查詢 StandX 倉位失敗: {e}")
                 if 'BINANCE' in adapters:
                     try:
                         binance = adapters['BINANCE']
@@ -215,8 +216,8 @@ async def broadcast_data():
                                 positions['binance']['btc'] = qty
                         balance = await binance.get_balance()
                         positions['binance']['usdt'] = float(balance.available_balance)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"查詢 Binance 倉位失敗: {e}")
                 positions['net_btc'] = positions['standx']['btc'] + positions['binance']['btc']
                 positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
                 data['mm_positions'] = positions
@@ -902,6 +903,10 @@ async def root():
                     this.bidQueueCancels = 0;
                     this.askQueueCancels = 0;
                     this.history = [];
+                    // 波動率統計
+                    this.priceWindow = [];
+                    this.currentVolatilityBps = 0;
+                    this.volatilityPauseCount = 0;
                 },
 
                 // 獲取 Uptime 百分比 (舊版相容)
@@ -1045,7 +1050,40 @@ async def root():
 
             // ===== 做市商頁面更新 =====
             function updateMarketMakerPage(data) {
-                // 從 StandX 數據更新
+                // 先更新不依賴市場數據的部分 (倉位、狀態)
+                // 這些應該總是更新，即使市場數據不可用
+
+                // 更新實時倉位 (從 WebSocket)
+                if (data.mm_positions) {
+                    const pos = data.mm_positions;
+                    document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
+                    document.getElementById('mmBinancePos').textContent = (pos.binance?.btc || 0).toFixed(4);
+                    document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
+                    document.getElementById('mmBinanceUsdt').textContent = (pos.binance?.usdt || 0).toFixed(2);
+
+                    const netPos = pos.net_btc || 0;
+                    const netEl = document.getElementById('mmNetPos');
+                    netEl.textContent = netPos.toFixed(4);
+                    netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
+                }
+
+                // 更新 UI 按鈕狀態
+                if (data.mm_status) {
+                    const running = data.mm_status.running;
+                    document.getElementById('mmStartBtn').style.display = running ? 'none' : 'block';
+                    document.getElementById('mmStopBtn').style.display = running ? 'block' : 'none';
+
+                    const badge = document.getElementById('mmStatusBadge');
+                    if (running) {
+                        badge.textContent = data.mm_status.dry_run ? '模擬中' : '運行中';
+                        badge.style.background = data.mm_status.dry_run ? '#f59e0b' : '#10b981';
+                    } else {
+                        badge.textContent = '停止';
+                        badge.style.background = '#2a3347';
+                    }
+                }
+
+                // 從 StandX 數據更新（需要市場數據）
                 const standx = data.market_data['STANDX'];
                 if (!standx) return;
 
@@ -1067,16 +1105,34 @@ async def root():
                 // 取得 orderbook 用於隊列位置風控
                 const ob = data.orderbooks?.STANDX?.['BTC-USD'];
 
-                // ===== 使用 mmSim 模擬訂單生命週期 =====
-                const simResult = mmSim.tick(midPrice, ob);
+                // ===== 訂單顯示 =====
+                // 判斷是使用後端實際訂單還是前端模擬訂單
+                const isLiveMode = data.mm_status?.running && !data.mm_status?.dry_run;
+                const executor = data.mm_executor;
 
-                // 顯示實際掛單價格（不是理論價格）
-                const bidOrder = mmSim.bidOrder;
-                const askOrder = mmSim.askOrder;
+                let bidOrder, askOrder, bidDistBps, askDistBps, simResult;
 
-                // 計算當前距離
-                const bidDistBps = mmSim.getDistance('bid', midPrice);
-                const askDistBps = mmSim.getDistance('ask', midPrice);
+                if (isLiveMode && executor && executor.state) {
+                    // === 實盤模式：使用後端執行器的訂單 ===
+                    const backendBid = executor.state.bid_order;
+                    const backendAsk = executor.state.ask_order;
+
+                    bidOrder = backendBid ? { price: backendBid.price, status: backendBid.status } : null;
+                    askOrder = backendAsk ? { price: backendAsk.price, status: backendAsk.status } : null;
+
+                    // 計算距離
+                    bidDistBps = bidOrder ? (midPrice - bidOrder.price) / midPrice * 10000 : null;
+                    askDistBps = askOrder ? (askOrder.price - midPrice) / midPrice * 10000 : null;
+
+                    simResult = { bidStatus: 'live', askStatus: 'live' };
+                } else {
+                    // === 模擬模式：使用前端 mmSim ===
+                    simResult = mmSim.tick(midPrice, ob);
+                    bidOrder = mmSim.bidOrder;
+                    askOrder = mmSim.askOrder;
+                    bidDistBps = mmSim.getDistance('bid', midPrice);
+                    askDistBps = mmSim.getDistance('ask', midPrice);
+                }
 
                 // 顯示報價和狀態
                 const maxDistBps = mmSim.uptimeMaxDistanceBps || 30;
@@ -1087,7 +1143,9 @@ async def root():
 
                     // 狀態指示
                     let bidStatusText = '';
-                    if (simResult.bidStatus === 'cancel') {
+                    if (isLiveMode) {
+                        bidStatusText = '✓ 實盤 ' + (bidDistBps ? bidDistBps.toFixed(1) : '-') + ' bps';
+                    } else if (simResult.bidStatus === 'cancel') {
                         bidStatusText = '⚡ 撤單 (bps太近)';
                     } else if (simResult.bidStatus === 'queue_cancel') {
                         bidStatusText = '🚨 撤單 (隊列風控)';
@@ -1100,8 +1158,8 @@ async def root():
                     }
                     document.getElementById('mmBidStatus').textContent = bidStatusText;
                 } else {
-                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="color: #9ca3af">下單中...</span>';
-                    document.getElementById('mmBidStatus').textContent = '新掛單';
+                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="color: #9ca3af">' + (isLiveMode ? '等待下單...' : '下單中...') + '</span>';
+                    document.getElementById('mmBidStatus').textContent = isLiveMode ? '實盤待掛' : '新掛單';
                 }
 
                 if (askOrder) {
@@ -1110,7 +1168,9 @@ async def root():
                     document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + askOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
 
                     let askStatusText = '';
-                    if (simResult.askStatus === 'cancel') {
+                    if (isLiveMode) {
+                        askStatusText = '✓ 實盤 ' + (askDistBps ? askDistBps.toFixed(1) : '-') + ' bps';
+                    } else if (simResult.askStatus === 'cancel') {
                         askStatusText = '⚡ 撤單 (bps太近)';
                     } else if (simResult.askStatus === 'queue_cancel') {
                         askStatusText = '🚨 撤單 (隊列風控)';
@@ -1123,8 +1183,8 @@ async def root():
                     }
                     document.getElementById('mmAskStatus').textContent = askStatusText;
                 } else {
-                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="color: #9ca3af">下單中...</span>';
-                    document.getElementById('mmAskStatus').textContent = '新掛單';
+                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="color: #9ca3af">' + (isLiveMode ? '等待下單...' : '下單中...') + '</span>';
+                    document.getElementById('mmAskStatus').textContent = isLiveMode ? '實盤待掛' : '新掛單';
                 }
 
                 // Spread display
@@ -1134,7 +1194,7 @@ async def root():
 
                 // ===== 訂單簿顯示 =====
                 // ob 已在上方取得 (用於隊列位置風控)
-                // 使用 mmSim 的實際掛單價格
+                // 使用實際掛單價格（實盤模式使用後端訂單，模擬模式使用 mmSim）
                 const simBidPrice = bidOrder ? bidOrder.price : null;
                 const simAskPrice = askOrder ? askOrder.price : null;
 
@@ -1193,27 +1253,61 @@ async def root():
                 document.getElementById('mmUptimeTier').className = 'uptime-tier tier-' + tier;
                 document.getElementById('mmMultiplier').textContent = multiplier + 'x';
 
-                // 模擬統計顯示 - 運行時間和訂單操作
-                const runningTimeSec = mmSim.getRunningTimeSec();
+                // 統計顯示 - 實盤模式使用後端數據，模擬模式使用前端數據
+                // (isLiveMode 和 executor 已在訂單顯示部分定義)
+                let runningTimeSec, effectivePts, fillCount, pnlUsd;
+                let bidCancels, askCancels, bidRebalances, askRebalances;
+                let volBps, isVolHigh, volatilityPauseCount;
+
+                if (isLiveMode && executor && executor.stats) {
+                    // === 實盤模式：使用後端執行器數據 ===
+                    const stats = executor.stats;
+                    const stateStats = executor.state?.stats || {};
+                    runningTimeSec = stats.uptime_seconds || 0;
+                    effectivePts = 0;  // 後端暫無分層統計
+                    fillCount = stateStats.fill_count || executor.state?.fill_count || 0;
+                    pnlUsd = stateStats.pnl_usd || executor.state?.pnl_usd || 0;
+                    bidCancels = stateStats.bid_cancels || 0;
+                    askCancels = stateStats.ask_cancels || 0;
+                    bidRebalances = stateStats.bid_rebalances || 0;
+                    askRebalances = stateStats.ask_rebalances || 0;
+                    volBps = stats.volatility_bps || 0;
+                    isVolHigh = volBps > (mmConfig?.volatility?.threshold_bps || 5);
+                    volatilityPauseCount = stateStats.volatility_pause_count || 0;
+                } else {
+                    // === 模擬模式：使用前端 mmSim 數據 ===
+                    runningTimeSec = mmSim.getRunningTimeSec();
+                    effectivePts = mmSim.getEffectivePointsPct();
+                    fillCount = mmSim.fillCount;
+                    pnlUsd = mmSim.simulatedPnlUsd;
+                    bidCancels = mmSim.bidCancels;
+                    askCancels = mmSim.askCancels;
+                    bidRebalances = mmSim.bidRebalances;
+                    askRebalances = mmSim.askRebalances;
+                    volBps = mmSim.currentVolatilityBps;
+                    isVolHigh = mmSim.shouldPauseForVolatility();
+                    volatilityPauseCount = mmSim.volatilityPauseCount;
+                }
+
+                // 運行時間
                 const runningTimeStr = runningTimeSec >= 60
                     ? Math.floor(runningTimeSec / 60) + '分' + Math.floor(runningTimeSec % 60) + '秒'
                     : runningTimeSec.toFixed(0) + '秒';
                 document.getElementById('mmTotalQuotes').textContent = runningTimeStr;
 
                 // 有效積分 (加權計算)
-                const effectivePts = mmSim.getEffectivePointsPct();
                 document.getElementById('mmQualifiedRate').textContent = effectivePts.toFixed(1) + '%';
 
                 // 成交統計
-                document.getElementById('mmFillCount').textContent = mmSim.fillCount;
-                const pnlStr = mmSim.simulatedPnlUsd >= 0
-                    ? '+$' + mmSim.simulatedPnlUsd.toFixed(2)
-                    : '-$' + Math.abs(mmSim.simulatedPnlUsd).toFixed(2);
+                document.getElementById('mmFillCount').textContent = fillCount;
+                const pnlStr = pnlUsd >= 0
+                    ? '+$' + pnlUsd.toFixed(2)
+                    : '-$' + Math.abs(pnlUsd).toFixed(2);
                 document.getElementById('mmSimPnl').textContent = pnlStr;
-                document.getElementById('mmSimPnl').style.color = mmSim.simulatedPnlUsd >= 0 ? '#10b981' : '#ef4444';
+                document.getElementById('mmSimPnl').style.color = pnlUsd >= 0 ? '#10b981' : '#ef4444';
 
-                // 分層時間百分比
-                const tierPcts = mmSim.getTierPcts();
+                // 分層時間百分比 (目前只有模擬模式支持)
+                const tierPcts = isLiveMode ? {boosted: 0, standard: 0, basic: 0, outOfRange: 100} : mmSim.getTierPcts();
                 document.getElementById('mmTierBoosted').style.width = tierPcts.boosted + '%';
                 document.getElementById('mmTierStandard').style.width = tierPcts.standard + '%';
                 document.getElementById('mmTierBasic').style.width = tierPcts.basic + '%';
@@ -1223,18 +1317,24 @@ async def root():
                 document.getElementById('mmTierBasicPct').textContent = tierPcts.basic.toFixed(1) + '%';
                 document.getElementById('mmTierOutPct').textContent = tierPcts.outOfRange.toFixed(1) + '%';
 
-                // 撤單次數和重掛次數
-                document.getElementById('mmBidFillRate').textContent = mmSim.bidCancels + '/' + mmSim.bidQueueCancels + '/' + mmSim.bidRebalances;
-                document.getElementById('mmAskFillRate').textContent = mmSim.askCancels + '/' + mmSim.askQueueCancels + '/' + mmSim.askRebalances;
+                // 撤單次數和重掛次數 (格式: 價格撤單/隊列撤單/重掛)
+                let bidQueueCancels, askQueueCancels;
+                if (isLiveMode && executor && executor.state?.stats) {
+                    bidQueueCancels = executor.state.stats.bid_queue_cancels || 0;
+                    askQueueCancels = executor.state.stats.ask_queue_cancels || 0;
+                } else {
+                    bidQueueCancels = mmSim.bidQueueCancels;
+                    askQueueCancels = mmSim.askQueueCancels;
+                }
+                document.getElementById('mmBidFillRate').textContent = bidCancels + '/' + bidQueueCancels + '/' + bidRebalances;
+                document.getElementById('mmAskFillRate').textContent = askCancels + '/' + askQueueCancels + '/' + askRebalances;
 
                 // 波動率顯示
-                const volBps = mmSim.currentVolatilityBps;
-                const isVolHigh = mmSim.shouldPauseForVolatility();
                 document.getElementById('mmVolatility').textContent = isFinite(volBps) ? volBps.toFixed(1) : '-';
                 document.getElementById('mmVolatilityStatus').textContent = isVolHigh ? '暫停' : '正常';
                 document.getElementById('mmVolatilityStatus').style.color = isVolHigh ? '#ef4444' : '#10b981';
                 document.getElementById('mmVolatility').style.color = isVolHigh ? '#ef4444' : '#f8fafc';
-                document.getElementById('mmVolatilityPauseCount').textContent = mmSim.volatilityPauseCount;
+                document.getElementById('mmVolatilityPauseCount').textContent = volatilityPauseCount;
 
                 // 更新歷史記錄顯示
                 updateHistoryDisplay();
@@ -1264,42 +1364,6 @@ async def root():
                 document.getElementById('mmDepthAsk').textContent = askDepth.toFixed(2) + ' BTC';
                 const imbalance = ((bidDepth - askDepth) / totalDepth * 100);
                 document.getElementById('mmImbalance').textContent = '偏移: ' + (imbalance > 0 ? '+' : '') + imbalance.toFixed(1) + '%';
-
-                // 更新實時倉位 (從 WebSocket)
-                if (data.mm_positions) {
-                    const pos = data.mm_positions;
-                    document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
-                    document.getElementById('mmBinancePos').textContent = (pos.binance?.btc || 0).toFixed(4);
-                    document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
-                    document.getElementById('mmBinanceUsdt').textContent = (pos.binance?.usdt || 0).toFixed(2);
-
-                    const netPos = pos.net_btc || 0;
-                    const netEl = document.getElementById('mmNetPos');
-                    netEl.textContent = netPos.toFixed(4);
-                    netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
-                }
-
-                // 更新做市商執行器統計 (實盤運行時使用後端數據)
-                // 注意：目前主要使用前端模擬 (mmSim)，後端數據暫不覆蓋
-                // if (data.mm_executor && data.mm_executor.stats) {
-                //     document.getElementById('mmTotalQuotes').textContent = data.mm_executor.stats.total_quotes || 0;
-                // }
-
-                // 更新 UI 按鈕狀態
-                if (data.mm_status) {
-                    const running = data.mm_status.running;
-                    document.getElementById('mmStartBtn').style.display = running ? 'none' : 'block';
-                    document.getElementById('mmStopBtn').style.display = running ? 'block' : 'none';
-
-                    const badge = document.getElementById('mmStatusBadge');
-                    if (running) {
-                        badge.textContent = data.mm_status.dry_run ? '模擬中' : '運行中';
-                        badge.style.background = data.mm_status.dry_run ? '#f59e0b' : '#10b981';
-                    } else {
-                        badge.textContent = '停止';
-                        badge.style.background = '#2a3347';
-                    }
-                }
             }
 
             // ===== 控制開關 =====

@@ -49,14 +49,12 @@ def register_mm_routes(app, dependencies):
 
             adapters = adapters_getter()
 
-            # 檢查是否有 StandX 和 Binance
+            # 檢查是否有 StandX
             if 'STANDX' not in adapters:
                 return JSONResponse({'success': False, 'error': 'StandX 未連接'})
-            if 'BINANCE' not in adapters:
-                return JSONResponse({'success': False, 'error': 'Binance 未連接'})
 
             standx = adapters['STANDX']
-            binance = adapters['BINANCE']
+            binance = adapters.get('BINANCE')  # 可選，沒有則不對沖
 
             # 創建配置
             config = MMConfig(
@@ -67,11 +65,13 @@ def register_mm_routes(app, dependencies):
                 dry_run=dry_run,
             )
 
-            # 創建對沖引擎
-            hedge_engine = HedgeEngine(
-                binance_adapter=binance,
-                standx_adapter=standx,
-            )
+            # 創建對沖引擎 (如果有 Binance)
+            hedge_engine = None
+            if binance:
+                hedge_engine = HedgeEngine(
+                    binance_adapter=binance,
+                    standx_adapter=standx,
+                )
 
             # 創建執行器
             mm_executor = MarketMakerExecutor(
@@ -80,6 +80,10 @@ def register_mm_routes(app, dependencies):
                 hedge_engine=hedge_engine,
                 config=config,
             )
+
+            # 如果沒有 Binance，警告但繼續
+            if not binance:
+                logger.warning("Binance 未連接，做市商將不會對沖")
 
             # 設置回調
             async def on_status_change(status: ExecutorStatus):

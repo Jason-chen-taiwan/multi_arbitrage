@@ -30,7 +30,8 @@ position:
   order_size_btc: 0.001
 
   # 最大持倉量 (BTC)
-  max_position_btc: 0.01
+  # $50 餘額 @ 10x 槓桿，最多 0.005 BTC (~$475)
+  max_position_btc: 0.005
 
 # 波動率控制
 volatility:

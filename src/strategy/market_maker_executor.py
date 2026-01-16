@@ -92,8 +92,8 @@ class MarketMakerExecutor:
     def __init__(
         self,
         standx_adapter,         # StandXAdapter
-        binance_adapter,        # CCXTAdapter
-        hedge_engine: HedgeEngine,
+        binance_adapter=None,   # CCXTAdapter (可選)
+        hedge_engine: Optional[HedgeEngine] = None,  # 可選，沒有則不對沖
         config: Optional[MMConfig] = None,
         state: Optional[MMState] = None,
     ):
@@ -199,22 +199,41 @@ class MarketMakerExecutor:
         except Exception as e:
             logger.warning(f"Failed to get StandX positions: {e}")
 
-        # 查詢 Binance 倉位
-        try:
-            positions = await self.binance.get_positions(self.config.binance_symbol)
-            for pos in positions:
-                if self.config.binance_symbol in pos.symbol:
-                    position_qty = pos.size if pos.side == "long" else -pos.size
-                    self.state.set_binance_position(position_qty)
-                    logger.info(f"Binance position: {position_qty}")
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to get Binance positions: {e}")
+        # 查詢 Binance 倉位 (如果有 Binance adapter)
+        if self.binance:
+            try:
+                positions = await self.binance.get_positions(self.config.binance_symbol)
+                for pos in positions:
+                    if self.config.binance_symbol in pos.symbol:
+                        position_qty = pos.size if pos.side == "long" else -pos.size
+                        self.state.set_binance_position(position_qty)
+                        logger.info(f"Binance position: {position_qty}")
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to get Binance positions: {e}")
 
         # 取消現有訂單
-        await self._cancel_all_orders()
+        if not self.config.dry_run:
+            await self._cancel_all_existing_orders()
 
         logger.info("Executor initialized")
+
+    async def _cancel_all_existing_orders(self):
+        """取消交易所上的所有現有訂單"""
+        try:
+            open_orders = await self.standx.get_open_orders(self.config.standx_symbol)
+            if open_orders:
+                logger.info(f"Cancelling {len(open_orders)} existing orders on StandX")
+                for order in open_orders:
+                    try:
+                        await self.standx.cancel_order(self.config.standx_symbol, order.client_order_id)
+                        logger.info(f"Cancelled existing order: {order.client_order_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cancel order {order.client_order_id}: {e}")
+            else:
+                logger.info("No existing orders to cancel")
+        except Exception as e:
+            logger.warning(f"Failed to get existing orders: {e}")
 
     # ==================== 主循環 ====================
 
@@ -257,12 +276,17 @@ class MarketMakerExecutor:
             logger.error(f"Failed to get orderbook: {e}")
             return
 
+        # 檢查訂單狀態 (輪詢模式：檢測成交)
+        if not self.config.dry_run:
+            await self._check_order_status()
+
         # 檢查波動率
         volatility = self.state.get_volatility_bps()
         if volatility > self.config.volatility_threshold_bps:
             if self._status != ExecutorStatus.PAUSED:
                 logger.warning(f"High volatility: {volatility:.1f} bps, pausing")
                 self._status = ExecutorStatus.PAUSED
+                self.state.record_volatility_pause()  # 記錄波動率暫停
                 await self._cancel_all_orders()
                 if self._on_status_change:
                     await self._on_status_change(self._status)
@@ -279,6 +303,13 @@ class MarketMakerExecutor:
             self.config.cancel_distance_bps
         )
         for client_order_id in orders_to_cancel:
+            # 判斷是買單還是賣單
+            bid = self.state.get_bid_order()
+            ask = self.state.get_ask_order()
+            if bid and bid.client_order_id == client_order_id:
+                self.state.record_cancel("buy", "price")
+            elif ask and ask.client_order_id == client_order_id:
+                self.state.record_cancel("sell", "price")
             await self._cancel_order(client_order_id)
 
         # 檢查是否需要重掛 (價格太遠)
@@ -287,6 +318,11 @@ class MarketMakerExecutor:
             self.config.rebalance_distance_bps
         )
         if should_rebalance:
+            # 記錄重掛
+            if self.state.has_bid_order():
+                self.state.record_rebalance("buy")
+            if self.state.has_ask_order():
+                self.state.record_rebalance("sell")
             await self._cancel_all_orders()
 
         # 掛單（傳遞 best_bid/best_ask 以確保不穿透價差）
@@ -460,6 +496,56 @@ class MarketMakerExecutor:
 
         self.state.clear_all_orders()
 
+    async def _check_order_status(self):
+        """
+        輪詢訂單狀態，檢測是否成交
+
+        由於沒有 WebSocket，需要定期查詢訂單狀態來檢測成交事件
+        """
+        bid = self.state.get_bid_order()
+        ask = self.state.get_ask_order()
+
+        if not bid and not ask:
+            return  # 沒有訂單需要檢查
+
+        try:
+            # 查詢所有未成交訂單
+            open_orders = await self.standx.get_open_orders(self.config.standx_symbol)
+            open_order_ids = {o.client_order_id for o in open_orders}
+
+            # 檢查買單是否成交
+            if bid and bid.client_order_id not in open_order_ids:
+                logger.info(f"Bid order filled: {bid.client_order_id}")
+                fill_event = FillEvent(
+                    order_id=bid.order_id,
+                    client_order_id=bid.client_order_id,
+                    symbol=self.config.standx_symbol,
+                    side="buy",
+                    fill_qty=bid.qty,
+                    fill_price=bid.price,  # 假設以掛單價成交
+                    timestamp=datetime.now(),
+                )
+                await self.on_fill_event(fill_event)
+                return  # 成交後返回，等待對沖完成
+
+            # 檢查賣單是否成交
+            if ask and ask.client_order_id not in open_order_ids:
+                logger.info(f"Ask order filled: {ask.client_order_id}")
+                fill_event = FillEvent(
+                    order_id=ask.order_id,
+                    client_order_id=ask.client_order_id,
+                    symbol=self.config.standx_symbol,
+                    side="sell",
+                    fill_qty=ask.qty,
+                    fill_price=ask.price,  # 假設以掛單價成交
+                    timestamp=datetime.now(),
+                )
+                await self.on_fill_event(fill_event)
+                return  # 成交後返回，等待對沖完成
+
+        except Exception as e:
+            logger.error(f"Failed to check order status: {e}")
+
     # ==================== 成交處理 ====================
 
     async def on_fill_event(self, fill: FillEvent):
@@ -493,35 +579,38 @@ class MarketMakerExecutor:
         if self._on_fill:
             await self._on_fill(fill)
 
-        # 執行對沖
-        hedge_result = await self.hedge_engine.execute_hedge(
-            fill_id=fill.order_id,
-            fill_side=fill.side,
-            fill_qty=fill.fill_qty,
-            fill_price=fill.fill_price,
-            standx_symbol=self.config.standx_symbol,
-        )
+        # 執行對沖 (如果有對沖引擎)
+        if self.hedge_engine:
+            hedge_result = await self.hedge_engine.execute_hedge(
+                fill_id=fill.order_id,
+                fill_side=fill.side,
+                fill_qty=fill.fill_qty,
+                fill_price=fill.fill_price,
+                standx_symbol=self.config.standx_symbol,
+            )
 
-        # 記錄對沖結果
-        self.state.record_hedge(hedge_result.success)
+            # 記錄對沖結果
+            self.state.record_hedge(hedge_result.success)
 
-        # 更新 Binance 倉位
-        if hedge_result.success and hedge_result.status == HedgeStatus.FILLED:
-            # 對沖成功，Binance 倉位反向
-            hedge_delta = -delta
-            self.state.update_binance_position(hedge_delta)
-        elif hedge_result.status == HedgeStatus.FALLBACK:
-            # 回退成功，StandX 倉位回滾
-            self.state.update_standx_position(-delta)
+            # 更新 Binance 倉位
+            if hedge_result.success and hedge_result.status == HedgeStatus.FILLED:
+                # 對沖成功，Binance 倉位反向
+                hedge_delta = -delta
+                self.state.update_binance_position(hedge_delta)
+            elif hedge_result.status == HedgeStatus.FALLBACK:
+                # 回退成功，StandX 倉位回滾
+                self.state.update_standx_position(-delta)
 
-        # 觸發對沖回調
-        if self._on_hedge:
-            await self._on_hedge(hedge_result)
+            # 觸發對沖回調
+            if self._on_hedge:
+                await self._on_hedge(hedge_result)
 
-        logger.info(
-            f"Hedge completed: {hedge_result.status.value}, "
-            f"latency: {hedge_result.latency_ms:.0f}ms"
-        )
+            logger.info(
+                f"Hedge completed: {hedge_result.status.value}, "
+                f"latency: {hedge_result.latency_ms:.0f}ms"
+            )
+        else:
+            logger.warning(f"No hedge engine, position unhedged: {delta} BTC")
 
         # 恢復報價狀態
         self._status = ExecutorStatus.RUNNING
@@ -568,7 +657,7 @@ class MarketMakerExecutor:
             "last_mid_price": float(self._last_mid_price) if self._last_mid_price else None,
             "volatility_bps": self.state.get_volatility_bps(),
             **self.state.get_stats(),
-            "hedge_stats": self.hedge_engine.get_stats(),
+            "hedge_stats": self.hedge_engine.get_stats() if self.hedge_engine else None,
         }
 
     def to_dict(self) -> dict:

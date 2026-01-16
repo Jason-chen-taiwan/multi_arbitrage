@@ -79,6 +79,19 @@ class MMState:
         self._total_hedges = 0
         self._successful_hedges = 0
 
+        # 詳細撤單/重掛統計
+        self._bid_cancels = 0
+        self._ask_cancels = 0
+        self._bid_rebalances = 0
+        self._ask_rebalances = 0
+        self._bid_queue_cancels = 0  # 因隊列位置撤單
+        self._ask_queue_cancels = 0
+        self._volatility_pause_count = 0
+
+        # PnL 追蹤
+        self._realized_pnl = Decimal("0")
+        self._fill_count = 0
+
     # ==================== 訂單管理 ====================
 
     def set_bid_order(self, order: Optional[OrderInfo]):
@@ -287,10 +300,12 @@ class MMState:
 
     # ==================== 統計 ====================
 
-    def record_fill(self):
+    def record_fill(self, side: str = None, pnl: Decimal = Decimal("0")):
         """記錄成交"""
         with self._lock:
             self._total_fills += 1
+            self._fill_count += 1
+            self._realized_pnl += pnl
 
     def record_hedge(self, success: bool):
         """記錄對沖"""
@@ -298,6 +313,33 @@ class MMState:
             self._total_hedges += 1
             if success:
                 self._successful_hedges += 1
+
+    def record_cancel(self, side: str, reason: str = "price"):
+        """記錄撤單"""
+        with self._lock:
+            if side == "buy":
+                if reason == "queue":
+                    self._bid_queue_cancels += 1
+                else:
+                    self._bid_cancels += 1
+            else:
+                if reason == "queue":
+                    self._ask_queue_cancels += 1
+                else:
+                    self._ask_cancels += 1
+
+    def record_rebalance(self, side: str):
+        """記錄重掛"""
+        with self._lock:
+            if side == "buy":
+                self._bid_rebalances += 1
+            else:
+                self._ask_rebalances += 1
+
+    def record_volatility_pause(self):
+        """記錄波動率暫停"""
+        with self._lock:
+            self._volatility_pause_count += 1
 
     def get_stats(self) -> Dict:
         """獲取統計數據"""
@@ -307,6 +349,7 @@ class MMState:
             net_pos = standx_pos + binance_pos
             return {
                 "total_fills": self._total_fills,
+                "fill_count": self._fill_count,
                 "total_hedges": self._total_hedges,
                 "successful_hedges": self._successful_hedges,
                 "hedge_success_rate": (
@@ -317,6 +360,15 @@ class MMState:
                 "binance_position": binance_pos,
                 "net_position": net_pos,
                 "is_balanced": abs(net_pos) <= 0.0001,
+                # 詳細統計
+                "bid_cancels": self._bid_cancels,
+                "ask_cancels": self._ask_cancels,
+                "bid_rebalances": self._bid_rebalances,
+                "ask_rebalances": self._ask_rebalances,
+                "bid_queue_cancels": self._bid_queue_cancels,
+                "ask_queue_cancels": self._ask_queue_cancels,
+                "volatility_pause_count": self._volatility_pause_count,
+                "pnl_usd": float(self._realized_pnl),
             }
 
     def to_dict(self) -> Dict:
@@ -342,6 +394,7 @@ class MMState:
             # 統計數據
             stats = {
                 "total_fills": self._total_fills,
+                "fill_count": self._fill_count,
                 "total_hedges": self._total_hedges,
                 "successful_hedges": self._successful_hedges,
                 "hedge_success_rate": (
@@ -352,6 +405,15 @@ class MMState:
                 "binance_position": binance_pos,
                 "net_position": standx_pos + binance_pos,
                 "is_balanced": abs(standx_pos + binance_pos) <= 0.0001,
+                # 詳細統計
+                "bid_cancels": self._bid_cancels,
+                "ask_cancels": self._ask_cancels,
+                "bid_rebalances": self._bid_rebalances,
+                "ask_rebalances": self._ask_rebalances,
+                "bid_queue_cancels": self._bid_queue_cancels,
+                "ask_queue_cancels": self._ask_queue_cancels,
+                "volatility_pause_count": self._volatility_pause_count,
+                "pnl_usd": float(self._realized_pnl),
             }
 
         return {
@@ -372,5 +434,7 @@ class MMState:
             "net_position": standx_pos + binance_pos,
             "last_price": last_price,
             "volatility_bps": volatility,
+            "fill_count": self._fill_count,
+            "pnl_usd": float(self._realized_pnl),
             "stats": stats,
         }
