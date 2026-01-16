@@ -55,6 +55,11 @@ execution:
   # 是否模擬模式 (實盤交易請設為 false)
   dry_run: false
 
+  # 訂單消失判定時間 (秒)
+  # 訂單從 API 消失後等待多久才判定為成交/取消
+  # 需要配合 StandX API 延遲調整，建議 >= 2.0 秒
+  disappear_time_sec: 2.0
+
 # 對沖參數
 hedge:
   # 對沖超時 (毫秒)

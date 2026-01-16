@@ -25,10 +25,28 @@ class OrderInfo:
     client_order_id: Optional[str] = None
     side: str = ""          # "buy" or "sell"
     price: Decimal = Decimal("0")
-    qty: Decimal = Decimal("0")
-    filled_qty: Decimal = Decimal("0")
-    status: str = "pending"  # pending, open, filled, cancelled
+    qty: Decimal = Decimal("0")  # 向後兼容，等同於 orig_qty
+    filled_qty: Decimal = Decimal("0")  # 向後兼容
+    status: str = "pending"  # pending, open, partially_filled, filled, canceled_or_unknown
     created_at: datetime = field(default_factory=datetime.now)
+
+    # 數量追蹤（改進版）
+    orig_qty: Optional[Decimal] = None          # 原始下單量
+    last_remaining_qty: Optional[Decimal] = None  # 上次查詢的剩餘量
+    cum_filled_qty: Decimal = Decimal("0")      # 累計成交量
+
+    # 消失追蹤（用時間而非 tick 次數）
+    disappeared_since_ts: Optional[float] = None  # 首次消失時間戳
+    unknown_pending_checks: int = 0  # 消失+倉位無變化的確認次數
+
+    def __post_init__(self):
+        """初始化時設置默認值"""
+        # orig_qty 默認等於 qty（向後兼容）
+        if self.orig_qty is None:
+            self.orig_qty = self.qty
+        # last_remaining_qty 初始化 = orig_qty
+        if self.last_remaining_qty is None:
+            self.last_remaining_qty = self.orig_qty
 
 
 @dataclass
@@ -91,6 +109,12 @@ class MMState:
         # PnL 追蹤
         self._realized_pnl = Decimal("0")
         self._fill_count = 0
+
+        # 訂單消失分類統計
+        self._orders_filled = 0              # 確認成交
+        self._orders_canceled_or_unknown = 0  # 取消或未知
+        self._partial_fills = 0              # 部分成交次數
+        self._unknown_fills_detected = 0     # 未知成交（多張消失+倉位變化）
 
         # Uptime 分層時間追蹤 (毫秒)
         self._boosted_time_ms = 0      # 100% 層 (0-10 bps)
@@ -349,6 +373,26 @@ class MMState:
         with self._lock:
             self._volatility_pause_count += 1
 
+    def record_order_filled(self):
+        """記錄訂單成交"""
+        with self._lock:
+            self._orders_filled += 1
+
+    def record_order_canceled_or_unknown(self):
+        """記錄訂單取消或未知"""
+        with self._lock:
+            self._orders_canceled_or_unknown += 1
+
+    def record_partial_fill(self):
+        """記錄部分成交"""
+        with self._lock:
+            self._partial_fills += 1
+
+    def record_unknown_fill_detected(self):
+        """記錄未知成交（多張消失+倉位變化）"""
+        with self._lock:
+            self._unknown_fills_detected += 1
+
     def update_uptime(self, mid_price: Decimal, bid_price: Optional[Decimal], ask_price: Optional[Decimal]):
         """
         更新 uptime 分層時間
@@ -447,6 +491,11 @@ class MMState:
                 "ask_queue_cancels": self._ask_queue_cancels,
                 "volatility_pause_count": self._volatility_pause_count,
                 "pnl_usd": float(self._realized_pnl),
+                # 訂單消失分類統計
+                "orders_filled": self._orders_filled,
+                "orders_canceled_or_unknown": self._orders_canceled_or_unknown,
+                "partial_fills": self._partial_fills,
+                "unknown_fills_detected": self._unknown_fills_detected,
                 # Uptime 分層統計
                 "boosted_time_ms": self._boosted_time_ms,
                 "standard_time_ms": self._standard_time_ms,
@@ -507,6 +556,11 @@ class MMState:
                 "ask_queue_cancels": self._ask_queue_cancels,
                 "volatility_pause_count": self._volatility_pause_count,
                 "pnl_usd": float(self._realized_pnl),
+                # 訂單消失分類統計
+                "orders_filled": self._orders_filled,
+                "orders_canceled_or_unknown": self._orders_canceled_or_unknown,
+                "partial_fills": self._partial_fills,
+                "unknown_fills_detected": self._unknown_fills_detected,
                 # Uptime 分層統計
                 "boosted_time_ms": self._boosted_time_ms,
                 "standard_time_ms": self._standard_time_ms,
