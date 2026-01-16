@@ -163,9 +163,9 @@ def get_marketmaker_page() -> str:
                         <div class="stat-row"><span class="stat-label">當前乘數</span><span class="stat-value" id="mmMultiplier">0x</span></div>
                     </div>
 
-                    <!-- 模擬掛單 -->
+                    <!-- 當前掛單 -->
                     <div class="card">
-                        <div class="card-title">模擬掛單 (需在 mark +/- 30 bps 內)</div>
+                        <div class="card-title">當前掛單 (需在 mark +/- 30 bps 內)</div>
                         <div class="quote-box">
                             <div class="quote-label">買單價格</div>
                             <div class="quote-price quote-bid" id="mmSuggestedBid">-</div>
@@ -196,14 +196,14 @@ def get_marketmaker_page() -> str:
                         <div class="risk-row"><span>賣單位置</span><span id="mmAskPosition" style="font-weight:600">-</span></div>
                     </div>
 
-                    <!-- 模擬統計 -->
+                    <!-- 執行統計 -->
                     <div class="card">
-                        <div class="card-title">訂單模擬統計</div>
+                        <div class="card-title">執行統計</div>
                         <div class="sim-grid">
                             <div class="sim-stat"><div class="sim-value" id="mmTotalQuotes">0秒</div><div class="sim-label">運行時間</div></div>
                             <div class="sim-stat"><div class="sim-value" id="mmQualifiedRate">0%</div><div class="sim-label">有效積分</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmFillCount" style="color:#10b981">0</div><div class="sim-label">模擬成交</div></div>
-                            <div class="sim-stat"><div class="sim-value" id="mmSimPnl" style="color:#10b981">$0.00</div><div class="sim-label">模擬 PnL</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmFillCount" style="color:#10b981">0</div><div class="sim-label">成交次數</div></div>
+                            <div class="sim-stat"><div class="sim-value" id="mmPnl" style="color:#10b981">$0.00</div><div class="sim-label">實盤 PnL</div></div>
                         </div>
                         <!-- 分層時間統計 -->
                         <div style="margin-top: 12px; padding: 10px; background: #0f1419; border-radius: 6px;">

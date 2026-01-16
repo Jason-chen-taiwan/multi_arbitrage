@@ -359,8 +359,10 @@ async def root():
                     mmConfig = await res.json();
                     console.log('Loaded MM config:', mmConfig);
 
-                    // 更新 mmSim 配置
-                    mmSim.updateConfig(mmConfig);
+                    // 保存配置數據
+                    if (mmConfig.uptime) {
+                        mmConfigData.uptimeMaxDistanceBps = mmConfig.uptime.max_distance_bps || 30;
+                    }
 
                     // 更新 UI 輸入框
                     updateMMConfigDisplay();
@@ -409,7 +411,9 @@ async def root():
                     const result = await res.json();
                     if (result.success) {
                         mmConfig = result.config;
-                        mmSim.updateConfig(mmConfig);
+                        if (mmConfig.uptime) {
+                            mmConfigData.uptimeMaxDistanceBps = mmConfig.uptime.max_distance_bps || 30;
+                        }
                         document.getElementById('mmConfigStatus').textContent = '已保存';
                         document.getElementById('mmConfigStatus').style.color = '#10b981';
                     } else {
@@ -428,63 +432,19 @@ async def root():
                 }
             }
 
-            // 更新歷史記錄顯示
-            function updateHistoryDisplay() {
+            // 更新歷史記錄顯示 (從後端獲取)
+            function updateHistoryDisplay(history) {
                 const container = document.getElementById('mmHistoryList');
-                if (!container || mmSim.history.length === 0) return;
+                if (!container) return;
 
-                const actionColors = {
-                    'cancel': '#ef4444',     // 紅色 - 撤單
-                    'rebalance': '#f59e0b',  // 黃色 - 重掛
-                    'place': '#10b981',      // 綠色 - 下單
-                    'fill': '#8b5cf6'        // 紫色 - 成交
-                };
+                if (!history || history.length === 0) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">實盤運行中，歷史記錄請查看後端日誌</div>';
+                    return;
+                }
 
-                const actionNames = {
-                    'cancel': '撤單',
-                    'rebalance': '重掛',
-                    'place': '下單',
-                    'fill': '成交'
-                };
-
-                const sideNames = {
-                    'bid': '買',
-                    'ask': '賣'
-                };
-
-                let html = '<table style="width: 100%; border-collapse: collapse; font-size: 10px;">';
-                html += '<thead><tr style="color: #9ca3af; border-bottom: 1px solid #2a3347;">';
-                html += '<th style="text-align: left; padding: 3px;">時間</th>';
-                html += '<th style="text-align: left; padding: 3px;">操作</th>';
-                html += '<th style="text-align: center; padding: 3px;">排位</th>';
-                html += '<th style="text-align: right; padding: 3px;">訂單價</th>';
-                html += '<th style="text-align: right; padding: 3px;">Best Bid</th>';
-                html += '<th style="text-align: right; padding: 3px;">Best Ask</th>';
-                html += '<th style="text-align: left; padding: 3px;">原因</th>';
-                html += '</tr></thead><tbody>';
-
-                mmSim.history.forEach((h, i) => {
-                    const bgColor = i % 2 === 0 ? '#0f1419' : 'transparent';
-                    const actionColor = actionColors[h.action] || '#9ca3af';
-                    const orderPrice = h.oldPrice || h.newPrice;
-
-                    // 隊列位置顏色：1-3檔紅色警告
-                    const queueColor = h.queuePos && h.queuePos <= 3 ? '#ef4444' : '#9ca3af';
-                    const queueText = h.queuePos ? '第' + h.queuePos + '檔' : '-';
-
-                    html += '<tr style="background: ' + bgColor + ';">';
-                    html += '<td style="padding: 3px; color: #6b7280;">' + h.time + '</td>';
-                    html += '<td style="padding: 3px;"><span style="color: ' + actionColor + ';">' + sideNames[h.side] + actionNames[h.action] + '</span></td>';
-                    html += '<td style="padding: 3px; text-align: center; color: ' + queueColor + '; font-weight: ' + (h.queuePos <= 3 ? '700' : '400') + ';">' + queueText + '</td>';
-                    html += '<td style="padding: 3px; text-align: right; color: #e5e7eb;">' + (orderPrice ? '$' + orderPrice.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
-                    html += '<td style="padding: 3px; text-align: right; color: #10b981;">' + (h.bestBid ? '$' + h.bestBid.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
-                    html += '<td style="padding: 3px; text-align: right; color: #ef4444;">' + (h.bestAsk ? '$' + h.bestAsk.toLocaleString(undefined, {minimumFractionDigits: 2}) : '-') + '</td>';
-                    html += '<td style="padding: 3px; color: #9ca3af;">' + h.reason + '</td>';
-                    html += '</tr>';
-                });
-
-                html += '</tbody></table>';
-                container.innerHTML = html;
+                // 如果後端有提供 history 數據，可以在這裡顯示
+                // 目前後端 mm_state 沒有返回 history，所以顯示提示
+                container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">實盤運行中，歷史記錄請查看後端日誌</div>';
             }
 
             function updateMMConfigDisplay() {
@@ -530,439 +490,23 @@ async def root():
                 }
             }
 
-            // ===== 做市商模擬狀態 =====
-            const mmSim = {
-                // 配置 (從 API 加載，不設默認值)
-                orderDistanceBps: null,
-                cancelDistanceBps: null,
-                rebalanceDistanceBps: null,
-                uptimeMaxDistanceBps: null,
-                queuePositionLimit: null,
-
-                // 波動率配置 (從 API 加載)
-                volatilityWindowSec: null,     // 默認 5 秒
-                volatilityThresholdBps: null,  // 默認 5.0 bps
-
-                // 價格歷史窗口 [{time: timestamp, price: number}, ...]
-                priceWindow: [],
-
-                // 波動率統計
-                currentVolatilityBps: 0,
-                volatilityPauseCount: 0,       // 因波動率暫停次數
-
-                // 模擬掛單 (null = 無單)
-                bidOrder: null,
-                askOrder: null,
-
-                // 時間統計 (毫秒)
-                startTime: Date.now(),
-                lastTickTime: null,
-                qualifiedTimeMs: 0,   // 雙邊都合格的總時間 (舊版相容)
-                totalTimeMs: 0,       // 總運行時間
-
-                // 分層時間統計 (StandX: 0-10=100%, 10-30=50%, 30-100=10%)
-                boostedTimeMs: 0,     // 100% 層時間 (0-10 bps)
-                standardTimeMs: 0,    // 50% 層時間 (10-30 bps)
-                basicTimeMs: 0,       // 10% 層時間 (30-100 bps)
-                outOfRangeTimeMs: 0,  // 超出範圍時間 (>100 bps 或無單)
-
-                // 成交統計
-                fillCount: 0,         // 成交次數
-                fills: [],            // 成交記錄
-                simulatedPnlUsd: 0,   // 模擬 PnL
-
-                // 訂單操作統計
-                bidCancels: 0,
-                askCancels: 0,
-                bidRebalances: 0,
-                askRebalances: 0,
-                bidQueueCancels: 0,   // 因隊列位置撤單
-                askQueueCancels: 0,
-
-                // 歷史記錄 (最多保留 50 條)
-                history: [],
-                maxHistorySize: 50,
-
-                // 添加歷史記錄
-                addHistory(action, side, oldPrice, newPrice, midPrice, distBps, reason, extra = {}) {
-                    const now = new Date();
-                    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
-                    this.history.unshift({
-                        time: timeStr,
-                        action,      // 'cancel' | 'rebalance' | 'place'
-                        side,        // 'bid' | 'ask'
-                        oldPrice,    // 舊訂單價格 (撤單時)
-                        newPrice,    // 新訂單價格
-                        midPrice,    // 當時的中間價
-                        distBps,     // 觸發時的距離
-                        reason,      // 原因說明
-                        queuePos: extra.queuePos || null,      // 隊列位置
-                        bestBid: extra.bestBid || null,        // 最佳買價
-                        bestAsk: extra.bestAsk || null,        // 最佳賣價
-                    });
-                    if (this.history.length > this.maxHistorySize) {
-                        this.history.pop();
-                    }
-                },
-
-                // 下單
-                placeOrder(side, midPrice, reason = '初始下單', ob = null) {
-                    const price = side === 'bid'
-                        ? Math.floor(midPrice * (1 - this.orderDistanceBps / 10000) * 100) / 100
-                        : Math.ceil(midPrice * (1 + this.orderDistanceBps / 10000) * 100) / 100;
-
-                    const order = { price, placedAt: Date.now(), placedMid: midPrice };
-                    if (side === 'bid') this.bidOrder = order;
-                    else this.askOrder = order;
-
-                    // 計算新訂單的隊列位置
-                    const queuePos = this.getQueuePosition(side, price, ob);
-                    const extra = {
-                        queuePos,
-                        bestBid: ob?.bids?.[0]?.[0] || null,
-                        bestAsk: ob?.asks?.[0]?.[0] || null,
-                    };
-
-                    this.addHistory('place', side, null, price, midPrice, this.orderDistanceBps, reason, extra);
-                    return order;
-                },
-
-                // 計算訂單在 orderbook 中的隊列位置
-                getQueuePosition(side, orderPrice, ob) {
-                    if (!ob || !orderPrice) return null;
-
-                    if (side === 'bid') {
-                        // 買單：找第一個價格 < orderPrice 的位置
-                        const pos = ob.bids.findIndex(b => b[0] < orderPrice);
-                        return pos === -1 ? ob.bids.length + 1 : pos + 1;
-                    } else {
-                        // 賣單：找第一個價格 > orderPrice 的位置
-                        const pos = ob.asks.findIndex(a => a[0] > orderPrice);
-                        return pos === -1 ? ob.asks.length + 1 : pos + 1;
-                    }
-                },
-
-                // 檢查配置是否已載入
-                isConfigLoaded() {
-                    return this.orderDistanceBps !== null;
-                },
-
-                // 更新價格窗口
-                updatePriceWindow(price) {
-                    const now = Date.now();
-                    this.priceWindow.push({ time: now, price });
-
-                    // 清理過期數據
-                    const windowMs = (this.volatilityWindowSec || 5) * 1000;
-                    const cutoff = now - windowMs;
-                    this.priceWindow = this.priceWindow.filter(p => p.time > cutoff);
-                },
-
-                // 計算波動率 (bps)
-                getVolatilityBps() {
-                    if (this.priceWindow.length < 2) {
-                        return Infinity;  // 數據不足，視為高風險
-                    }
-
-                    const prices = this.priceWindow.map(p => p.price);
-                    const max = Math.max(...prices);
-                    const min = Math.min(...prices);
-                    const latest = prices[prices.length - 1];
-
-                    if (latest === 0) return Infinity;
-                    return (max - min) / latest * 10000;
-                },
-
-                // 檢查是否應該因波動率暫停
-                shouldPauseForVolatility() {
-                    if (this.volatilityThresholdBps === null) return false;
-                    return this.getVolatilityBps() > this.volatilityThresholdBps;
-                },
-
-                // 檢查並處理訂單 (基於時間的 Uptime 計算)
-                tick(midPrice, ob) {
-                    // 配置未載入時不執行
-                    if (!this.isConfigLoaded()) return { bidStatus: 'waiting', askStatus: 'waiting' };
-
-                    const now = Date.now();
-                    let bidStatus = 'none';
-                    let askStatus = 'none';
-
-                    // 計算自上次 tick 以來的時間間隔
-                    const deltaMs = this.lastTickTime ? (now - this.lastTickTime) : 0;
-                    this.lastTickTime = now;
-                    this.totalTimeMs += deltaMs;
-
-                    // 更新價格窗口並計算波動率
-                    this.updatePriceWindow(midPrice);
-                    this.currentVolatilityBps = this.getVolatilityBps();
-
-                    // 波動率檢查：超過閾值則暫停掛單
-                    if (this.shouldPauseForVolatility()) {
-                        this.volatilityPauseCount++;
-                        // 撤銷現有訂單
-                        if (this.bidOrder) {
-                            this.addHistory('cancel', 'bid', this.bidOrder.price, null, midPrice, '-', '波動率過高 (' + this.currentVolatilityBps.toFixed(1) + ' bps)', {});
-                            this.bidOrder = null;
-                            this.bidCancels++;
-                        }
-                        if (this.askOrder) {
-                            this.addHistory('cancel', 'ask', this.askOrder.price, null, midPrice, '-', '波動率過高 (' + this.currentVolatilityBps.toFixed(1) + ' bps)', {});
-                            this.askOrder = null;
-                            this.askCancels++;
-                        }
-                        return { bidStatus: 'volatility_pause', askStatus: 'volatility_pause' };
-                    }
-
-                    // 取得最佳買賣價
-                    const bestBid = ob?.bids?.[0]?.[0] || null;
-                    const bestAsk = ob?.asks?.[0]?.[0] || null;
-
-                    // === 成交模擬 (最優先檢查) ===
-                    // 買單成交：市場 best_bid 跌破我的買單價 (價格穿越)
-                    if (this.bidOrder && bestBid && bestBid < this.bidOrder.price) {
-                        const fillPrice = this.bidOrder.price;
-                        const distBps = (midPrice - fillPrice) / midPrice * 10000;
-                        this.simulateFill('bid', fillPrice, midPrice, '價格穿越 (best_bid=$' + bestBid.toFixed(2) + ' < 訂單$' + fillPrice.toFixed(2) + ')');
-                        bidStatus = 'filled';
-                        this.bidOrder = null;
-                    }
-                    // 賣單成交：市場 best_ask 漲破我的賣單價 (價格穿越)
-                    if (this.askOrder && bestAsk && bestAsk > this.askOrder.price) {
-                        const fillPrice = this.askOrder.price;
-                        const distBps = (fillPrice - midPrice) / midPrice * 10000;
-                        this.simulateFill('ask', fillPrice, midPrice, '價格穿越 (best_ask=$' + bestAsk.toFixed(2) + ' > 訂單$' + fillPrice.toFixed(2) + ')');
-                        askStatus = 'filled';
-                        this.askOrder = null;
-                    }
-
-                    // 處理買單 (未成交的情況)
-                    if (this.bidOrder) {
-                        const distBps = (midPrice - this.bidOrder.price) / midPrice * 10000;
-                        const queuePos = this.getQueuePosition('bid', this.bidOrder.price, ob);
-                        const extra = { queuePos, bestBid, bestAsk };
-
-                        // 檢查隊列位置風控
-                        if (queuePos && queuePos <= this.queuePositionLimit) {
-                            const oldPrice = this.bidOrder.price;
-                            bidStatus = 'queue_cancel';
-                            this.bidOrder = null;
-                            this.bidQueueCancels++;
-                            this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '隊列風控 (第' + queuePos + '檔)', extra);
-                        } else if (distBps < this.cancelDistanceBps) {
-                            const oldPrice = this.bidOrder.price;
-                            bidStatus = 'cancel';
-                            this.bidOrder = null;
-                            this.bidCancels++;
-                            this.addHistory('cancel', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                'bps太近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ')', extra);
-                        } else if (distBps > this.rebalanceDistanceBps) {
-                            const oldPrice = this.bidOrder.price;
-                            bidStatus = 'rebalance';
-                            this.bidOrder = null;
-                            this.bidRebalances++;
-                            this.addHistory('rebalance', 'bid', oldPrice, null, midPrice, distBps.toFixed(2),
-                                'bps太遠 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ')', extra);
-                        } else if (distBps <= this.uptimeMaxDistanceBps) {
-                            bidStatus = 'qualified';
-                        } else {
-                            bidStatus = 'out_of_range';
-                        }
-                    }
-
-                    // 處理賣單 (未成交的情況)
-                    if (this.askOrder) {
-                        const distBps = (this.askOrder.price - midPrice) / midPrice * 10000;
-                        const queuePos = this.getQueuePosition('ask', this.askOrder.price, ob);
-                        const extra = { queuePos, bestBid, bestAsk };
-
-                        // 檢查隊列位置風控
-                        if (queuePos && queuePos <= this.queuePositionLimit) {
-                            const oldPrice = this.askOrder.price;
-                            askStatus = 'queue_cancel';
-                            this.askOrder = null;
-                            this.askQueueCancels++;
-                            this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                '隊列風控 (第' + queuePos + '檔)', extra);
-                        } else if (distBps < this.cancelDistanceBps) {
-                            const oldPrice = this.askOrder.price;
-                            askStatus = 'cancel';
-                            this.askOrder = null;
-                            this.askCancels++;
-                            this.addHistory('cancel', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                'bps太近 (' + distBps.toFixed(2) + ' < ' + this.cancelDistanceBps + ')', extra);
-                        } else if (distBps > this.rebalanceDistanceBps) {
-                            const oldPrice = this.askOrder.price;
-                            askStatus = 'rebalance';
-                            this.askOrder = null;
-                            this.askRebalances++;
-                            this.addHistory('rebalance', 'ask', oldPrice, null, midPrice, distBps.toFixed(2),
-                                'bps太遠 (' + distBps.toFixed(2) + ' > ' + this.rebalanceDistanceBps + ')', extra);
-                        } else if (distBps <= this.uptimeMaxDistanceBps) {
-                            askStatus = 'qualified';
-                        } else {
-                            askStatus = 'out_of_range';
-                        }
-                    }
-
-                    // 沒有訂單則下單，並立即檢查是否合格
-                    if (!this.bidOrder) {
-                        const reason = (bidStatus === 'cancel' || bidStatus === 'queue_cancel') ? '撤單後重掛' :
-                                       (bidStatus === 'rebalance' ? '重平衡重掛' :
-                                       (bidStatus === 'filled' ? '成交後重掛' : '初始下單'));
-                        this.placeOrder('bid', midPrice, reason, ob);
-                        if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
-                            bidStatus = bidStatus === 'filled' ? 'filled' : 'qualified';
-                        }
-                    }
-                    if (!this.askOrder) {
-                        const reason = (askStatus === 'cancel' || askStatus === 'queue_cancel') ? '撤單後重掛' :
-                                       (askStatus === 'rebalance' ? '重平衡重掛' :
-                                       (askStatus === 'filled' ? '成交後重掛' : '初始下單'));
-                        this.placeOrder('ask', midPrice, reason, ob);
-                        if (this.orderDistanceBps <= this.uptimeMaxDistanceBps) {
-                            askStatus = askStatus === 'filled' ? 'filled' : 'qualified';
-                        }
-                    }
-
-                    // === 分層時間統計 ===
-                    // 計算當前雙邊訂單的距離
-                    const bidDistBps = this.bidOrder ? (midPrice - this.bidOrder.price) / midPrice * 10000 : 999;
-                    const askDistBps = this.askOrder ? (this.askOrder.price - midPrice) / midPrice * 10000 : 999;
-                    const maxDistBps = Math.max(bidDistBps, askDistBps);
-
-                    // StandX 分層: 0-10 bps = 100% (boosted), 10-30 bps = 50% (standard), 30-100 bps = 10% (basic)
-                    if (this.bidOrder && this.askOrder && maxDistBps <= 10) {
-                        this.boostedTimeMs += deltaMs;
-                        this.qualifiedTimeMs += deltaMs;  // 舊版相容
-                    } else if (this.bidOrder && this.askOrder && maxDistBps <= 30) {
-                        this.standardTimeMs += deltaMs;
-                        this.qualifiedTimeMs += deltaMs;  // 舊版相容
-                    } else if (this.bidOrder && this.askOrder && maxDistBps <= 100) {
-                        this.basicTimeMs += deltaMs;
-                    } else {
-                        this.outOfRangeTimeMs += deltaMs;
-                    }
-
-                    return { bidStatus, askStatus, bidDistBps, askDistBps };
-                },
-
-                // 模擬成交
-                simulateFill(side, fillPrice, midPrice, reason) {
-                    const now = new Date();
-                    const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
-                    const fill = {
-                        time: timeStr,
-                        side,
-                        price: fillPrice,
-                        midPrice,
-                        reason,
-                        pnlBps: side === 'bid' ? (midPrice - fillPrice) / midPrice * 10000 : (fillPrice - midPrice) / midPrice * 10000
-                    };
-                    this.fills.unshift(fill);
-                    if (this.fills.length > 50) this.fills.pop();
-                    this.fillCount++;
-                    // 假設 0.001 BTC 訂單大小
-                    const orderSizeBtc = 0.001;
-                    this.simulatedPnlUsd += fill.pnlBps / 10000 * fillPrice * orderSizeBtc;
-                    this.addHistory('fill', side, null, fillPrice, midPrice, fill.pnlBps.toFixed(2), reason, {});
-                },
-
-                // 計算距離
-                getDistance(side, midPrice) {
-                    const order = side === 'bid' ? this.bidOrder : this.askOrder;
-                    if (!order) return null;
-                    return side === 'bid'
-                        ? (midPrice - order.price) / midPrice * 10000
-                        : (order.price - midPrice) / midPrice * 10000;
-                },
-
-                // 重置
-                reset() {
-                    this.bidOrder = null;
-                    this.askOrder = null;
-                    this.startTime = Date.now();
-                    this.lastTickTime = null;
-                    this.qualifiedTimeMs = 0;
-                    this.totalTimeMs = 0;
-                    // 分層時間
-                    this.boostedTimeMs = 0;
-                    this.standardTimeMs = 0;
-                    this.basicTimeMs = 0;
-                    this.outOfRangeTimeMs = 0;
-                    // 成交統計
-                    this.fillCount = 0;
-                    this.fills = [];
-                    this.simulatedPnlUsd = 0;
-                    // 訂單操作統計
-                    this.bidCancels = 0;
-                    this.askCancels = 0;
-                    this.bidRebalances = 0;
-                    this.askRebalances = 0;
-                    this.bidQueueCancels = 0;
-                    this.askQueueCancels = 0;
-                    this.history = [];
-                    // 波動率統計
-                    this.priceWindow = [];
-                    this.currentVolatilityBps = 0;
-                    this.volatilityPauseCount = 0;
-                },
-
-                // 獲取 Uptime 百分比 (舊版相容)
-                getUptimePct() {
-                    return this.totalTimeMs > 0 ? (this.qualifiedTimeMs / this.totalTimeMs * 100) : 0;
-                },
-
-                // 獲取各層時間百分比
-                getTierPcts() {
-                    const total = this.totalTimeMs || 1;
-                    return {
-                        boosted: this.boostedTimeMs / total * 100,
-                        standard: this.standardTimeMs / total * 100,
-                        basic: this.basicTimeMs / total * 100,
-                        outOfRange: this.outOfRangeTimeMs / total * 100
-                    };
-                },
-
-                // 獲取有效積分百分比 (StandX 加權計算)
-                getEffectivePointsPct() {
-                    const total = this.totalTimeMs || 1;
-                    // 100% * boosted + 50% * standard + 10% * basic
-                    return (this.boostedTimeMs * 1.0 + this.standardTimeMs * 0.5 + this.basicTimeMs * 0.1) / total * 100;
-                },
-
-                // 獲取運行時間 (秒)
-                getRunningTimeSec() {
-                    return this.totalTimeMs / 1000;
-                },
-
-                // 更新配置
-                updateConfig(config) {
-                    if (config.quote) {
-                        this.orderDistanceBps = config.quote.order_distance_bps;
-                        this.cancelDistanceBps = config.quote.cancel_distance_bps;
-                        this.rebalanceDistanceBps = config.quote.rebalance_distance_bps;
-                        this.queuePositionLimit = config.quote.queue_position_limit;
-                    }
-                    if (config.uptime) {
-                        this.uptimeMaxDistanceBps = config.uptime.max_distance_bps;
-                    }
-                    if (config.volatility) {
-                        this.volatilityWindowSec = config.volatility.window_sec;
-                        this.volatilityThresholdBps = config.volatility.threshold_bps;
-                    }
-                    console.log('mmSim config loaded:', {
-                        orderDistanceBps: this.orderDistanceBps,
-                        cancelDistanceBps: this.cancelDistanceBps,
-                        rebalanceDistanceBps: this.rebalanceDistanceBps,
-                        queuePositionLimit: this.queuePositionLimit,
-                        uptimeMaxDistanceBps: this.uptimeMaxDistanceBps,
-                        volatilityWindowSec: this.volatilityWindowSec,
-                        volatilityThresholdBps: this.volatilityThresholdBps
-                    });
-                }
+            // ===== 做市商配置 (從 API 加載) =====
+            let mmConfigData = {
+                uptimeMaxDistanceBps: 30
             };
+
+            // 計算訂單在 orderbook 中的隊列位置
+            function getQueuePosition(side, orderPrice, ob) {
+                if (!ob || !orderPrice) return null;
+
+                if (side === 'bid') {
+                    const pos = ob.bids.findIndex(b => b[0] < orderPrice);
+                    return pos === -1 ? ob.bids.length + 1 : pos + 1;
+                } else {
+                    const pos = ob.asks.findIndex(a => a[0] > orderPrice);
+                    return pos === -1 ? ob.asks.length + 1 : pos + 1;
+                }
+            }
 
             // ===== WebSocket 連接 =====
             function connect() {
@@ -1099,21 +643,21 @@ async def root():
                 spreadEl.textContent = spreadBps.toFixed(1);
                 spreadEl.className = 'mm-stat-value ' + (spreadBps <= 10 ? 'text-green' : (spreadBps <= 15 ? 'text-yellow' : 'text-red'));
 
-                const runtime = Math.floor((Date.now() - mmSim.startTime) / 60000);
+                // 取得運行時間
+                const executor = data.mm_executor;
+                const runningSeconds = executor?.stats?.uptime_seconds || 0;
+                const runtime = Math.floor(runningSeconds / 60);
                 document.getElementById('mmRuntime').textContent = runtime + 'm';
 
-                // 取得 orderbook 用於隊列位置風控
+                // 取得 orderbook 用於隊列位置計算
                 const ob = data.orderbooks?.STANDX?.['BTC-USD'];
 
-                // ===== 訂單顯示 =====
-                // 判斷是使用後端實際訂單還是前端模擬訂單
-                const isLiveMode = data.mm_status?.running && !data.mm_status?.dry_run;
-                const executor = data.mm_executor;
+                // ===== 訂單顯示 (只支援實盤模式) =====
+                const isLiveMode = data.mm_status?.running;
 
-                let bidOrder, askOrder, bidDistBps, askDistBps, simResult;
+                let bidOrder = null, askOrder = null, bidDistBps = null, askDistBps = null;
 
                 if (isLiveMode && executor && executor.state) {
-                    // === 實盤模式：使用後端執行器的訂單 ===
                     const backendBid = executor.state.bid_order;
                     const backendAsk = executor.state.ask_order;
 
@@ -1123,68 +667,34 @@ async def root():
                     // 計算距離
                     bidDistBps = bidOrder ? (midPrice - bidOrder.price) / midPrice * 10000 : null;
                     askDistBps = askOrder ? (askOrder.price - midPrice) / midPrice * 10000 : null;
-
-                    simResult = { bidStatus: 'live', askStatus: 'live' };
-                } else {
-                    // === 模擬模式：使用前端 mmSim ===
-                    simResult = mmSim.tick(midPrice, ob);
-                    bidOrder = mmSim.bidOrder;
-                    askOrder = mmSim.askOrder;
-                    bidDistBps = mmSim.getDistance('bid', midPrice);
-                    askDistBps = mmSim.getDistance('ask', midPrice);
                 }
 
                 // 顯示報價和狀態
-                const maxDistBps = mmSim.uptimeMaxDistanceBps || 30;
+                const maxDistBps = mmConfigData.uptimeMaxDistanceBps || 30;
                 if (bidOrder) {
                     const bidInRange = bidDistBps <= maxDistBps;
                     const bidStyle = bidInRange ? 'color: #10b981' : 'color: #ef4444';
                     document.getElementById('mmSuggestedBid').innerHTML = '<span style="' + bidStyle + '">$' + bidOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
-
-                    // 狀態指示
-                    let bidStatusText = '';
-                    if (isLiveMode) {
-                        bidStatusText = '✓ 實盤 ' + (bidDistBps ? bidDistBps.toFixed(1) : '-') + ' bps';
-                    } else if (simResult.bidStatus === 'cancel') {
-                        bidStatusText = '⚡ 撤單 (bps太近)';
-                    } else if (simResult.bidStatus === 'queue_cancel') {
-                        bidStatusText = '🚨 撤單 (隊列風控)';
-                    } else if (simResult.bidStatus === 'rebalance') {
-                        bidStatusText = '🔄 重掛 (太遠)';
-                    } else if (bidInRange) {
-                        bidStatusText = '✓ ' + bidDistBps.toFixed(1) + ' bps';
-                    } else {
-                        bidStatusText = '⚠️ 超出' + maxDistBps + 'bps (' + bidDistBps.toFixed(1) + ')';
-                    }
+                    const bidStatusText = bidInRange
+                        ? '✓ ' + bidDistBps.toFixed(1) + ' bps'
+                        : '⚠️ 超出' + maxDistBps + 'bps (' + bidDistBps.toFixed(1) + ')';
                     document.getElementById('mmBidStatus').textContent = bidStatusText;
                 } else {
-                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="color: #9ca3af">' + (isLiveMode ? '等待下單...' : '下單中...') + '</span>';
-                    document.getElementById('mmBidStatus').textContent = isLiveMode ? '實盤待掛' : '新掛單';
+                    document.getElementById('mmSuggestedBid').innerHTML = '<span style="color: #9ca3af">等待下單...</span>';
+                    document.getElementById('mmBidStatus').textContent = '待掛';
                 }
 
                 if (askOrder) {
                     const askInRange = askDistBps <= maxDistBps;
                     const askStyle = askInRange ? 'color: #10b981' : 'color: #ef4444';
                     document.getElementById('mmSuggestedAsk').innerHTML = '<span style="' + askStyle + '">$' + askOrder.price.toLocaleString(undefined, {maximumFractionDigits: 2}) + '</span>';
-
-                    let askStatusText = '';
-                    if (isLiveMode) {
-                        askStatusText = '✓ 實盤 ' + (askDistBps ? askDistBps.toFixed(1) : '-') + ' bps';
-                    } else if (simResult.askStatus === 'cancel') {
-                        askStatusText = '⚡ 撤單 (bps太近)';
-                    } else if (simResult.askStatus === 'queue_cancel') {
-                        askStatusText = '🚨 撤單 (隊列風控)';
-                    } else if (simResult.askStatus === 'rebalance') {
-                        askStatusText = '🔄 重掛 (太遠)';
-                    } else if (askInRange) {
-                        askStatusText = '✓ ' + askDistBps.toFixed(1) + ' bps';
-                    } else {
-                        askStatusText = '⚠️ 超出' + maxDistBps + 'bps (' + askDistBps.toFixed(1) + ')';
-                    }
+                    const askStatusText = askInRange
+                        ? '✓ ' + askDistBps.toFixed(1) + ' bps'
+                        : '⚠️ 超出' + maxDistBps + 'bps (' + askDistBps.toFixed(1) + ')';
                     document.getElementById('mmAskStatus').textContent = askStatusText;
                 } else {
-                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="color: #9ca3af">' + (isLiveMode ? '等待下單...' : '下單中...') + '</span>';
-                    document.getElementById('mmAskStatus').textContent = isLiveMode ? '實盤待掛' : '新掛單';
+                    document.getElementById('mmSuggestedAsk').innerHTML = '<span style="color: #9ca3af">等待下單...</span>';
+                    document.getElementById('mmAskStatus').textContent = '待掛';
                 }
 
                 // Spread display
@@ -1194,9 +704,9 @@ async def root():
 
                 // ===== 訂單簿顯示 =====
                 // ob 已在上方取得 (用於隊列位置風控)
-                // 使用實際掛單價格（實盤模式使用後端訂單，模擬模式使用 mmSim）
-                const simBidPrice = bidOrder ? bidOrder.price : null;
-                const simAskPrice = askOrder ? askOrder.price : null;
+                // 使用實際掛單價格（從後端獲取）
+                const liveBidPrice = bidOrder ? bidOrder.price : null;
+                const liveAskPrice = askOrder ? askOrder.price : null;
 
                 if (ob && ob.bids && ob.asks) {
                     const maxSize = Math.max(...ob.bids.map(b => b[1]), ...ob.asks.map(a => a[1]));
@@ -1212,9 +722,18 @@ async def root():
                     }).join('');
 
                     // 計算模擬掛單會排在第幾檔
-                    if (simBidPrice) {
-                        let bidPos = ob.bids.findIndex(b => b[0] < simBidPrice);
+                    if (liveBidPrice) {
+                        let bidPos = ob.bids.findIndex(b => b[0] < liveBidPrice);
                         bidPos = bidPos === -1 ? ob.bids.length + 1 : bidPos + 1;
+                        // Debug: 顯示計算細節
+                        console.log('Bid queue calc:', {
+                            liveBidPrice,
+                            obBidsLength: ob.bids.length,
+                            bestBid: ob.bids[0]?.[0],
+                            worstBid: ob.bids[ob.bids.length-1]?.[0],
+                            bidPos,
+                            comparison: ob.bids.slice(0,5).map(b => ({price: b[0], lessThan: b[0] < liveBidPrice}))
+                        });
                         const bidPosText = bidPos === 1 ? '最佳價 (第1檔)' : '第 ' + bidPos + ' 檔';
                         document.getElementById('mmBidPosition').textContent = bidPosText;
                         document.getElementById('mmBidPosition').style.color = bidPos <= 2 ? '#10b981' : '#9ca3af';
@@ -1222,9 +741,18 @@ async def root():
                         document.getElementById('mmBidPosition').textContent = '-';
                     }
 
-                    if (simAskPrice) {
-                        let askPos = ob.asks.findIndex(a => a[0] > simAskPrice);
+                    if (liveAskPrice) {
+                        let askPos = ob.asks.findIndex(a => a[0] > liveAskPrice);
                         askPos = askPos === -1 ? ob.asks.length + 1 : askPos + 1;
+                        // Debug: 顯示計算細節
+                        console.log('Ask queue calc:', {
+                            liveAskPrice,
+                            obAsksLength: ob.asks.length,
+                            bestAsk: ob.asks[0]?.[0],
+                            worstAsk: ob.asks[ob.asks.length-1]?.[0],
+                            askPos,
+                            comparison: ob.asks.slice(0,5).map(a => ({price: a[0], greaterThan: a[0] > liveAskPrice}))
+                        });
                         const askPosText = askPos === 1 ? '最佳價 (第1檔)' : '第 ' + askPos + ' 檔';
                         document.getElementById('mmAskPosition').textContent = askPosText;
                         document.getElementById('mmAskPosition').style.color = askPos <= 2 ? '#10b981' : '#9ca3af';
@@ -1242,8 +770,10 @@ async def root():
                     document.getElementById('mmAskPosition').textContent = '-';
                 }
 
-                // Uptime - 使用時間計算
-                const uptimePct = mmSim.getUptimePct();
+                // Uptime - 從後端取得
+                const uptimePct = (isLiveMode && executor && executor.stats)
+                    ? (executor.stats.uptime_pct || 0)
+                    : 0;
                 document.getElementById('mmUptimePct').textContent = uptimePct.toFixed(1) + '%';
 
                 const tier = uptimePct >= 70 ? 'boosted' : (uptimePct >= 50 ? 'standard' : 'inactive');
@@ -1253,14 +783,12 @@ async def root():
                 document.getElementById('mmUptimeTier').className = 'uptime-tier tier-' + tier;
                 document.getElementById('mmMultiplier').textContent = multiplier + 'x';
 
-                // 統計顯示 - 實盤模式使用後端數據，模擬模式使用前端數據
-                // (isLiveMode 和 executor 已在訂單顯示部分定義)
-                let runningTimeSec, effectivePts, fillCount, pnlUsd;
-                let bidCancels, askCancels, bidRebalances, askRebalances;
-                let volBps, isVolHigh, volatilityPauseCount;
+                // 統計顯示 - 使用後端數據
+                let runningTimeSec = 0, effectivePts = 0, fillCount = 0, pnlUsd = 0;
+                let bidCancels = 0, askCancels = 0, bidRebalances = 0, askRebalances = 0;
+                let volBps = 0, isVolHigh = false, volatilityPauseCount = 0;
 
                 if (isLiveMode && executor && executor.stats) {
-                    // === 實盤模式：使用後端執行器數據 ===
                     const stats = executor.stats;
                     const stateStats = executor.state?.stats || {};
                     runningTimeSec = stats.uptime_seconds || 0;
@@ -1274,19 +802,6 @@ async def root():
                     volBps = stats.volatility_bps || 0;
                     isVolHigh = volBps > (mmConfig?.volatility?.threshold_bps || 5);
                     volatilityPauseCount = stateStats.volatility_pause_count || 0;
-                } else {
-                    // === 模擬模式：使用前端 mmSim 數據 ===
-                    runningTimeSec = mmSim.getRunningTimeSec();
-                    effectivePts = mmSim.getEffectivePointsPct();
-                    fillCount = mmSim.fillCount;
-                    pnlUsd = mmSim.simulatedPnlUsd;
-                    bidCancels = mmSim.bidCancels;
-                    askCancels = mmSim.askCancels;
-                    bidRebalances = mmSim.bidRebalances;
-                    askRebalances = mmSim.askRebalances;
-                    volBps = mmSim.currentVolatilityBps;
-                    isVolHigh = mmSim.shouldPauseForVolatility();
-                    volatilityPauseCount = mmSim.volatilityPauseCount;
                 }
 
                 // 運行時間
@@ -1303,11 +818,11 @@ async def root():
                 const pnlStr = pnlUsd >= 0
                     ? '+$' + pnlUsd.toFixed(2)
                     : '-$' + Math.abs(pnlUsd).toFixed(2);
-                document.getElementById('mmSimPnl').textContent = pnlStr;
-                document.getElementById('mmSimPnl').style.color = pnlUsd >= 0 ? '#10b981' : '#ef4444';
+                document.getElementById('mmPnl').textContent = pnlStr;
+                document.getElementById('mmPnl').style.color = pnlUsd >= 0 ? '#10b981' : '#ef4444';
 
-                // 分層時間百分比
-                let tierPcts;
+                // 分層時間百分比 - 從後端取得
+                let tierPcts = { boosted: 0, standard: 0, basic: 0, outOfRange: 0 };
                 if (isLiveMode && executor && executor.state?.stats) {
                     const s = executor.state.stats;
                     tierPcts = {
@@ -1316,8 +831,6 @@ async def root():
                         basic: s.basic_pct || 0,
                         outOfRange: s.out_of_range_pct || 0
                     };
-                } else {
-                    tierPcts = mmSim.getTierPcts();
                 }
                 document.getElementById('mmTierBoosted').style.width = tierPcts.boosted + '%';
                 document.getElementById('mmTierStandard').style.width = tierPcts.standard + '%';
@@ -1328,14 +841,11 @@ async def root():
                 document.getElementById('mmTierBasicPct').textContent = tierPcts.basic.toFixed(1) + '%';
                 document.getElementById('mmTierOutPct').textContent = tierPcts.outOfRange.toFixed(1) + '%';
 
-                // 撤單次數和重掛次數 (格式: 價格撤單/隊列撤單/重掛)
-                let bidQueueCancels, askQueueCancels;
+                // 撤單次數和重掛次數 (格式: 價格撤單/隊列撤單/重掛) - 從後端取得
+                let bidQueueCancels = 0, askQueueCancels = 0;
                 if (isLiveMode && executor && executor.state?.stats) {
                     bidQueueCancels = executor.state.stats.bid_queue_cancels || 0;
                     askQueueCancels = executor.state.stats.ask_queue_cancels || 0;
-                } else {
-                    bidQueueCancels = mmSim.bidQueueCancels;
-                    askQueueCancels = mmSim.askQueueCancels;
                 }
                 document.getElementById('mmBidFillRate').textContent = bidCancels + '/' + bidQueueCancels + '/' + bidRebalances;
                 document.getElementById('mmAskFillRate').textContent = askCancels + '/' + askQueueCancels + '/' + askRebalances;
@@ -1573,7 +1083,6 @@ async def root():
                     document.getElementById('mmStopBtn').style.display = 'block';
                     document.getElementById('mmStatusBadge').textContent = mmDryRun ? '模擬中' : '運行中';
                     document.getElementById('mmStatusBadge').style.background = mmDryRun ? '#f59e0b' : '#10b981';
-                    mmSim.reset();  // 重置模擬統計
                 } else {
                     alert('啟動失敗: ' + result.error);
                 }
