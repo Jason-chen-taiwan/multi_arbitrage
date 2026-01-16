@@ -186,31 +186,12 @@ class MarketMakerExecutor:
         """初始化：同步狀態"""
         logger.info("Initializing executor state...")
 
-        # 查詢 StandX 倉位
-        try:
-            positions = await self.standx.get_positions(self.config.standx_symbol)
-            for pos in positions:
-                if pos.symbol == self.config.standx_symbol:
-                    # 根據 side 設置正負
-                    position_qty = pos.size if pos.side == "long" else -pos.size
-                    self.state.set_standx_position(position_qty)
-                    logger.info(f"StandX position: {position_qty}")
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to get StandX positions: {e}")
+        # 同步 StandX 倉位
+        await self._sync_standx_position()
 
-        # 查詢 Binance 倉位 (如果有 Binance adapter)
+        # 同步 Binance 倉位 (如果有 Binance adapter)
         if self.binance:
-            try:
-                positions = await self.binance.get_positions(self.config.binance_symbol)
-                for pos in positions:
-                    if self.config.binance_symbol in pos.symbol:
-                        position_qty = pos.size if pos.side == "long" else -pos.size
-                        self.state.set_binance_position(position_qty)
-                        logger.info(f"Binance position: {position_qty}")
-                        break
-            except Exception as e:
-                logger.warning(f"Failed to get Binance positions: {e}")
+            await self._sync_binance_position()
 
         # 取消現有訂單
         if not self.config.dry_run:
@@ -579,24 +560,61 @@ class MarketMakerExecutor:
 
     # ==================== 成交處理 ====================
 
+    async def _sync_standx_position(self) -> Decimal:
+        """從 StandX 同步實際倉位"""
+        try:
+            positions = await self.standx.get_positions(self.config.standx_symbol)
+            for pos in positions:
+                if pos.symbol == self.config.standx_symbol:
+                    position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
+                    self.state.set_standx_position(position_qty)
+                    logger.info(f"[Sync] StandX position: {position_qty}")
+                    return position_qty
+            # 沒有找到倉位，設為 0
+            self.state.set_standx_position(Decimal("0"))
+            logger.info("[Sync] StandX position: 0 (no position found)")
+            return Decimal("0")
+        except Exception as e:
+            logger.error(f"Failed to sync StandX position: {e}")
+            return self.state.get_standx_position()
+
+    async def _sync_binance_position(self) -> Decimal:
+        """從 Binance 同步實際倉位"""
+        if not self.binance:
+            return Decimal("0")
+        try:
+            positions = await self.binance.get_positions(self.config.binance_symbol)
+            for pos in positions:
+                if self.config.binance_symbol in pos.symbol:
+                    position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
+                    self.state.set_binance_position(position_qty)
+                    logger.info(f"[Sync] Binance position: {position_qty}")
+                    return position_qty
+            # 沒有找到倉位，設為 0
+            self.state.set_binance_position(Decimal("0"))
+            logger.info("[Sync] Binance position: 0 (no position found)")
+            return Decimal("0")
+        except Exception as e:
+            logger.error(f"Failed to sync Binance position: {e}")
+            return self.state.get_binance_position()
+
     async def on_fill_event(self, fill: FillEvent):
         """
         處理成交事件 (由 WebSocket 回調觸發)
 
         流程:
-        1. 更新倉位
+        1. 同步倉位（從交易所查詢實際倉位）
         2. 取消另一邊訂單
         3. 執行對沖
-        4. 對沖完成後重新掛單
+        4. 對沖完成後同步倉位並重新掛單
         """
         logger.info(f"Fill received: {fill.side} {fill.fill_qty} @ {fill.fill_price}")
 
         # 更新狀態
         self.state.record_fill()
 
-        # 更新 StandX 倉位
-        delta = fill.fill_qty if fill.side == "buy" else -fill.fill_qty
-        self.state.update_standx_position(delta)
+        # 同步 StandX 實際倉位（而不是本地計算）
+        await self._sync_standx_position()
 
         # 取消另一邊訂單
         await self._cancel_all_orders()
@@ -623,14 +641,12 @@ class MarketMakerExecutor:
             # 記錄對沖結果
             self.state.record_hedge(hedge_result.success)
 
-            # 更新 Binance 倉位
-            if hedge_result.success and hedge_result.status == HedgeStatus.FILLED:
-                # 對沖成功，Binance 倉位反向
-                hedge_delta = -delta
-                self.state.update_binance_position(hedge_delta)
-            elif hedge_result.status == HedgeStatus.FALLBACK:
-                # 回退成功，StandX 倉位回滾
-                self.state.update_standx_position(-delta)
+            # 對沖完成後，同步 Binance 實際倉位
+            await self._sync_binance_position()
+
+            # 如果對沖回退，重新同步 StandX 倉位
+            if hedge_result.status == HedgeStatus.FALLBACK:
+                await self._sync_standx_position()
 
             # 觸發對沖回調
             if self._on_hedge:
@@ -641,7 +657,7 @@ class MarketMakerExecutor:
                 f"latency: {hedge_result.latency_ms:.0f}ms"
             )
         else:
-            logger.warning(f"No hedge engine, position unhedged: {delta} BTC")
+            logger.warning(f"No hedge engine, position unhedged")
 
         # 恢復報價狀態
         self._status = ExecutorStatus.RUNNING
