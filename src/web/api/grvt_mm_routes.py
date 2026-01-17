@@ -97,6 +97,7 @@ def register_grvt_mm_routes(app, dependencies):
             inventory_skew_cfg = saved_config.get('inventory_skew', {})
             volatility_cfg = saved_config.get('volatility', {})
             stale_order_cfg = saved_config.get('stale_order', {})
+            breakeven_cfg = saved_config.get('breakeven_reversion', {})
 
             # ==================== 主交易所路由 ====================
             primary_exchange = saved_config.get('primary_exchange', 'grvt')
@@ -126,6 +127,10 @@ def register_grvt_mm_routes(app, dependencies):
             stale_order_timeout_sec = int(stale_order_cfg.get('timeout_sec', 30))
             stale_reprice_bps = Decimal(str(stale_order_cfg.get('reprice_bps', 2)))
             min_reprice_interval_sec = int(stale_order_cfg.get('min_reprice_interval_sec', 5))
+
+            # ==================== 保本回補參數 ====================
+            breakeven_reversion_enabled = breakeven_cfg.get('enabled', True)
+            breakeven_offset_bps = Decimal(str(breakeven_cfg.get('offset_bps', 0)))
 
             # ==================== 波動率參數 ====================
             volatility_threshold_bps = float(volatility_cfg.get('threshold_bps', 5))
@@ -198,6 +203,9 @@ def register_grvt_mm_routes(app, dependencies):
                 stale_order_timeout_sec=stale_order_timeout_sec,
                 stale_reprice_bps=stale_reprice_bps,
                 min_reprice_interval_sec=min_reprice_interval_sec,
+                # ==================== 保本回補 ====================
+                breakeven_reversion_enabled=breakeven_reversion_enabled,
+                breakeven_offset_bps=breakeven_offset_bps,
                 # ==================== 費率 ====================
                 maker_fee_bps=maker_fee_bps,
                 taker_fee_bps=taker_fee_bps,

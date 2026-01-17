@@ -172,6 +172,11 @@ class MMState:
         self._post_only_rejects: int = 0                 # post_only 被拒次數
         self._raw_fee_sum: Decimal = Decimal("0")        # 原始符號費用總和（對帳用）
 
+        # ==================== 保本回補追蹤 ====================
+        self._entry_price: Optional[Decimal] = None      # 建倉價格
+        self._entry_side: Optional[str] = None           # 建倉方向 ("buy" or "sell")
+        self._entry_time: Optional[float] = None         # 建倉時間
+
     # ==================== 訂單管理 ====================
 
     def set_bid_order(self, order: Optional[OrderInfo]):
@@ -264,6 +269,50 @@ class MMState:
         with self._lock:
             self._positions[(exchange, symbol)] = pos
             logger.debug(f"Position set: {exchange}/{symbol} = {pos}")
+
+    # ==================== 保本回補：Entry Price 管理 ====================
+
+    def set_entry_price(self, price: Decimal, side: str):
+        """
+        記錄建倉價格（用於保本回補）
+
+        Args:
+            price: 成交價格
+            side: 成交方向 ("buy" or "sell")
+        """
+        with self._lock:
+            self._entry_price = price
+            self._entry_side = side
+            self._entry_time = time.time()
+            logger.info(f"[Breakeven] Entry recorded: {side} @ {price}")
+
+    def get_entry_price(self) -> Optional[Decimal]:
+        """獲取建倉價格"""
+        with self._lock:
+            return self._entry_price
+
+    def get_entry_side(self) -> Optional[str]:
+        """獲取建倉方向"""
+        with self._lock:
+            return self._entry_side
+
+    def get_entry_time(self) -> Optional[float]:
+        """獲取建倉時間"""
+        with self._lock:
+            return self._entry_time
+
+    def clear_entry(self):
+        """清除建倉記錄（倉位歸零時調用）"""
+        with self._lock:
+            self._entry_price = None
+            self._entry_side = None
+            self._entry_time = None
+            logger.info("[Breakeven] Entry cleared")
+
+    def has_entry(self) -> bool:
+        """是否有建倉記錄"""
+        with self._lock:
+            return self._entry_price is not None
 
     # ==================== 倉位管理 (舊版 - 保留作 fallback) ====================
 

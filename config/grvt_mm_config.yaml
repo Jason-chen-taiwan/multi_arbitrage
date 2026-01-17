@@ -54,17 +54,18 @@ min_quote_bps: 0.5              # 一般最小距離 (0.5 起跑更安全)
 min_reversion_quote_bps: 0      # 回補方向允許貼盤
 
 # ==================== 倉位參數 ====================
+# 630 USDT @ 10x 槓桿 = 6,300 USDT 購買力
 position:
-  # 單邊訂單量 (BTC)
-  order_size_btc: 0.002
+  # 單邊訂單量 (BTC) - ~$47.6 保證金
+  order_size_btc: 0.005
 
-  # 最大持倉量 (BTC) - 軟停
+  # 最大持倉量 (BTC) - 軟停，~$190 保證金
   # 用於計算 skew ratio，太大會導致 skew 無效
-  max_position_btc: 0.01
+  max_position_btc: 0.02
 
   # 硬停參數
-  hard_stop_position_btc: 0.007   # 超過全停
-  resume_position_btc: 0.0045     # 恢復倉位 (留 buffer)
+  hard_stop_position_btc: 0.03    # 超過全停，~$286 保證金
+  resume_position_btc: 0.015      # 恢復倉位 (留 buffer)
   hard_stop_cooldown_sec: 30      # 硬停後冷卻時間
   resume_check_count: 3           # 連續 N 次滿足才恢復
 
@@ -82,6 +83,12 @@ stale_order:
   timeout_sec: 30           # 回補訂單過期時間
   reprice_bps: 2            # 距離 best 超過此值才 reprice
   min_reprice_interval_sec: 5  # reprice 最小間隔
+
+# ==================== 保本回補 ====================
+# 成交後，回補訂單直接掛在建倉價，確保價格回來時不虧損
+breakeven_reversion:
+  enabled: true             # 是否啟用保本回補
+  offset_bps: 0             # 回補價格偏移 (正=更保守, 負=更激進吃rebate)
 
 # ==================== 費率設定 ====================
 # 負數 = 收 rebate, 正數 = 付 fee

@@ -16,11 +16,14 @@ Market Maker Executor
 import asyncio
 import logging
 import time
+import os
 from typing import Optional, Callable, Awaitable, Dict
 from decimal import Decimal
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 from .mm_state import MMState, OrderInfo, FillEvent
 from .hedge_engine import HedgeEngine, HedgeResult, HedgeStatus
@@ -33,6 +36,99 @@ except ImportError:
     GRVTOrderStateEvent = None
 
 logger = logging.getLogger(__name__)
+
+# ==================== 交易日誌設置 ====================
+# 專門記錄掛單、撤單、成交等操作的日誌
+# 每次啟動建立新的 log 檔案，方便追蹤各 session
+
+# 全域變數：當前 session 的 log 檔案路徑
+_current_trade_log_file: Optional[Path] = None
+
+def _setup_trade_logger(exchange: str = "mm", force_new: bool = False):
+    """
+    設置交易日誌 - 每次啟動建立新檔案
+
+    Args:
+        exchange: 交易所名稱，用於檔案命名 (mm, grvt, standx)
+        force_new: 強制建立新檔案（用於 executor 重啟）
+    """
+    global _current_trade_log_file
+
+    trade_logger = logging.getLogger("mm_trade")
+
+    # 如果已有 handler 且不強制建立新檔案，直接返回
+    if trade_logger.handlers and not force_new:
+        return trade_logger
+
+    # 清除舊 handlers（如果 force_new）
+    if force_new:
+        for handler in trade_logger.handlers[:]:
+            handler.close()
+            trade_logger.removeHandler(handler)
+
+    trade_logger.setLevel(logging.INFO)
+    trade_logger.propagate = False  # 不傳播到父 logger
+
+    # 創建 logs 目錄
+    log_dir = Path(__file__).parent.parent.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+
+    # ==================== 新增：依時間戳建立檔案 ====================
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"mm_trades_{timestamp}.log"
+    _current_trade_log_file = log_file
+
+    # 使用普通 FileHandler（不需要 rotating，因為每次啟動都是新檔案）
+    file_handler = logging.FileHandler(
+        log_file,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.INFO)
+
+    # 格式
+    formatter = logging.Formatter(
+        '%(asctime)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+
+    trade_logger.addHandler(file_handler)
+
+    # ==================== 清理舊 log 檔案（保留最近 20 個）====================
+    _cleanup_old_logs(log_dir, keep_count=20)
+
+    return trade_logger
+
+
+def _cleanup_old_logs(log_dir: Path, keep_count: int = 20):
+    """清理舊的 log 檔案，只保留最近 N 個"""
+    try:
+        # 找出所有 mm_trades_*.log 檔案
+        log_files = sorted(
+            log_dir.glob("mm_trades_*.log"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True  # 最新的在前
+        )
+
+        # 刪除超過數量的舊檔案
+        for old_file in log_files[keep_count:]:
+            try:
+                old_file.unlink()
+                logger.debug(f"Cleaned up old log: {old_file.name}")
+            except Exception as e:
+                logger.warning(f"Failed to delete old log {old_file.name}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup old logs: {e}")
+
+
+def get_current_trade_log_file() -> Optional[Path]:
+    """獲取當前 session 的 log 檔案路徑"""
+    return _current_trade_log_file
+
+
+# 初始化 trade_log（模組載入時建立第一個檔案）
+trade_log = _setup_trade_logger()
 
 
 class ExecutorStatus(Enum):
@@ -124,6 +220,11 @@ class MMConfig:
     stale_order_timeout_sec: int = 30           # 回補訂單過期時間
     stale_reprice_bps: Decimal = Decimal("2")   # 距離 best 超過此值才 reprice
     min_reprice_interval_sec: int = 5           # reprice 最小間隔
+
+    # ==================== 保本回補參數 ====================
+    # 成交後，回補訂單直接掛在建倉價，確保價格回來時不虧損
+    breakeven_reversion_enabled: bool = True    # 是否啟用保本回補
+    breakeven_offset_bps: Decimal = Decimal("0")  # 回補價格偏移 (正=更保守, 負=更激進吃rebate)
 
     # ==================== 波動率控制 ====================
     volatility_window_sec: int = 5       # 波動率窗口
@@ -219,13 +320,27 @@ class MarketMakerExecutor:
         self._use_websocket = False  # Will be set to True if WebSocket is available
         self._ws_connected = False
 
+        # 【新增】Skew 日誌去重（只在值變化時記錄）
+        self._last_skew_log: Optional[tuple] = None  # (pos_ratio, bid_bps, ask_bps)
+
     # ==================== 生命週期 ====================
 
     async def start(self):
         """啟動做市"""
+        global trade_log
+
         if self._running:
             logger.warning("Executor already running")
             return
+
+        # ==================== 建立新的 log 檔案 ====================
+        # 每次 executor 啟動都建立新的 session log
+        trade_log = _setup_trade_logger(
+            exchange=self.config.primary_exchange,
+            force_new=True
+        )
+        log_file = get_current_trade_log_file()
+        logger.info(f"Trade log file: {log_file}")
 
         # 【診斷】啟動時打印完整配置
         logger.info(f"Starting Market Maker Executor with config:")
@@ -235,6 +350,31 @@ class MarketMakerExecutor:
         logger.info(f"  aggressiveness={self.config.aggressiveness}")
         logger.info(f"  order_size_btc={self.config.order_size_btc}")
         logger.info(f"  max_position_btc={self.config.max_position_btc}")
+
+        # 交易日誌 - 啟動配置
+        trade_log.info("=" * 80)
+        trade_log.info(f"EXECUTOR_START | exchange={self.config.primary_exchange} | symbol={self.config.symbol}")
+        trade_log.info(
+            f"CONFIG | exchange={self.config.primary_exchange} | "
+            f"strategy_mode={self.config.strategy_mode} | aggressiveness={self.config.aggressiveness} | "
+            f"order_size={self.config.order_size_btc} | max_pos={self.config.max_position_btc}"
+        )
+        trade_log.info(
+            f"CONFIG | skew_enabled={self.config.inventory_skew_enabled} | "
+            f"push_bps={self.config.inventory_skew_max_bps} | "
+            f"pull_bps={self.config.inventory_skew_pull_bps}"
+        )
+        trade_log.info(
+            f"CONFIG | hard_stop={self.config.hard_stop_position_btc} | "
+            f"resume_pos={self.config.resume_position_btc} | "
+            f"fill_policy={self.config.fill_cancel_policy}"
+        )
+        trade_log.info(
+            f"CONFIG | breakeven_enabled={self.config.breakeven_reversion_enabled} | "
+            f"breakeven_offset={self.config.breakeven_offset_bps}"
+        )
+        trade_log.info("=" * 80)
+
         self._status = ExecutorStatus.STARTING
 
         try:
@@ -266,6 +406,12 @@ class MarketMakerExecutor:
             return
 
         logger.info("Stopping Market Maker Executor...")
+
+        # 交易日誌 - 停止
+        pos = self._get_primary_position()
+        trade_log.info("=" * 80)
+        trade_log.info(f"EXECUTOR_STOP | exchange={self.config.primary_exchange} | final_pos={pos}")
+        trade_log.info("=" * 80)
         self._running = False
 
         # Stop WebSocket if running
@@ -750,6 +896,11 @@ class MarketMakerExecutor:
             if self._status == ExecutorStatus.HEDGING:
                 return
 
+        # ==================== 訂單同步已移至 REST Gate ====================
+        # _place_orders() 現在每次都會查詢交易所訂單並同步 state
+        # 所以不再需要固定間隔同步，避免重複查詢浪費 rate limit
+        # 舊代碼：if self._tick_count % 5 == 0: await self._sync_open_orders()
+
         # 檢查波動率
         volatility = self.state.get_volatility_bps()
         if volatility > self.config.volatility_threshold_bps:
@@ -785,6 +936,57 @@ class MarketMakerExecutor:
                     self.state.record_cancel("sell", "price")
                 await self._cancel_order(client_order_id, reason="price too close")
 
+        # ==================== 保本回補訂單過期檢查 ====================
+        # 如果保本訂單卡太久，可能需要認賠離場
+        if self.config.breakeven_reversion_enabled and self.state.has_entry():
+            entry_time = self.state.get_entry_time()
+            entry_side = self.state.get_entry_side()
+            timeout = self.config.stale_order_timeout_sec
+            min_interval = self.config.min_reprice_interval_sec
+
+            if entry_time and entry_side:
+                time_since_entry = time.time() - entry_time
+
+                # 超過 timeout，檢查是否需要 reprice
+                if time_since_entry > timeout:
+                    # 獲取回補訂單
+                    if entry_side == "buy":
+                        # 回補方向是 ask
+                        reversion_order = self.state.get_ask_order()
+                        reversion_side = "ask"
+                        best_price = best_ask
+                    else:
+                        # 回補方向是 bid
+                        reversion_order = self.state.get_bid_order()
+                        reversion_side = "bid"
+                        best_price = best_bid
+
+                    if reversion_order and best_price:
+                        # 計算距離 best 的 bps
+                        if reversion_side == "ask":
+                            distance_bps = (reversion_order.price - best_price) / best_price * Decimal("10000")
+                        else:
+                            distance_bps = (best_price - reversion_order.price) / best_price * Decimal("10000")
+
+                        # 如果距離 best 超過閾值，考慮 reprice
+                        if distance_bps > self.config.stale_reprice_bps:
+                            # 檢查 reprice 間隔
+                            last_reprice = self._last_reprice_time.get(reversion_side, 0)
+                            if time.time() - last_reprice > min_interval:
+                                logger.warning(
+                                    f"[StaleBreakeven] Order stale for {time_since_entry:.0f}s, "
+                                    f"distance={float(distance_bps):.1f} bps > threshold={self.config.stale_reprice_bps}, "
+                                    f"clearing entry and repricing"
+                                )
+                                # 清除 entry，讓下一個 tick 用 skew 重新報價
+                                self.state.clear_entry()
+                                self._last_reprice_time[reversion_side] = time.time()
+                                # 撤銷舊訂單
+                                await self._cancel_order(
+                                    reversion_order.client_order_id,
+                                    reason=f"stale breakeven ({time_since_entry:.0f}s)"
+                                )
+
         # 檢查是否需要重掛 (價格太遠)
         should_rebalance = self.state.should_rebalance_orders(
             mid_price,
@@ -804,11 +1006,132 @@ class MarketMakerExecutor:
     # ==================== 訂單管理 ====================
 
     async def _place_orders(self, mid_price: Decimal, best_bid: Optional[Decimal] = None, best_ask: Optional[Decimal] = None):
-        """掛雙邊訂單 - 含 spread 保護、hard stop、soft stop 和 post_only 支援"""
+        """掛雙邊訂單 - 含 REST gate、spread 保護、hard stop、soft stop 和 post_only 支援"""
         # 防禦性檢查：只在 RUNNING 狀態下掛單
         if self._status != ExecutorStatus.RUNNING:
             logger.debug(f"Skipping order placement, status={self._status}")
             return
+
+        # ==================== REST Gate: 下單前查交易所 ====================
+        # 每次下單前都查詢交易所實際訂單，用交易所結果作為判斷依據
+        # 這是防止重複訂單的核心機制
+        exchange_bids = []
+        exchange_asks = []
+        rest_gate_ok = False
+
+        try:
+            open_orders = await self.primary.get_open_orders(self.config.symbol)
+            logger.debug(f"[REST Gate] Got {len(open_orders)} open orders from exchange")
+
+            # 分類訂單
+            for order in open_orders:
+                if order.status not in ["open", "partially_filled", "new"]:
+                    continue
+                if order.side.lower() == "buy":
+                    exchange_bids.append(order)
+                else:
+                    exchange_asks.append(order)
+
+            # ==================== 同步本地 state（REST 為準）====================
+            # 交易所沒有 bid 但本地有 → 清除本地
+            if not exchange_bids and self.state.has_bid_order():
+                logger.info("[REST Gate] Exchange has no bid, clearing local bid state")
+                self.state.clear_bid_order()
+
+            # 交易所沒有 ask 但本地有 → 清除本地
+            if not exchange_asks and self.state.has_ask_order():
+                logger.info("[REST Gate] Exchange has no ask, clearing local ask state")
+                self.state.clear_ask_order()
+
+            # 交易所有 bid 但本地沒有 → 取消孤兒訂單（避免重複下單）
+            if exchange_bids and not self.state.has_bid_order():
+                logger.warning(f"[REST Gate] Exchange has {len(exchange_bids)} orphan bids, cancelling")
+                for order in exchange_bids:
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                        trade_log.info(
+                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
+                            f"order_id={order.order_id} | reason=orphan_order"
+                        )
+                    except Exception as e:
+                        logger.error(f"[REST Gate] Failed to cancel orphan bid: {e}")
+                exchange_bids = []  # 已取消，視為沒有
+
+            if exchange_asks and not self.state.has_ask_order():
+                logger.warning(f"[REST Gate] Exchange has {len(exchange_asks)} orphan asks, cancelling")
+                for order in exchange_asks:
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                        trade_log.info(
+                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
+                            f"order_id={order.order_id} | reason=orphan_order"
+                        )
+                    except Exception as e:
+                        logger.error(f"[REST Gate] Failed to cancel orphan ask: {e}")
+                exchange_asks = []
+
+            # 交易所有多個同方向訂單 → 取消多餘的
+            if len(exchange_bids) > 1:
+                logger.warning(f"[REST Gate] Multiple bids ({len(exchange_bids)}), cancelling extras")
+                sorted_bids = sorted(exchange_bids, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                for order in sorted_bids[1:]:
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                        trade_log.info(
+                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
+                            f"order_id={order.order_id} | reason=duplicate"
+                        )
+                    except Exception as e:
+                        logger.error(f"[REST Gate] Failed to cancel duplicate bid: {e}")
+                exchange_bids = [sorted_bids[0]]  # 只保留最新的
+
+            if len(exchange_asks) > 1:
+                logger.warning(f"[REST Gate] Multiple asks ({len(exchange_asks)}), cancelling extras")
+                sorted_asks = sorted(exchange_asks, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                for order in sorted_asks[1:]:
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                        trade_log.info(
+                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
+                            f"order_id={order.order_id} | reason=duplicate"
+                        )
+                    except Exception as e:
+                        logger.error(f"[REST Gate] Failed to cancel duplicate ask: {e}")
+                exchange_asks = [sorted_asks[0]]
+
+            rest_gate_ok = True
+
+        except Exception as e:
+            logger.error(f"[REST Gate] Failed to query open orders: {e}")
+            # REST 查詢失敗時，保守處理：不下單，避免重複
+            # 但如果本地認為沒有訂單，可以嘗試下單
+            rest_gate_ok = False
+
+        # ==================== 用 REST 結果決定是否可下單 ====================
+        # 關鍵：用交易所查詢結果，而不是本地 state
+        if rest_gate_ok:
+            has_bid_on_exchange = len(exchange_bids) > 0
+            has_ask_on_exchange = len(exchange_asks) > 0
+        else:
+            # REST 失敗時回退到本地 state（保守）
+            has_bid_on_exchange = self.state.has_bid_order()
+            has_ask_on_exchange = self.state.has_ask_order()
 
         # 獲取當前倉位 (使用統一入口)
         current_position = self._get_primary_position()
@@ -840,18 +1163,19 @@ class MarketMakerExecutor:
 
                 if current_position > 0:
                     # 多頭庫存 → 只掛 ask（想賣出）
-                    if not self.state.has_ask_order() and not self._placing_ask:
+                    # 用 REST 結果判斷，而不是本地 state
+                    if not has_ask_on_exchange and not self._placing_ask:
                         await self._place_ask(best_ask, post_only=True)
                 else:
                     # 空頭或中性庫存 → 只掛 bid（想買入）
-                    if not self.state.has_bid_order() and not self._placing_bid:
+                    if not has_bid_on_exchange and not self._placing_bid:
                         await self._place_bid(best_bid, post_only=True)
                 return
 
         # 診斷日誌：下單決策（使用 DEBUG 級別減少噪音）
         logger.debug(
             f"[PlaceOrders] position={current_position}, max_pos={max_pos}, "
-            f"hard_stop={hard_stop}, has_bid={self.state.has_bid_order()}, has_ask={self.state.has_ask_order()}"
+            f"hard_stop={hard_stop}, has_bid_exchange={has_bid_on_exchange}, has_ask_exchange={has_ask_on_exchange}"
         )
 
         # 計算報價
@@ -864,21 +1188,23 @@ class MarketMakerExecutor:
         can_place_bid = current_position < max_pos   # 還沒 long 到上限
         can_place_ask = current_position > -max_pos  # 還沒 short 到下限
 
-        # 掛買單
+        # ==================== 掛買單（用 REST 結果判斷）====================
         if not can_place_bid:
             logger.debug(f"[Limit] Skipping bid: pos {current_position} >= max {max_pos}")
-        elif self.state.has_bid_order():
-            logger.debug("Already have bid order, skipping")
+        elif has_bid_on_exchange:
+            # 交易所已有 bid，不再下單（REST gate 核心邏輯）
+            logger.debug("Exchange already has bid order, skipping")
         elif self._placing_bid:
             logger.debug("Bid order already being placed, skipping")
         else:
             await self._place_bid(bid_price, post_only=use_post_only)
 
-        # 掛賣單
+        # ==================== 掛賣單（用 REST 結果判斷）====================
         if not can_place_ask:
             logger.debug(f"[Limit] Skipping ask: pos {current_position} <= -{max_pos}")
-        elif self.state.has_ask_order():
-            logger.debug("Already have ask order, skipping")
+        elif has_ask_on_exchange:
+            # 交易所已有 ask，不再下單（REST gate 核心邏輯）
+            logger.debug("Exchange already has ask order, skipping")
         elif self._placing_ask:
             logger.debug("Ask order already being placed, skipping")
         else:
@@ -932,6 +1258,12 @@ class MarketMakerExecutor:
             self.config.min_effective_max_pos_btc
         )
 
+        # 【診斷】打印 skew 計算輸入
+        logger.info(
+            f"[Skew Input] current_pos={current_pos}, max_pos={max_pos}, "
+            f"effective_max_pos={effective_max_pos}, base_bps={base_bps}"
+        )
+
         if self.config.inventory_skew_enabled and effective_max_pos > 0:
             # pos_ratio: -1 (max short) ~ +1 (max long)
             pos_ratio = current_pos / effective_max_pos
@@ -963,15 +1295,85 @@ class MarketMakerExecutor:
                 bid_bps = max(min_reversion_bps, bid_bps)
                 ask_bps = max(min_bps, ask_bps)
 
-            logger.debug(
-                f"[Skew] pos={current_pos}, ratio={float(pos_ratio):.2f}, "
-                f"bid_bps={float(bid_bps):.1f}, ask_bps={float(ask_bps):.1f}"
-            )
+            # ==================== Skew 日誌去重（只在值變化時記錄）====================
+            # 四捨五入以避免微小變化導致大量日誌
+            rounded_ratio = round(float(pos_ratio), 2)
+            rounded_bid_bps = round(float(bid_bps), 1)
+            rounded_ask_bps = round(float(ask_bps), 1)
+            current_skew = (rounded_ratio, rounded_bid_bps, rounded_ask_bps)
+
+            if self._last_skew_log != current_skew:
+                self._last_skew_log = current_skew
+
+                logger.info(
+                    f"[Skew Result] pos={current_pos}, ratio={rounded_ratio:.2f}, "
+                    f"bid_bps={rounded_bid_bps:.1f}, ask_bps={rounded_ask_bps:.1f}, "
+                    f"push={self.config.inventory_skew_max_bps}, pull={self.config.inventory_skew_pull_bps}"
+                )
+
+                # 交易日誌 - Skew 計算（只在變化時記錄）
+                trade_log.info(
+                    f"SKEW | exchange={self.config.primary_exchange} | pos={current_pos} | max_pos={max_pos} | ratio={rounded_ratio:.3f} | "
+                    f"bid_bps={rounded_bid_bps:.2f} | ask_bps={rounded_ask_bps:.2f} | "
+                    f"base_bps={float(base_bps):.1f}"
+                )
         else:
             bid_bps = base_bps
             ask_bps = base_bps
 
-        # ==================== Step 3: 波動率動態調整 ====================
+        # ==================== Step 3: 保本回補覆蓋 ====================
+        # 如果啟用保本回補且有建倉記錄，回補方向直接用 entry price
+        breakeven_applied = False
+
+        # 【診斷】打印保本回補狀態
+        logger.info(
+            f"[Breakeven Check] enabled={self.config.breakeven_reversion_enabled}, "
+            f"has_entry={self.state.has_entry()}, "
+            f"entry_price={self.state.get_entry_price()}, "
+            f"entry_side={self.state.get_entry_side()}"
+        )
+
+        if self.config.breakeven_reversion_enabled and self.state.has_entry():
+            entry_price = self.state.get_entry_price()
+            entry_side = self.state.get_entry_side()
+            offset_bps = self.config.breakeven_offset_bps
+
+            if entry_price and entry_side:
+                # 計算帶偏移的保本價格
+                # offset > 0 = 更保守 (遠離 best)
+                # offset < 0 = 更激進 (吃 rebate)
+                if entry_side == "buy":
+                    # 之前買入 → ask 用 entry price 賣出（確保不虧）
+                    # ask_price = entry_price * (1 + offset_bps / 10000)
+                    ask_price = entry_price * (Decimal("1") + offset_bps / Decimal("10000"))
+                    # bid 仍用 skew 計算，不變
+                    breakeven_applied = True
+                    logger.info(
+                        f"[Breakeven Applied] Entry buy @ {entry_price}, "
+                        f"ask_price set to {ask_price} (offset={offset_bps} bps)"
+                    )
+                    # 交易日誌
+                    trade_log.info(
+                        f"BREAKEVEN | exchange={self.config.primary_exchange} | entry_side=buy | entry_price={entry_price} | "
+                        f"ask_price={ask_price} | offset_bps={offset_bps}"
+                    )
+                else:  # entry_side == "sell"
+                    # 之前賣出 → bid 用 entry price 買回（確保不虧）
+                    # bid_price = entry_price * (1 - offset_bps / 10000)
+                    bid_price = entry_price * (Decimal("1") - offset_bps / Decimal("10000"))
+                    # ask 仍用 skew 計算，不變
+                    breakeven_applied = True
+                    logger.info(
+                        f"[Breakeven Applied] Entry sell @ {entry_price}, "
+                        f"bid_price set to {bid_price} (offset={offset_bps} bps)"
+                    )
+                    # 交易日誌
+                    trade_log.info(
+                        f"BREAKEVEN | exchange={self.config.primary_exchange} | entry_side=sell | entry_price={entry_price} | "
+                        f"bid_price={bid_price} | offset_bps={offset_bps}"
+                    )
+
+        # ==================== Step 4: 波動率動態調整 ====================
         vol_raw = self.state.get_volatility_bps()
         volatility = Decimal(str(vol_raw)) if isinstance(vol_raw, float) else Decimal(vol_raw)
         vol_threshold = Decimal(str(self.config.volatility_threshold_bps))
@@ -995,22 +1397,54 @@ class MarketMakerExecutor:
                 f"multiplier={float(vol_multiplier):.2f}"
             )
 
-        # ==================== Step 4: 計算最終價格 ====================
-        bid_price = best_bid * (Decimal("1") - bid_bps / Decimal("10000"))
-        ask_price = best_ask * (Decimal("1") + ask_bps / Decimal("10000"))
+        # ==================== Step 5: 計算最終價格 ====================
+        # 保本回補側已在 Step 3 設定，這裡只計算非保本側
+        if not breakeven_applied:
+            # 沒有保本回補，兩邊都用 bps 計算
+            bid_price = best_bid * (Decimal("1") - bid_bps / Decimal("10000"))
+            ask_price = best_ask * (Decimal("1") + ask_bps / Decimal("10000"))
+        else:
+            # 有保本回補，只計算非保本側
+            entry_side = self.state.get_entry_side()
+            if entry_side == "buy":
+                # ask 已設定保本價，只計算 bid
+                bid_price = best_bid * (Decimal("1") - bid_bps / Decimal("10000"))
+                # ask_price 已在 Step 3 設定
+            else:  # entry_side == "sell"
+                # bid 已設定保本價，只計算 ask
+                ask_price = best_ask * (Decimal("1") + ask_bps / Decimal("10000"))
+                # bid_price 已在 Step 3 設定
 
-        # 確保不跨價
-        bid_price = min(bid_price, best_bid)
-        ask_price = max(ask_price, best_ask)
+        # 確保不跨價（保本回補側允許在 best 內側）
+        if not breakeven_applied:
+            bid_price = min(bid_price, best_bid)
+            ask_price = max(ask_price, best_ask)
+        else:
+            entry_side = self.state.get_entry_side()
+            if entry_side == "buy":
+                # bid 不跨價，ask 保本價可能在 best 內側（允許，能賺錢）
+                bid_price = min(bid_price, best_bid)
+            else:
+                # ask 不跨價，bid 保本價可能在 best 內側（允許，能賺錢）
+                ask_price = max(ask_price, best_ask)
 
-        # ==================== Step 5: 對齊 tick ====================
+        # ==================== Step 6: 對齊 tick ====================
         bid_price = Decimal(str(math.floor(float(bid_price) / float(tick_size)) * float(tick_size)))
         ask_price = Decimal(str(math.ceil(float(ask_price) / float(tick_size)) * float(tick_size)))
 
-        logger.debug(
-            f"[Quote] Final: bid={bid_price} (bps={float(bid_bps):.1f}), "
-            f"ask={ask_price} (bps={float(ask_bps):.1f})"
-        )
+        # 日誌
+        if breakeven_applied:
+            entry_side = self.state.get_entry_side()
+            entry_price = self.state.get_entry_price()
+            logger.debug(
+                f"[Quote] Final (breakeven={entry_side} @ {entry_price}): "
+                f"bid={bid_price}, ask={ask_price}"
+            )
+        else:
+            logger.debug(
+                f"[Quote] Final: bid={bid_price} (bps={float(bid_bps):.1f}), "
+                f"ask={ask_price} (bps={float(ask_bps):.1f})"
+            )
 
         return bid_price, ask_price
 
@@ -1077,8 +1511,17 @@ class MarketMakerExecutor:
 
             logger.info(f"Bid placed: {self.config.order_size_btc} @ {price} (order_id={order.order_id}, client_order_id={order.client_order_id})")
 
+            # 交易日誌
+            pos = self._get_primary_position()
+            trade_log.info(
+                f"PLACE_BID | exchange={self.config.primary_exchange} | price={price} | qty={self.config.order_size_btc} | "
+                f"best_bid={self._last_best_bid} | best_ask={self._last_best_ask} | "
+                f"pos={pos} | order_id={order.order_id} | post_only={post_only}"
+            )
+
         except Exception as e:
             logger.error(f"Failed to place bid: {e}")
+            trade_log.info(f"PLACE_BID_FAIL | exchange={self.config.primary_exchange} | price={price} | error={e}")
         finally:
             self._placing_bid = False
 
@@ -1128,13 +1571,30 @@ class MarketMakerExecutor:
 
             logger.info(f"Ask placed: {self.config.order_size_btc} @ {price} (order_id={order.order_id}, client_order_id={order.client_order_id})")
 
+            # 交易日誌
+            pos = self._get_primary_position()
+            trade_log.info(
+                f"PLACE_ASK | exchange={self.config.primary_exchange} | price={price} | qty={self.config.order_size_btc} | "
+                f"best_bid={self._last_best_bid} | best_ask={self._last_best_ask} | "
+                f"pos={pos} | order_id={order.order_id} | post_only={post_only}"
+            )
+
         except Exception as e:
             logger.error(f"Failed to place ask: {e}")
+            trade_log.info(f"PLACE_ASK_FAIL | exchange={self.config.primary_exchange} | price={price} | error={e}")
         finally:
             self._placing_ask = False
 
     async def _cancel_order(self, client_order_id: str, reason: str = ""):
-        """撤銷單個訂單（帶容錯處理）"""
+        """
+        撤銷單個訂單（帶 REST 確認機制）
+
+        流程：
+        1. 發送取消請求
+        2. 短暫等待讓交易所處理
+        3. REST 確認訂單是否真的取消了
+        4. 根據確認結果決定是否清除本地 state
+        """
         # 先獲取訂單信息以記錄操作歷史
         bid = self.state.get_bid_order()
         ask = self.state.get_ask_order()
@@ -1153,6 +1613,8 @@ class MarketMakerExecutor:
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Would cancel order: {client_order_id}")
             return
+
+        cancel_confirmed = False
 
         try:
             await self.primary.cancel_order(
@@ -1173,7 +1635,44 @@ class MarketMakerExecutor:
                     reason=reason or "manual cancel",
                 )
 
-            logger.info(f"Order cancelled: {client_order_id}")
+            logger.info(f"Cancel request sent: {client_order_id}")
+
+            # 交易日誌
+            trade_log.info(
+                f"CANCEL | exchange={self.config.primary_exchange} | side={order_side} | price={order_price} | "
+                f"client_order_id={client_order_id} | reason={reason}"
+            )
+
+            # ==================== REST 確認取消成功 ====================
+            # 短暫等待讓交易所處理取消請求
+            await asyncio.sleep(0.3)
+
+            # 查詢交易所確認訂單是否真的取消了
+            try:
+                open_orders = await self.primary.get_open_orders(self.config.symbol)
+                # 檢查訂單是否還在 open orders 中
+                order_still_exists = any(
+                    getattr(o, 'client_order_id', None) == client_order_id or
+                    getattr(o, 'order_id', None) == order_id
+                    for o in open_orders
+                )
+
+                if order_still_exists:
+                    logger.warning(f"[Cancel Confirm] Order {client_order_id} still exists after cancel request!")
+                    trade_log.info(
+                        f"CANCEL_NOT_CONFIRMED | exchange={self.config.primary_exchange} | "
+                        f"client_order_id={client_order_id} | reason=order_still_exists"
+                    )
+                    # 訂單還在，不清除本地 state
+                    cancel_confirmed = False
+                else:
+                    logger.info(f"[Cancel Confirm] Order {client_order_id} confirmed cancelled")
+                    cancel_confirmed = True
+
+            except Exception as confirm_error:
+                logger.warning(f"[Cancel Confirm] Failed to confirm cancel: {confirm_error}")
+                # 確認失敗時，假設取消成功（讓下一次 REST gate 處理）
+                cancel_confirmed = True
 
         except Exception as e:
             # 優先用 error code
@@ -1186,11 +1685,18 @@ class MarketMakerExecutor:
 
             if error_code in ok_codes or any(kw in error_msg for kw in ok_keywords):
                 logger.info(f"Order already gone: {client_order_id} (code={error_code})")
+                trade_log.info(f"CANCEL_GONE | exchange={self.config.primary_exchange} | client_order_id={client_order_id} | code={error_code}")
+                cancel_confirmed = True  # 訂單不存在，視為取消成功
             else:
                 logger.error(f"Failed to cancel order {client_order_id}: {e}")
+                trade_log.info(f"CANCEL_FAIL | exchange={self.config.primary_exchange} | client_order_id={client_order_id} | error={e}")
+                cancel_confirmed = False  # 取消失敗，不清除本地 state
 
-        # 無論如何都清除本地狀態
-        self._clear_order_by_id(client_order_id)
+        # ==================== 根據確認結果清除本地狀態 ====================
+        if cancel_confirmed:
+            self._clear_order_by_id(client_order_id)
+        else:
+            logger.warning(f"[Cancel] Not clearing local state for {client_order_id} - cancel not confirmed")
 
     def _clear_order_by_id(self, client_order_id: str):
         """根據 client_order_id 清除本地訂單狀態"""
@@ -1626,6 +2132,167 @@ class MarketMakerExecutor:
             logger.error(f"Failed to sync hedge position: {e}")
             return self.state.get_hedge_position()
 
+    async def _sync_open_orders(self) -> bool:
+        """
+        同步本地訂單狀態和交易所實際訂單
+
+        用 REST API 查詢交易所的 open orders，與 local state 比對：
+        - 如果 local state 有訂單但交易所沒有 → 清除 local state
+        - 如果交易所有訂單但 local state 沒有 → 記錄警告（可能是手動下的單）
+        - 如果交易所有多個同方向訂單 → 取消多餘的（保留最新的）
+
+        Returns:
+            True if sync successful, False otherwise
+        """
+        try:
+            # 查詢交易所實際 open orders
+            open_orders = await self.primary.get_open_orders(self.config.symbol)
+            logger.debug(f"[SyncOrders] Got {len(open_orders)} open orders from exchange")
+
+            # 分類訂單
+            exchange_bids = []  # 交易所上的買單
+            exchange_asks = []  # 交易所上的賣單
+
+            for order in open_orders:
+                # 只處理 open 狀態的訂單
+                if order.status not in ["open", "partially_filled", "new"]:
+                    continue
+
+                if order.side.lower() == "buy":
+                    exchange_bids.append(order)
+                else:
+                    exchange_asks.append(order)
+
+            # 獲取 local state
+            local_bid = self.state.get_bid_order()
+            local_ask = self.state.get_ask_order()
+
+            corrections_made = False
+
+            # ==================== 檢查買單 ====================
+            if local_bid and not exchange_bids:
+                # Local 有買單但交易所沒有 → 清除 local state
+                logger.warning(
+                    f"[SyncOrders] BID desync: local has order {local_bid.client_order_id} "
+                    f"but exchange has none, clearing local state"
+                )
+                trade_log.info(
+                    f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=buy | action=clear_local | "
+                    f"client_order_id={local_bid.client_order_id} | reason=not_on_exchange"
+                )
+                self.state.clear_bid_order()
+                corrections_made = True
+
+            elif not local_bid and exchange_bids:
+                # 交易所有買單但 local 沒有 → 可能是手動下的或 state 漏了
+                logger.warning(
+                    f"[SyncOrders] BID desync: exchange has {len(exchange_bids)} orders "
+                    f"but local has none (orphan orders)"
+                )
+                # 取消這些孤兒訂單
+                for order in exchange_bids:
+                    logger.warning(f"[SyncOrders] Cancelling orphan bid: {order.order_id}")
+                    trade_log.info(
+                        f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=buy | action=cancel_orphan | "
+                        f"order_id={order.order_id} | price={order.price}"
+                    )
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                    except Exception as e:
+                        logger.error(f"[SyncOrders] Failed to cancel orphan bid: {e}")
+                corrections_made = True
+
+            elif len(exchange_bids) > 1:
+                # 交易所有多個買單 → 取消多餘的（保留最新的）
+                logger.warning(f"[SyncOrders] Multiple bids on exchange: {len(exchange_bids)}, keeping newest")
+                # 按創建時間排序，保留最新的
+                sorted_bids = sorted(exchange_bids, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                for order in sorted_bids[1:]:  # 跳過第一個（最新的）
+                    logger.warning(f"[SyncOrders] Cancelling duplicate bid: {order.order_id}")
+                    trade_log.info(
+                        f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=buy | action=cancel_duplicate | "
+                        f"order_id={order.order_id} | price={order.price}"
+                    )
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                    except Exception as e:
+                        logger.error(f"[SyncOrders] Failed to cancel duplicate bid: {e}")
+                corrections_made = True
+
+            # ==================== 檢查賣單 ====================
+            if local_ask and not exchange_asks:
+                # Local 有賣單但交易所沒有 → 清除 local state
+                logger.warning(
+                    f"[SyncOrders] ASK desync: local has order {local_ask.client_order_id} "
+                    f"but exchange has none, clearing local state"
+                )
+                trade_log.info(
+                    f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=sell | action=clear_local | "
+                    f"client_order_id={local_ask.client_order_id} | reason=not_on_exchange"
+                )
+                self.state.clear_ask_order()
+                corrections_made = True
+
+            elif not local_ask and exchange_asks:
+                # 交易所有賣單但 local 沒有 → 可能是手動下的或 state 漏了
+                logger.warning(
+                    f"[SyncOrders] ASK desync: exchange has {len(exchange_asks)} orders "
+                    f"but local has none (orphan orders)"
+                )
+                # 取消這些孤兒訂單
+                for order in exchange_asks:
+                    logger.warning(f"[SyncOrders] Cancelling orphan ask: {order.order_id}")
+                    trade_log.info(
+                        f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=sell | action=cancel_orphan | "
+                        f"order_id={order.order_id} | price={order.price}"
+                    )
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                    except Exception as e:
+                        logger.error(f"[SyncOrders] Failed to cancel orphan ask: {e}")
+                corrections_made = True
+
+            elif len(exchange_asks) > 1:
+                # 交易所有多個賣單 → 取消多餘的（保留最新的）
+                logger.warning(f"[SyncOrders] Multiple asks on exchange: {len(exchange_asks)}, keeping newest")
+                sorted_asks = sorted(exchange_asks, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                for order in sorted_asks[1:]:
+                    logger.warning(f"[SyncOrders] Cancelling duplicate ask: {order.order_id}")
+                    trade_log.info(
+                        f"SYNC_CORRECTION | exchange={self.config.primary_exchange} | side=sell | action=cancel_duplicate | "
+                        f"order_id={order.order_id} | price={order.price}"
+                    )
+                    try:
+                        await self.primary.cancel_order(
+                            order.order_id,
+                            symbol=self.config.symbol,
+                            client_order_id=getattr(order, 'client_order_id', None)
+                        )
+                    except Exception as e:
+                        logger.error(f"[SyncOrders] Failed to cancel duplicate ask: {e}")
+                corrections_made = True
+
+            if corrections_made:
+                logger.info("[SyncOrders] State corrections applied")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[SyncOrders] Failed to sync open orders: {e}")
+            return False
+
     async def on_fill_event(self, fill: FillEvent):
         """
         處理成交事件 - 三段式撤單策略 + partial fill 處理
@@ -1647,6 +2314,14 @@ class MarketMakerExecutor:
         logger.info(
             f"Fill received: {fill.side} {fill.fill_qty} @ {fill.fill_price}, "
             f"is_maker={fill.is_maker}, order_id={fill.order_id}"
+        )
+
+        # 交易日誌 - 成交
+        pos_before = self._get_primary_position()
+        trade_log.info(
+            f"FILL | exchange={self.config.primary_exchange} | side={fill.side} | price={fill.fill_price} | qty={fill.fill_qty} | "
+            f"is_maker={fill.is_maker} | pos_before={pos_before} | "
+            f"order_id={fill.order_id} | client_order_id={fill.client_order_id}"
         )
 
         # 更新狀態
@@ -1684,6 +2359,33 @@ class MarketMakerExecutor:
 
         # 只用一個同步方法，避免重複/混亂
         await self._sync_primary_position()
+
+        # ==================== 保本回補：記錄建倉價格 ====================
+        if self.config.breakeven_reversion_enabled:
+            current_pos = self._get_primary_position()
+
+            logger.info(
+                f"[Breakeven on_fill] current_pos={current_pos}, has_entry={self.state.has_entry()}, "
+                f"fill_side={fill.side}, fill_price={fill.fill_price}"
+            )
+
+            # 檢查是否已有 entry，或者倉位歸零/翻轉
+            if not self.state.has_entry():
+                # 新建倉：記錄 entry price
+                if abs(current_pos) > Decimal("0"):
+                    logger.info(f"[Breakeven] Recording new entry: {fill.side} @ {fill.fill_price}")
+                    self.state.set_entry_price(fill.fill_price, fill.side)
+            else:
+                # 已有 entry：檢查是否應該清除
+                entry_side = self.state.get_entry_side()
+
+                # 倉位歸零：清除 entry
+                if abs(current_pos) < Decimal("0.0001"):
+                    self.state.clear_entry()
+                # 倉位翻轉（例如原本 long，現在變 short）：更新 entry
+                elif (entry_side == "buy" and current_pos < 0) or \
+                     (entry_side == "sell" and current_pos > 0):
+                    self.state.set_entry_price(fill.fill_price, fill.side)
 
         # ==================== Partial Fill 處理 ====================
         # 用 API 查詢作為真相來源
