@@ -33,13 +33,15 @@ quote:
   cancel_on_approach: false
 
   # 價格遠離時重掛距離 (bps)
-  rebalance_distance_bps: 20
+  # rebate 模式要貼盤，所以重掛閾值要小（5-8 bps）
+  rebalance_distance_bps: 6
 
   # 強制 post_only (rebate 模式建議開啟，確保 maker)
   post_only: true
 
   # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
-  min_spread_ticks: 2
+  # GRVT spread 常為 1 tick，設 0 允許雙邊掛單
+  min_spread_ticks: 0
 
 # ==================== Inventory Skew 參數 ====================
 inventory_skew:
