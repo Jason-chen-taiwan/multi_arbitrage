@@ -600,6 +600,13 @@ class GRVTAdapter(BasePerpAdapter):
 
             # GRVT SDK 使用 'size' 屬性 (正數=long, 負數=short)
             position_size = Decimal(str(pos_data.size or "0"))
+
+            # leverage 可能是 '10.0' 這樣的浮點數字串，需要先轉 float 再轉 int
+            try:
+                leverage = int(float(pos_data.leverage)) if pos_data.leverage else 1
+            except (ValueError, TypeError):
+                leverage = 1
+
             position = Position(
                 symbol=pos_data.instrument,
                 side="long" if position_size > 0 else "short",
@@ -608,7 +615,7 @@ class GRVTAdapter(BasePerpAdapter):
                 mark_price=Decimal(str(pos_data.mark_price or "0")),
                 liquidation_price=Decimal(str(pos_data.est_liquidation_price or "0")),
                 unrealized_pnl=Decimal(str(pos_data.unrealized_pnl or "0")),
-                leverage=int(pos_data.leverage) if pos_data.leverage else 1,
+                leverage=leverage,
                 margin=Decimal(str(pos_data.notional or "0"))
             )
             positions.append(position)
