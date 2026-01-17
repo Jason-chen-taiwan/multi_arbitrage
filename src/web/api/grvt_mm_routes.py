@@ -94,12 +94,46 @@ def register_grvt_mm_routes(app, dependencies):
             position_cfg = saved_config.get('position', {})
             execution_cfg = saved_config.get('execution', {})
             fees_cfg = saved_config.get('fees', {})
+            inventory_skew_cfg = saved_config.get('inventory_skew', {})
+            volatility_cfg = saved_config.get('volatility', {})
+            stale_order_cfg = saved_config.get('stale_order', {})
+
+            # ==================== 主交易所路由 ====================
+            primary_exchange = saved_config.get('primary_exchange', 'grvt')
 
             # 策略模式參數
-            strategy_mode = strategy_cfg.get('mode', 'uptime')  # "uptime" | "rebate"
-            aggressiveness = strategy_cfg.get('aggressiveness', 'moderate')  # "aggressive" | "moderate" | "conservative"
+            strategy_mode = strategy_cfg.get('mode', 'rebate')  # GRVT 預設 rebate
+            aggressiveness = strategy_cfg.get('aggressiveness', 'moderate')
 
-            logger.info(f"[Routes] Final: strategy_mode={strategy_mode}, aggressiveness={aggressiveness}")
+            # ==================== Inventory Skew 參數 ====================
+            inventory_skew_enabled = inventory_skew_cfg.get('enabled', True)
+            inventory_skew_max_bps = Decimal(str(inventory_skew_cfg.get('max_bps', 6)))
+            inventory_skew_pull_bps = Decimal(str(inventory_skew_cfg.get('pull_bps', 4.5)))
+            min_quote_bps = Decimal(str(saved_config.get('min_quote_bps', 0.5)))
+            min_reversion_quote_bps = Decimal(str(saved_config.get('min_reversion_quote_bps', 0)))
+
+            # ==================== 硬停參數 ====================
+            hard_stop_position_btc = Decimal(str(position_cfg.get('hard_stop_position_btc', 0.007)))
+            resume_position_btc = Decimal(str(position_cfg.get('resume_position_btc', 0.0045)))
+            hard_stop_cooldown_sec = int(position_cfg.get('hard_stop_cooldown_sec', 30))
+            resume_check_count = int(position_cfg.get('resume_check_count', 3))
+            min_effective_max_pos_btc = Decimal(str(position_cfg.get('min_effective_max_pos_btc', 0.001)))
+
+            # ==================== 成交後行為 ====================
+            fill_cancel_policy = saved_config.get('fill_cancel_policy', 'none')
+
+            # ==================== Stale Order 參數 ====================
+            stale_order_timeout_sec = int(stale_order_cfg.get('timeout_sec', 30))
+            stale_reprice_bps = Decimal(str(stale_order_cfg.get('reprice_bps', 2)))
+            min_reprice_interval_sec = int(stale_order_cfg.get('min_reprice_interval_sec', 5))
+
+            # ==================== 波動率參數 ====================
+            volatility_threshold_bps = float(volatility_cfg.get('threshold_bps', 5))
+            volatility_distance_multiplier = Decimal(str(volatility_cfg.get('distance_multiplier', 2)))
+
+            logger.info(f"[Routes] primary_exchange={primary_exchange}, strategy_mode={strategy_mode}, aggressiveness={aggressiveness}")
+            logger.info(f"[Routes] inventory_skew: enabled={inventory_skew_enabled}, max_bps={inventory_skew_max_bps}, pull_bps={inventory_skew_pull_bps}")
+            logger.info(f"[Routes] hard_stop: pos={hard_stop_position_btc}, resume={resume_position_btc}, fill_cancel_policy={fill_cancel_policy}")
 
             # 報價參數
             order_size = Decimal(str(data.get('order_size', position_cfg.get('order_size_btc', 0.01))))
@@ -131,6 +165,9 @@ def register_grvt_mm_routes(app, dependencies):
                 symbol="BTC_USDT_Perp",       # GRVT 交易對
                 hedge_symbol="BTC-USD",        # StandX 對沖交易對
                 hedge_exchange="standx",       # 對沖到 StandX
+                # ==================== 主交易所路由 ====================
+                primary_exchange=primary_exchange,
+                # ==================== 報價參數 ====================
                 order_size_btc=order_size,
                 order_distance_bps=order_distance,
                 cancel_distance_bps=cancel_distance,
@@ -138,15 +175,36 @@ def register_grvt_mm_routes(app, dependencies):
                 max_position_btc=max_position,
                 tick_interval_ms=tick_interval,
                 dry_run=False,
-                # 新增：rebate 策略參數
+                # ==================== 策略模式 ====================
                 strategy_mode=strategy_mode,
                 aggressiveness=aggressiveness,
                 cancel_on_approach=cancel_on_approach,
                 post_only=post_only,
                 min_spread_ticks=min_spread_ticks,
+                # ==================== Inventory Skew ====================
+                inventory_skew_enabled=inventory_skew_enabled,
+                inventory_skew_max_bps=inventory_skew_max_bps,
+                inventory_skew_pull_bps=inventory_skew_pull_bps,
+                min_quote_bps=min_quote_bps,
+                min_reversion_quote_bps=min_reversion_quote_bps,
+                # ==================== 硬停參數 ====================
+                hard_stop_position_btc=hard_stop_position_btc,
+                resume_position_btc=resume_position_btc,
+                hard_stop_cooldown_sec=hard_stop_cooldown_sec,
+                resume_check_count=resume_check_count,
+                min_effective_max_pos_btc=min_effective_max_pos_btc,
+                # ==================== 成交後行為 ====================
+                fill_cancel_policy=fill_cancel_policy,
+                stale_order_timeout_sec=stale_order_timeout_sec,
+                stale_reprice_bps=stale_reprice_bps,
+                min_reprice_interval_sec=min_reprice_interval_sec,
+                # ==================== 費率 ====================
                 maker_fee_bps=maker_fee_bps,
                 taker_fee_bps=taker_fee_bps,
                 hedge_fee_bps=hedge_fee_bps,
+                # ==================== 波動率 ====================
+                volatility_threshold_bps=volatility_threshold_bps,
+                volatility_distance_multiplier=volatility_distance_multiplier,
             )
 
             logger.info(f"GRVT 做市商配置: strategy_mode={strategy_mode}, aggressiveness={aggressiveness}, post_only={post_only}")
@@ -160,11 +218,13 @@ def register_grvt_mm_routes(app, dependencies):
                 )
 
             # 創建執行器（GRVT 作為主交易所）
+            # 注意：需要同時傳入 grvt_adapter 讓 primary 路由正確工作
             grvt_mm_executor = MarketMakerExecutor(
-                standx_adapter=grvt,       # 這裡傳入 GRVT 作為主交易所
+                standx_adapter=standx,     # StandX adapter (可為 None)
                 hedge_adapter=standx,      # StandX 作為對沖交易所
                 hedge_engine=hedge_engine,
                 config=config,
+                grvt_adapter=grvt,         # GRVT adapter (primary)
             )
 
             # 如果沒有 StandX，警告但繼續

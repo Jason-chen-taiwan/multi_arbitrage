@@ -97,7 +97,7 @@ class MMState:
 
     追蹤:
     - 雙邊訂單 (bid/ask)
-    - 倉位 (StandX / Binance)
+    - 倉位 (StandX / GRVT / 通用)
     - 價格歷史 (波動率計算)
     """
 
@@ -108,7 +108,10 @@ class MMState:
         self._bid_order: Optional[OrderInfo] = None
         self._ask_order: Optional[OrderInfo] = None
 
-        # 倉位追蹤
+        # 【新增】通用倉位 map: (exchange, symbol) -> Decimal
+        self._positions: Dict[Tuple[str, str], Decimal] = {}
+
+        # 倉位追蹤 (保留舊欄位作為 fallback)
         self._standx_position: Decimal = Decimal("0")
         self._hedge_position: Decimal = Decimal("0")  # GRVT 對沖倉位
 
@@ -233,7 +236,36 @@ class MMState:
                 if filled_qty is not None:
                     self._ask_order.filled_qty = filled_qty
 
-    # ==================== 倉位管理 ====================
+    # ==================== 倉位管理 (通用) ====================
+
+    def get_position(self, exchange: str, symbol: str) -> Decimal:
+        """
+        通用倉位獲取 - 必須明確傳 exchange 和 symbol
+
+        Args:
+            exchange: 交易所名稱 ("standx", "grvt", etc.)
+            symbol: 交易對 ("BTC-USD", "BTC_USDT_Perp", etc.)
+
+        Returns:
+            倉位數量 (正=long, 負=short)
+        """
+        with self._lock:
+            return self._positions.get((exchange, symbol), Decimal("0"))
+
+    def set_position(self, exchange: str, symbol: str, pos: Decimal):
+        """
+        通用倉位設定 - 必須明確傳 exchange 和 symbol
+
+        Args:
+            exchange: 交易所名稱 ("standx", "grvt", etc.)
+            symbol: 交易對
+            pos: 倉位數量 (正=long, 負=short)
+        """
+        with self._lock:
+            self._positions[(exchange, symbol)] = pos
+            logger.debug(f"Position set: {exchange}/{symbol} = {pos}")
+
+    # ==================== 倉位管理 (舊版 - 保留作 fallback) ====================
 
     def update_standx_position(self, delta: Decimal):
         """更新 StandX 倉位"""

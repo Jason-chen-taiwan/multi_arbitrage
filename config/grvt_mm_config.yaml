@@ -1,10 +1,14 @@
 # GRVT Market Maker Configuration
-# GRVT 做市商配置文件
+# GRVT 做市商配置文件 - 無對沖止血版本
 
 # 交易對設定
 symbols:
   primary: "BTC_USDT_Perp"
   hedge: "BTC-USD"  # StandX 對沖交易對
+
+# ==================== 主交易所路由 ====================
+# GRVT MM 使用 GRVT 作為主做市交易所
+primary_exchange: "grvt"
 
 # ==================== 策略模式 ====================
 strategy:
@@ -12,12 +16,12 @@ strategy:
   mode: "rebate"
 
   # 報價激進度 (rebate 模式用)
-  # - aggressive: 貼 best_bid/best_ask（最高成交率）
+  # - aggressive: 貼 best_bid/best_ask（最高成交率）- 無對沖時禁用
   # - moderate: 離 best 1 bps（外側，較安全）
   # - conservative: 離 best 2 bps（外側）
-  aggressiveness: "aggressive"
+  aggressiveness: "moderate"  # 無對沖時使用 moderate
 
-# 報價參數
+# ==================== 報價參數 ====================
 quote:
   # 掛單距離 mark price (bps) - uptime 模式用
   order_distance_bps: 8
@@ -35,39 +39,72 @@ quote:
   post_only: true
 
   # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
-  # 設為 1 允許在 1 tick spread 時雙邊掛單
-  min_spread_ticks: 1
+  min_spread_ticks: 2
 
-# 倉位參數
+# ==================== Inventory Skew 參數 ====================
+inventory_skew:
+  enabled: true
+  max_bps: 6              # 偏倉方向拉遠 6 bps
+  pull_bps: 4.5           # 回補方向拉近 4.5 bps (0.75 * push)
+
+# 最小報價距離
+min_quote_bps: 0.5              # 一般最小距離 (0.5 起跑更安全)
+min_reversion_quote_bps: 0      # 回補方向允許貼盤
+
+# ==================== 倉位參數 ====================
 position:
   # 單邊訂單量 (BTC)
   order_size_btc: 0.002
 
-  # 最大持倉量 (BTC)
+  # 最大持倉量 (BTC) - 軟停
   max_position_btc: 1
+
+  # 硬停參數
+  hard_stop_position_btc: 0.007   # 超過全停
+  resume_position_btc: 0.0045     # 恢復倉位 (留 buffer)
+  hard_stop_cooldown_sec: 30      # 硬停後冷卻時間
+  resume_check_count: 3           # 連續 N 次滿足才恢復
+
+  # effective_max_pos 下限保護
+  min_effective_max_pos_btc: 0.001
+
+# ==================== 成交後行為 ====================
+# "all": 撤銷雙邊（有對沖時用）
+# "opposite": 只撤對手邊（通用）
+# "none": 不撤銷（無對沖回補模式）
+fill_cancel_policy: "none"
+
+# Stale order reprice 參數 (避免洗單)
+stale_order:
+  timeout_sec: 30           # 回補訂單過期時間
+  reprice_bps: 2            # 距離 best 超過此值才 reprice
+  min_reprice_interval_sec: 5  # reprice 最小間隔
 
 # ==================== 費率設定 ====================
 # 負數 = 收 rebate, 正數 = 付 fee
 fees:
   # GRVT maker rebate (依 tier 可能不同)
-  maker_bps: -1
+  maker_bps: -1.0
 
   # GRVT taker fee (依 tier 可能不同)
-  taker_bps: 3
+  taker_bps: 3.0
 
   # StandX hedge fee (備用估算)
-  hedge_bps: 2
+  hedge_bps: 2.0
 
   # 是否啟用 rebate 追蹤
   track_enabled: true
 
-# 波動率控制
+# ==================== 波動率控制 ====================
 volatility:
   # 觀察窗口 (秒)
   window_sec: 5
 
   # 波動率閾值 (bps)
   threshold_bps: 5
+
+  # 高波動時距離倍數
+  distance_multiplier: 2
 
 # 訂單參數
 order:
@@ -77,12 +114,13 @@ order:
 # 執行參數
 execution:
   # 主循環間隔 (毫秒) - GRVT 有嚴格 rate limit，需要較長間隔
-  tick_interval_ms: 2000
+  # 建議 3000ms 以上避免 429 錯誤
+  tick_interval_ms: 3000
 
   # 訂單消失判定時間 (秒)
   disappear_time_sec: 2.0
 
-# 對沖參數 (StandX)
+# 對沖參數 (StandX) - 無對沖版本暫不使用
 hedge:
   # 對沖交易所
   exchange: "standx"

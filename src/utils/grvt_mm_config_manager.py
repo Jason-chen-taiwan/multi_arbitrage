@@ -286,7 +286,15 @@ class GRVTMMConfigManager:
         return self._config
 
     def get_dict(self) -> Dict[str, Any]:
-        """獲取配置字典 (用於 API)"""
+        """
+        獲取配置字典 (用於 API)
+
+        返回完整的 YAML 配置（包含新增的欄位如 primary_exchange, inventory_skew 等）
+        """
+        # 優先使用原始 YAML 數據（包含所有欄位）
+        if hasattr(self, '_raw_yaml') and self._raw_yaml:
+            return self._to_plain_dict(self._raw_yaml)
+        # Fallback: 使用 dataclass（只有舊欄位）
         return self._config.to_dict()
 
     def update(self, updates: Dict[str, Any], save: bool = False):

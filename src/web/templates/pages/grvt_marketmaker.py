@@ -112,6 +112,81 @@ def get_grvt_marketmaker_page() -> str:
                                 </div>
                             </div>
                         </div>
+                        <!-- 止血策略參數 (新) -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a3347;">
+                            <!-- 策略模式 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">策略模式</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">模式</label>
+                                        <span id="grvtMmStrategyMode" style="font-size: 12px; color: #10b981; font-weight: 600;">-</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">激進度</label>
+                                        <span id="grvtMmAggressiveness" style="font-size: 12px; color: #e4e6eb;">-</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">Post Only</label>
+                                        <span id="grvtMmPostOnly" style="font-size: 12px; color: #e4e6eb;">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Inventory Skew -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">Inventory Skew</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">啟用</label>
+                                        <span id="grvtMmSkewEnabled" style="font-size: 12px; color: #e4e6eb;">-</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">Push</label>
+                                        <span id="grvtMmSkewPush" style="font-size: 12px; color: #e4e6eb;">- bps</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">Pull</label>
+                                        <span id="grvtMmSkewPull" style="font-size: 12px; color: #e4e6eb;">- bps</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- 硬停參數 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">硬停保護</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">硬停倉位</label>
+                                        <span id="grvtMmHardStop" style="font-size: 12px; color: #ef4444;">- BTC</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">恢復倉位</label>
+                                        <span id="grvtMmResumePos" style="font-size: 12px; color: #10b981;">- BTC</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">成交撤單</label>
+                                        <span id="grvtMmFillPolicy" style="font-size: 12px; color: #e4e6eb;">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- 當前狀態 -->
+                            <div style="background: #0f1419; padding: 12px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">當前 Skew 狀態</div>
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">倉位比例</label>
+                                        <span id="grvtMmPosRatio" style="font-size: 12px; color: #e4e6eb;">0%</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">Bid 距離</label>
+                                        <span id="grvtMmBidBps" style="font-size: 12px; color: #10b981;">- bps</span>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">Ask 距離</label>
+                                        <span id="grvtMmAskBps" style="font-size: 12px; color: #ef4444;">- bps</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         <!-- 倉位狀態 -->
                         <div style="display: flex; gap: 15px; font-size: 11px; color: #9ca3af; padding-top: 10px; border-top: 1px solid #2a3347;">
                             <span>GRVT: <span id="grvtMmGrvtPos" style="color: #e4e6eb;">0</span> BTC</span>

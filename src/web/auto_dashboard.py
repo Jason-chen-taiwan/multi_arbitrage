@@ -1406,6 +1406,57 @@ async def root():
                     updateGrvtMmHistory(execState.operation_history || []);
                 }
 
+                // 更新止血策略參數顯示
+                if (exec.config) {
+                    const cfg = exec.config;
+                    // 策略模式
+                    const modeEl = document.getElementById('grvtMmStrategyMode');
+                    if (modeEl) {
+                        modeEl.textContent = cfg.strategy_mode || '-';
+                        modeEl.style.color = cfg.strategy_mode === 'rebate' ? '#10b981' : '#f59e0b';
+                    }
+                    const aggrEl = document.getElementById('grvtMmAggressiveness');
+                    if (aggrEl) aggrEl.textContent = cfg.aggressiveness || '-';
+                    const postOnlyEl = document.getElementById('grvtMmPostOnly');
+                    if (postOnlyEl) postOnlyEl.textContent = cfg.post_only ? '是' : '否';
+
+                    // Inventory Skew
+                    const skewEnabledEl = document.getElementById('grvtMmSkewEnabled');
+                    if (skewEnabledEl) {
+                        skewEnabledEl.textContent = cfg.inventory_skew_enabled ? '是' : '否';
+                        skewEnabledEl.style.color = cfg.inventory_skew_enabled ? '#10b981' : '#6b7280';
+                    }
+                    const skewPushEl = document.getElementById('grvtMmSkewPush');
+                    if (skewPushEl) skewPushEl.textContent = (cfg.inventory_skew_max_bps || 0) + ' bps';
+                    const skewPullEl = document.getElementById('grvtMmSkewPull');
+                    if (skewPullEl) skewPullEl.textContent = (cfg.inventory_skew_pull_bps || 0) + ' bps';
+
+                    // 硬停參數
+                    const hardStopEl = document.getElementById('grvtMmHardStop');
+                    if (hardStopEl) hardStopEl.textContent = (cfg.hard_stop_position_btc || 0) + ' BTC';
+                    const resumeEl = document.getElementById('grvtMmResumePos');
+                    if (resumeEl) resumeEl.textContent = (cfg.resume_position_btc || 0) + ' BTC';
+                    const fillPolicyEl = document.getElementById('grvtMmFillPolicy');
+                    if (fillPolicyEl) fillPolicyEl.textContent = cfg.fill_cancel_policy || 'none';
+                }
+
+                // 更新當前 Skew 狀態
+                if (exec.stats) {
+                    const posRatioEl = document.getElementById('grvtMmPosRatio');
+                    if (posRatioEl && exec.state) {
+                        const pos = exec.state.standx_position || 0;
+                        const maxPos = exec.config?.max_position_btc || 1;
+                        const ratio = maxPos > 0 ? (pos / maxPos * 100) : 0;
+                        posRatioEl.textContent = ratio.toFixed(1) + '%';
+                        posRatioEl.style.color = Math.abs(ratio) > 70 ? '#ef4444' : '#e4e6eb';
+                    }
+                    // Bid/Ask bps 可以從 stats 中獲取（如果有的話）
+                    const bidBpsEl = document.getElementById('grvtMmBidBps');
+                    const askBpsEl = document.getElementById('grvtMmAskBps');
+                    if (bidBpsEl) bidBpsEl.textContent = (exec.stats.current_bid_bps || '-') + ' bps';
+                    if (askBpsEl) askBpsEl.textContent = (exec.stats.current_ask_bps || '-') + ' bps';
+                }
+
                 // 更新中間價
                 if (exec.stats && exec.stats.last_mid_price) {
                     document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.stats.last_mid_price).toFixed(2);
