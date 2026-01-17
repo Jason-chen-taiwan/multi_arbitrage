@@ -191,4 +191,38 @@ def register_config_routes(app, dependencies):
                 "details": {}
             }, status_code=500)
 
+    @router.post("/reconnect")
+    async def reconnect_all_exchanges():
+        """
+        重新連接所有已配置的交易所
+
+        Returns:
+            {
+                "success": bool,
+                "results": {
+                    "STANDX": {"success": bool, "error": str or null},
+                    "GRVT": {"success": bool, "error": str or null}
+                },
+                "ready_for_trading": bool,
+                "hedging_available": bool
+            }
+        """
+        try:
+            if system_manager_getter:
+                system_manager = system_manager_getter()
+                if system_manager and hasattr(system_manager, 'reconnect_all'):
+                    result = await system_manager.reconnect_all()
+                    return JSONResponse(result)
+
+            return JSONResponse({
+                "success": False,
+                "error": "系統管理器不可用"
+            }, status_code=500)
+
+        except Exception as e:
+            return JSONResponse({
+                "success": False,
+                "error": str(e)
+            }, status_code=500)
+
     app.include_router(router)

@@ -708,6 +708,8 @@ async def root():
                     }
                     // 傳入 GRVT 訂單簿數據
                     grvtMmData.orderbook = data.orderbooks?.GRVT?.['BTC_USDT_Perp'];
+                    // 傳入倉位和餘額數據
+                    grvtMmData.positions = data.mm_positions;
                     updateGrvtMM(grvtMmData);
                 }
 
@@ -1370,12 +1372,38 @@ async def root():
                     document.getElementById('grvtMmBidStatus').textContent = state.bid_order ? `已掛單 (${state.bid_order.status})` : '無訂單';
                     document.getElementById('grvtMmAskStatus').textContent = state.ask_order ? `已掛單 (${state.ask_order.status})` : '無訂單';
 
-                    // 對沖統計
+                    // 倉位顯示 (GRVT MM: standx_position = GRVT主倉位, hedge_position = StandX對沖倉位)
+                    const grvtPos = state.standx_position || 0;
+                    const standxPos = state.hedge_position || 0;
+                    const netPos = state.net_position || (grvtPos + standxPos);
+                    document.getElementById('grvtMmGrvtPos').textContent = grvtPos.toFixed(4);
+                    document.getElementById('grvtMmStandxPos').textContent = standxPos.toFixed(4);
+                    document.getElementById('grvtMmNetPos').textContent = netPos.toFixed(4);
+                    // 淨敞口顏色
+                    const netPosEl = document.getElementById('grvtMmNetPos');
+                    if (Math.abs(netPos) < 0.0001) {
+                        netPosEl.style.color = '#10b981';  // 綠色 = 平衡
+                    } else {
+                        netPosEl.style.color = '#f59e0b';  // 橙色 = 有敞口
+                    }
+                }
+
+                // 餘額顯示 (從 mm_positions 獲取)
+                if (grvtMmData.positions) {
+                    const pos = grvtMmData.positions;
+                    document.getElementById('grvtMmGrvtUsdt').textContent = (pos.grvt?.usdt || 0).toFixed(2);
+                    document.getElementById('grvtMmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
+                }
+
+                // 對沖統計和操作歷史
+                if (grvtMmData.executor && grvtMmData.executor.state) {
+                    const execState = grvtMmData.executor.state;
+                    const stats = execState.stats || {};
                     document.getElementById('grvtMmHedgeSuccessRate').textContent =
                         stats.hedge_success_rate ? stats.hedge_success_rate.toFixed(1) + '%' : '-';
 
                     // 更新操作歷史
-                    updateGrvtMmHistory(state.operation_history || []);
+                    updateGrvtMmHistory(execState.operation_history || []);
                 }
 
                 // 更新中間價

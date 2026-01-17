@@ -398,3 +398,135 @@ class SystemManager:
         self.system_status['ready_for_trading'] = False
         self.system_status['hedging_available'] = False
         logger.info("系統已關閉")
+
+    async def reconnect_all(self) -> dict:
+        """
+        重新連接所有已配置的交易所
+
+        Returns:
+            {
+                "success": bool,
+                "results": {
+                    "STANDX": {"success": bool, "error": str or null},
+                    "GRVT": {"success": bool, "error": str or null}
+                }
+            }
+        """
+        logger.info("🔄 正在重新連接所有交易所...")
+        results = {}
+
+        # 先斷開所有現有連接
+        for name, adapter in list(self.adapters.items()):
+            try:
+                if hasattr(adapter, 'disconnect'):
+                    await adapter.disconnect()
+                    logger.info(f"  ✅ {name} 已斷開")
+            except Exception as e:
+                logger.warning(f"  ⚠️ 斷開 {name} 時出錯: {e}")
+
+        # 清空 adapters
+        self.adapters.clear()
+
+        # 重新加載配置
+        configs = self.config_manager.get_all_configs()
+
+        # 重新連接 DEX
+        for exchange_name, config in configs['dex'].items():
+            name_upper = exchange_name.upper()
+            try:
+                adapter_config = {
+                    'exchange_name': exchange_name,
+                    'testnet': config.get('testnet', False)
+                }
+
+                if exchange_name == 'standx':
+                    api_token = os.getenv('STANDX_API_TOKEN')
+                    ed25519_key = os.getenv('STANDX_ED25519_PRIVATE_KEY')
+                    if api_token and ed25519_key:
+                        adapter_config['api_token'] = api_token
+                        adapter_config['ed25519_private_key'] = ed25519_key
+                    else:
+                        private_key = os.getenv('WALLET_PRIVATE_KEY')
+                        address = os.getenv('WALLET_ADDRESS')
+                        if private_key:
+                            adapter_config['private_key'] = private_key
+                        if address:
+                            adapter_config['wallet_address'] = address
+
+                elif exchange_name == 'grvt':
+                    api_key = os.getenv('GRVT_API_KEY')
+                    api_secret = os.getenv('GRVT_API_SECRET')
+                    trading_account_id = os.getenv('GRVT_TRADING_ACCOUNT_ID')
+                    if api_key:
+                        adapter_config['api_key'] = api_key
+                    if api_secret:
+                        adapter_config['api_secret'] = api_secret
+                    if trading_account_id:
+                        adapter_config['trading_account_id'] = trading_account_id
+
+                adapter = create_adapter(adapter_config)
+
+                if hasattr(adapter, 'connect'):
+                    connected = await adapter.connect()
+                    if not connected:
+                        results[name_upper] = {"success": False, "error": "連接失敗"}
+                        logger.error(f"  ❌ {name_upper} 重新連接失敗")
+                        continue
+
+                self.adapters[name_upper] = adapter
+                results[name_upper] = {"success": True, "error": None}
+                logger.info(f"  ✅ {name_upper} 重新連接成功")
+
+            except Exception as e:
+                results[name_upper] = {"success": False, "error": str(e)}
+                logger.error(f"  ❌ {name_upper} 重新連接異常: {e}")
+
+        # 重新連接 CEX
+        for exchange_name, config in configs['cex'].items():
+            name_upper = exchange_name.upper()
+            try:
+                adapter_config = {
+                    'exchange_name': exchange_name,
+                    'api_key': os.getenv(f'{exchange_name.upper()}_API_KEY'),
+                    'api_secret': os.getenv(f'{exchange_name.upper()}_API_SECRET'),
+                    'testnet': config.get('testnet', False)
+                }
+
+                if exchange_name in ['okx', 'bitget']:
+                    passphrase = os.getenv(f'{exchange_name.upper()}_PASSPHRASE')
+                    if passphrase:
+                        adapter_config['passphrase'] = passphrase
+
+                adapter = create_adapter(adapter_config)
+
+                if hasattr(adapter, 'connect'):
+                    connected = await adapter.connect()
+                    if not connected:
+                        results[name_upper] = {"success": False, "error": "連接失敗"}
+                        logger.error(f"  ❌ {name_upper} 重新連接失敗")
+                        continue
+
+                self.adapters[name_upper] = adapter
+                results[name_upper] = {"success": True, "error": None}
+                logger.info(f"  ✅ {name_upper} 重新連接成功")
+
+            except Exception as e:
+                results[name_upper] = {"success": False, "error": str(e)}
+                logger.error(f"  ❌ {name_upper} 重新連接異常: {e}")
+
+        # 更新 monitor 的 adapters
+        if self.monitor:
+            self.monitor.adapters = self.adapters
+
+        # 執行健康檢查
+        await self._perform_health_checks()
+
+        success = all(r.get("success", False) for r in results.values())
+        logger.info(f"🔄 重新連接完成: {'全部成功' if success else '部分失敗'}")
+
+        return {
+            "success": success,
+            "results": results,
+            "ready_for_trading": self.system_status.get('ready_for_trading', False),
+            "hedging_available": self.system_status.get('hedging_available', False)
+        }

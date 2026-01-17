@@ -615,8 +615,7 @@ class GRVTAdapter(BasePerpAdapter):
                 mark_price=Decimal(str(pos_data.mark_price or "0")),
                 liquidation_price=Decimal(str(pos_data.est_liquidation_price or "0")),
                 unrealized_pnl=Decimal(str(pos_data.unrealized_pnl or "0")),
-                leverage=leverage,
-                margin=Decimal(str(pos_data.notional or "0"))
+                leverage=leverage
             )
             positions.append(position)
 

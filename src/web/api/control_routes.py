@@ -28,6 +28,7 @@ def register_control_routes(app, dependencies):
     system_status = dependencies['system_status']
     init_system = dependencies['init_system']
     logger = dependencies['logger']
+    system_manager_getter = dependencies.get('system_manager_getter')
 
     @router.post("/api/system/reinit")
     async def reinit_system_api():
@@ -35,6 +36,36 @@ def register_control_routes(app, dependencies):
         try:
             logger.info("🔄 重新初始化系統...")
 
+            # 優先使用 system_manager 的 reconnect_all 方法
+            if system_manager_getter:
+                system_manager = system_manager_getter()
+                if system_manager and hasattr(system_manager, 'reconnect_all'):
+                    result = await system_manager.reconnect_all()
+
+                    # 構建成功/失敗訊息
+                    success_exchanges = [k for k, v in result.get('results', {}).items() if v.get('success')]
+                    failed_exchanges = [k for k, v in result.get('results', {}).items() if not v.get('success')]
+
+                    if result.get('success'):
+                        return JSONResponse({
+                            'success': True,
+                            'message': f'已連接 {len(success_exchanges)} 個交易所: {", ".join(success_exchanges)}',
+                            'ready_for_trading': result.get('ready_for_trading', False),
+                            'hedging_available': result.get('hedging_available', False),
+                            'details': result.get('results', {})
+                        })
+                    else:
+                        return JSONResponse({
+                            'success': False,
+                            'error': f'部分交易所連接失敗: {", ".join(failed_exchanges)}',
+                            'connected': success_exchanges,
+                            'failed': failed_exchanges,
+                            'ready_for_trading': result.get('ready_for_trading', False),
+                            'hedging_available': result.get('hedging_available', False),
+                            'details': result.get('results', {})
+                        })
+
+            # 回退：使用舊方法
             adapters = adapters_getter()
             monitor = monitor_getter()
             executor = executor_getter()
