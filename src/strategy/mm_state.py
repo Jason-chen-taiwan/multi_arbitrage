@@ -63,6 +63,30 @@ class FillEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
 
+@dataclass
+class OperationRecord:
+    """操作歷史記錄"""
+    time: str                           # ISO 格式時間
+    action: str                         # 'place', 'cancel', 'rebalance', 'fill'
+    side: str                           # 'buy' or 'sell'
+    order_price: Decimal                # 訂單價格
+    best_bid: Optional[Decimal] = None  # 當時最佳買價
+    best_ask: Optional[Decimal] = None  # 當時最佳賣價
+    reason: str = ""                    # 操作原因
+
+    def to_dict(self) -> Dict:
+        """序列化為字典"""
+        return {
+            "time": self.time,
+            "action": self.action,
+            "side": self.side,
+            "order_price": float(self.order_price) if self.order_price else 0,
+            "best_bid": float(self.best_bid) if self.best_bid else None,
+            "best_ask": float(self.best_ask) if self.best_ask else None,
+            "reason": self.reason,
+        }
+
+
 class MMState:
     """
     做市商狀態管理 (線程安全)
@@ -123,6 +147,10 @@ class MMState:
         self._out_of_range_time_ms = 0 # 超出範圍 (>100 bps 或無單)
         self._total_time_ms = 0
         self._last_uptime_check: Optional[float] = None
+
+        # 操作歷史記錄 (最多保留 50 筆)
+        self._operation_history: List[OperationRecord] = []
+        self._max_history_size = 50
 
     # ==================== 訂單管理 ====================
 
@@ -393,6 +421,47 @@ class MMState:
         with self._lock:
             self._unknown_fills_detected += 1
 
+    def record_operation(
+        self,
+        action: str,
+        side: str,
+        order_price: Decimal,
+        best_bid: Optional[Decimal] = None,
+        best_ask: Optional[Decimal] = None,
+        reason: str = ""
+    ):
+        """
+        記錄操作到歷史
+
+        Args:
+            action: 操作類型 ('place', 'cancel', 'rebalance', 'fill')
+            side: 訂單方向 ('buy' or 'sell')
+            order_price: 訂單價格
+            best_bid: 當時最佳買價
+            best_ask: 當時最佳賣價
+            reason: 操作原因
+        """
+        record = OperationRecord(
+            time=datetime.now().isoformat(),
+            action=action,
+            side=side,
+            order_price=order_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            reason=reason,
+        )
+        with self._lock:
+            self._operation_history.append(record)
+            # 保留最近 50 筆
+            if len(self._operation_history) > self._max_history_size:
+                self._operation_history = self._operation_history[-self._max_history_size:]
+        logger.debug(f"Operation recorded: {action} {side} @ {order_price} ({reason})")
+
+    def get_operation_history(self) -> List[Dict]:
+        """獲取操作歷史列表"""
+        with self._lock:
+            return [r.to_dict() for r in self._operation_history]
+
     def update_uptime(self, mid_price: Decimal, bid_price: Optional[Decimal], ask_price: Optional[Decimal]):
         """
         更新 uptime 分層時間
@@ -577,6 +646,9 @@ class MMState:
                 ),
             }
 
+        # 獲取操作歷史 (需要在鎖外調用以避免死鎖)
+        operation_history = [r.to_dict() for r in self._operation_history]
+
         return {
             "bid_order": {
                 "client_order_id": bid_order.client_order_id,
@@ -598,4 +670,5 @@ class MMState:
             "fill_count": self._fill_count,
             "pnl_usd": float(self._realized_pnl),
             "stats": stats,
+            "operation_history": operation_history,
         }

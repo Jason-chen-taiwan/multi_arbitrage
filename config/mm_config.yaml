@@ -19,7 +19,7 @@ quote:
 
   # 價格遠離時重掛距離 (bps)
   # 超出 uptime 要求後重新掛單
-  rebalance_distance_bps: 12
+  rebalance_distance_bps: 10
 
   # 隊列位置風控：排在前 N 檔時撤單
   # 避免訂單排到最佳價附近被成交
@@ -28,10 +28,11 @@ quote:
 # 倉位參數
 position:
   # 單邊訂單量 (BTC)
-  order_size_btc: 0.001
+  # $661 餘額，保守配置 (~$40 雙邊保證金，約 6%)
+  order_size_btc: 0.005
 
   # 最大持倉量 (BTC)
-  # $50 餘額 @ 10x 槓桿，最多 0.005 BTC (~$475)
+  # 設為訂單大小的 5 倍，留足對沖空間
   max_position_btc: 0.01
 
 # 波動率控制

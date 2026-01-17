@@ -178,7 +178,7 @@ class MarketMakerExecutor:
                 pass
 
         # 撤銷所有訂單
-        await self._cancel_all_orders()
+        await self._cancel_all_orders(reason="stop")
 
         self._status = ExecutorStatus.STOPPED
         if self._on_status_change:
@@ -300,7 +300,7 @@ class MarketMakerExecutor:
                 logger.warning(f"High volatility: {volatility:.1f} bps, pausing")
                 self._status = ExecutorStatus.PAUSED
                 self.state.record_volatility_pause()  # 記錄波動率暫停
-                await self._cancel_all_orders()
+                await self._cancel_all_orders(reason="high volatility")
                 if self._on_status_change:
                     await self._on_status_change(self._status)
             return
@@ -323,7 +323,7 @@ class MarketMakerExecutor:
                 self.state.record_cancel("buy", "price")
             elif ask and ask.client_order_id == client_order_id:
                 self.state.record_cancel("sell", "price")
-            await self._cancel_order(client_order_id)
+            await self._cancel_order(client_order_id, reason="price too close")
 
         # 檢查是否需要重掛 (價格太遠)
         should_rebalance = self.state.should_rebalance_orders(
@@ -336,7 +336,7 @@ class MarketMakerExecutor:
                 self.state.record_rebalance("buy")
             if self.state.has_ask_order():
                 self.state.record_rebalance("sell")
-            await self._cancel_all_orders()
+            await self._cancel_all_orders(reason="rebalance")
 
         # 掛單（傳遞 best_bid/best_ask 以確保不穿透價差）
         await self._place_orders(mid_price, best_bid, best_ask)
@@ -440,6 +440,16 @@ class MarketMakerExecutor:
             self.state.set_bid_order(order_info)
             self._total_quotes += 1
 
+            # 記錄操作歷史
+            self.state.record_operation(
+                action="place",
+                side="buy",
+                order_price=price,
+                best_bid=self._last_best_bid,
+                best_ask=self._last_best_ask,
+                reason="new order",
+            )
+
             logger.info(f"Bid placed: {self.config.order_size_btc} @ {price}")
 
         except Exception as e:
@@ -472,13 +482,35 @@ class MarketMakerExecutor:
             self.state.set_ask_order(order_info)
             self._total_quotes += 1
 
+            # 記錄操作歷史
+            self.state.record_operation(
+                action="place",
+                side="sell",
+                order_price=price,
+                best_bid=self._last_best_bid,
+                best_ask=self._last_best_ask,
+                reason="new order",
+            )
+
             logger.info(f"Ask placed: {self.config.order_size_btc} @ {price}")
 
         except Exception as e:
             logger.error(f"Failed to place ask: {e}")
 
-    async def _cancel_order(self, client_order_id: str):
+    async def _cancel_order(self, client_order_id: str, reason: str = ""):
         """撤銷單個訂單（帶容錯處理）"""
+        # 先獲取訂單信息以記錄操作歷史
+        bid = self.state.get_bid_order()
+        ask = self.state.get_ask_order()
+        order_side = None
+        order_price = Decimal("0")
+        if bid and bid.client_order_id == client_order_id:
+            order_side = "buy"
+            order_price = bid.price
+        elif ask and ask.client_order_id == client_order_id:
+            order_side = "sell"
+            order_price = ask.price
+
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Would cancel order: {client_order_id}")
             return
@@ -489,6 +521,18 @@ class MarketMakerExecutor:
                 client_order_id=client_order_id,
             )
             self._total_cancels += 1
+
+            # 記錄操作歷史
+            if order_side:
+                self.state.record_operation(
+                    action="cancel",
+                    side=order_side,
+                    order_price=order_price,
+                    best_bid=self._last_best_bid,
+                    best_ask=self._last_best_ask,
+                    reason=reason or "manual cancel",
+                )
+
             logger.info(f"Order cancelled: {client_order_id}")
 
         except Exception as e:
@@ -518,16 +562,16 @@ class MarketMakerExecutor:
         elif ask and ask.client_order_id == client_order_id:
             self.state.clear_ask_order()
 
-    async def _cancel_all_orders(self):
+    async def _cancel_all_orders(self, reason: str = ""):
         """撤銷所有訂單"""
         bid = self.state.get_bid_order()
         ask = self.state.get_ask_order()
 
         tasks = []
         if bid and bid.status in ["pending", "open"]:
-            tasks.append(self._cancel_order(bid.client_order_id))
+            tasks.append(self._cancel_order(bid.client_order_id, reason=reason))
         if ask and ask.status in ["pending", "open"]:
-            tasks.append(self._cancel_order(ask.client_order_id))
+            tasks.append(self._cancel_order(ask.client_order_id, reason=reason))
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -822,11 +866,21 @@ class MarketMakerExecutor:
         # 更新狀態
         self.state.record_fill()
 
+        # 記錄操作歷史
+        self.state.record_operation(
+            action="fill",
+            side=fill.side,
+            order_price=fill.fill_price,
+            best_bid=self._last_best_bid,
+            best_ask=self._last_best_ask,
+            reason=f"qty={fill.fill_qty}",
+        )
+
         # 同步 StandX 實際倉位（而不是本地計算）
         await self._sync_standx_position()
 
-        # 取消另一邊訂單
-        await self._cancel_all_orders()
+        # 取消另一邊訂單（成交後取消對手方）
+        await self._cancel_all_orders(reason="fill received")
 
         # 【保險絲 3】只有在有 hedge_engine 時才進入 HEDGING 狀態
         # 避免監控誤判系統在對沖
@@ -873,7 +927,7 @@ class MarketMakerExecutor:
                     self._status = ExecutorStatus.PAUSED
                     logger.warning(f"Entering PAUSED due to hedge failure: {hedge_result.status.value}")
                     # 撤銷所有訂單
-                    await self._cancel_all_orders()
+                    await self._cancel_all_orders(reason="hedge failure")
                     if self._on_status_change:
                         await self._on_status_change(self._status)
                     # 不恢復 RUNNING，等待 check_recovery

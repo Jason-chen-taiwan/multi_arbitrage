@@ -438,13 +438,57 @@ async def root():
                 if (!container) return;
 
                 if (!history || history.length === 0) {
-                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">實盤運行中，歷史記錄請查看後端日誌</div>';
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">等待訂單操作...</div>';
                     return;
                 }
 
-                // 如果後端有提供 history 數據，可以在這裡顯示
-                // 目前後端 mm_state 沒有返回 history，所以顯示提示
-                container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">實盤運行中，歷史記錄請查看後端日誌</div>';
+                // 顏色和標籤映射
+                const actionColors = {
+                    'cancel': '#ef4444',
+                    'rebalance': '#f59e0b',
+                    'place': '#10b981',
+                    'fill': '#667eea'
+                };
+                const actionLabels = {
+                    'cancel': '撤單',
+                    'rebalance': '重掛',
+                    'place': '下單',
+                    'fill': '成交'
+                };
+
+                // 構建表格 (倒序顯示，最新的在前)
+                const reversedHistory = [...history].reverse();
+                let html = '<table style="font-size: 10px; width: 100%; border-collapse: collapse;">';
+                html += '<thead><tr style="border-bottom: 1px solid #374151;">';
+                html += '<th style="padding: 4px; text-align: left;">時間</th>';
+                html += '<th style="padding: 4px; text-align: center;">操作</th>';
+                html += '<th style="padding: 4px; text-align: right;">訂單價</th>';
+                html += '<th style="padding: 4px; text-align: left;">原因</th>';
+                html += '</tr></thead><tbody>';
+
+                reversedHistory.forEach((h, i) => {
+                    const bgColor = i % 2 === 0 ? '#0f1419' : 'transparent';
+                    const actionColor = actionColors[h.action] || '#9ca3af';
+                    const sideLabel = h.side === 'buy' ? '買' : '賣';
+                    const sideColor = h.side === 'buy' ? '#10b981' : '#ef4444';
+                    const actionLabel = actionLabels[h.action] || h.action;
+
+                    // 格式化時間 (只顯示時:分:秒)
+                    let timeStr = h.time || '';
+                    if (timeStr.includes('T')) {
+                        timeStr = timeStr.split('T')[1].split('.')[0];
+                    }
+
+                    html += '<tr style="background: ' + bgColor + ';">';
+                    html += '<td style="padding: 3px; font-family: monospace; color: #9ca3af;">' + timeStr + '</td>';
+                    html += '<td style="padding: 3px; text-align: center;"><span style="color: ' + sideColor + ';">' + sideLabel + '</span><span style="color: ' + actionColor + '; font-weight: 600;">' + actionLabel + '</span></td>';
+                    html += '<td style="padding: 3px; text-align: right; font-family: monospace;">$' + (h.order_price?.toFixed(2) || '-') + '</td>';
+                    html += '<td style="padding: 3px; color: #9ca3af; font-size: 9px;">' + (h.reason || '') + '</td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
             }
 
             function updateMMConfigDisplay() {
@@ -846,8 +890,9 @@ async def root():
                 document.getElementById('mmVolatility').style.color = isVolHigh ? '#ef4444' : '#f8fafc';
                 document.getElementById('mmVolatilityPauseCount').textContent = volatilityPauseCount;
 
-                // 更新歷史記錄顯示
-                updateHistoryDisplay();
+                // 更新歷史記錄顯示 (從 executor.state.operation_history 獲取)
+                const operationHistory = isLiveMode && executor?.state?.operation_history ? executor.state.operation_history : [];
+                updateHistoryDisplay(operationHistory);
 
                 // Maker Hours - 使用配置中的訂單大小
                 // StandX 規則：Maker Hours = min(bid_size, ask_size, 2) / 2 * multiplier

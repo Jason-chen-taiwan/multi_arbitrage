@@ -198,6 +198,51 @@ class Order:
         )
 
 
+class Trade:
+    """成交記錄"""
+    def __init__(
+        self,
+        trade_id: str,
+        order_id: str,
+        symbol: str,
+        side: str,
+        price: Decimal,
+        qty: Decimal,
+        fee: Decimal = Decimal("0"),
+        realized_pnl: Decimal = Decimal("0"),
+        timestamp: Optional[int] = None,
+    ):
+        self.trade_id = trade_id
+        self.order_id = order_id
+        self.symbol = symbol
+        self.side = side
+        self.price = price
+        self.qty = qty
+        self.fee = fee
+        self.realized_pnl = realized_pnl
+        self.timestamp = timestamp
+
+    def __repr__(self) -> str:
+        return (
+            f"Trade(id={self.trade_id}, symbol={self.symbol}, "
+            f"side={self.side}, price={self.price}, qty={self.qty})"
+        )
+
+    def to_dict(self) -> Dict:
+        """序列化為字典"""
+        return {
+            "trade_id": self.trade_id,
+            "order_id": self.order_id,
+            "symbol": self.symbol,
+            "side": self.side,
+            "price": float(self.price),
+            "qty": float(self.qty),
+            "fee": float(self.fee),
+            "realized_pnl": float(self.realized_pnl),
+            "timestamp": self.timestamp,
+        }
+
+
 class BasePerpAdapter(ABC):
     """
     永續合約交易所適配器基類

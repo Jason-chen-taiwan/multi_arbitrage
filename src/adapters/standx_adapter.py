@@ -15,7 +15,7 @@ from uuid import uuid4
 import aiohttp
 from eth_account import Account
 
-from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook, SymbolInfo
+from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook, SymbolInfo, Trade
 from .order_validator import validate_and_normalize_order
 from ..auth import AsyncStandXAuth
 
@@ -588,16 +588,66 @@ class StandXAdapter(BasePerpAdapter):
                 'GET', '/api/query_open_orders',
                 params={'symbol': symbol}
             )
-            
+
             orders = []
             for order_data in result.get('result', []):
                 orders.append(self._parse_order(order_data))
-            
+
             return orders
         except Exception as e:
             print(f"❌ Failed to get open orders: {e}")
             return []
-    
+
+    async def get_trades(
+        self,
+        symbol: str,
+        limit: int = 50,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None
+    ) -> List[Trade]:
+        """
+        查詢成交歷史
+
+        Args:
+            symbol: 交易對 (如 'BTC-USD')
+            limit: 返回記錄數量上限 (默認 50，最大 500)
+            start_time: 開始時間戳 (毫秒)
+            end_time: 結束時間戳 (毫秒)
+
+        Returns:
+            Trade 列表
+        """
+        try:
+            params = {
+                'symbol': symbol,
+                'limit': min(limit, 500)
+            }
+            if start_time:
+                params['start'] = start_time
+            if end_time:
+                params['end'] = end_time
+
+            result = await self._request('GET', '/api/query_trades', params=params)
+
+            trades = []
+            for trade_data in result.get('result', []):
+                trades.append(Trade(
+                    trade_id=str(trade_data.get('id', '')),
+                    order_id=str(trade_data.get('order_id', '')),
+                    symbol=symbol,
+                    side=trade_data.get('side', ''),
+                    price=Decimal(str(trade_data.get('price', '0'))),
+                    qty=Decimal(str(trade_data.get('qty', '0'))),
+                    fee=Decimal(str(trade_data.get('fee_qty', '0'))),
+                    realized_pnl=Decimal(str(trade_data.get('pnl', '0'))),
+                    timestamp=trade_data.get('created_at'),
+                ))
+
+            return trades
+        except Exception as e:
+            logger.error(f"Failed to get trades: {e}")
+            return []
+
     async def get_orderbook(
         self,
         symbol: str,
