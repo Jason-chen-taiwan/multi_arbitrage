@@ -42,6 +42,16 @@ def register_mm_routes(app, dependencies):
     async def start_market_maker(request: Request):
         """啟動做市商"""
         try:
+            # 先停止現有的執行器（防止重複啟動導致多個執行器同時運行）
+            existing_executor = mm_executor_getter()
+            if existing_executor:
+                logger.info("停止現有的 StandX 做市商執行器...")
+                try:
+                    await existing_executor.stop()
+                except Exception as e:
+                    logger.warning(f"停止現有執行器時發生錯誤: {e}")
+                mm_executor_setter(None)
+
             data = await request.json()
             dry_run = data.get('dry_run', True)
 

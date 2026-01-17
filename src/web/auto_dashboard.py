@@ -1302,7 +1302,16 @@ async def root():
 
             // GRVT MM 頁面更新
             function updateGrvtMM(grvtMmData) {
-                if (!grvtMmData || !grvtMmData.executor) return;
+                if (!grvtMmData) return;
+
+                // 先更新訂單簿（即使沒有 executor 也要顯示）
+                const ob = grvtMmData.orderbook;
+                if (ob && ob.bids && ob.asks) {
+                    updateGrvtMmOrderbook(ob);
+                }
+
+                // 如果沒有 executor，只更新訂單簿就返回
+                if (!grvtMmData.executor) return;
 
                 const exec = grvtMmData.executor;
 
@@ -1372,12 +1381,6 @@ async def root():
                 // 更新中間價
                 if (exec.stats && exec.stats.last_mid_price) {
                     document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.stats.last_mid_price).toFixed(2);
-                }
-
-                // 更新訂單簿顯示
-                const ob = grvtMmData.orderbook;
-                if (ob && ob.bids && ob.asks) {
-                    updateGrvtMmOrderbook(ob);
                 }
             }
 

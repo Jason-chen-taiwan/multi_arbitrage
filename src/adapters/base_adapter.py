@@ -189,7 +189,12 @@ class Order:
         self.reduce_only = reduce_only
         self.created_at = created_at
         self.updated_at = updated_at
-    
+
+    @property
+    def remaining_qty(self) -> Decimal:
+        """計算剩餘未成交數量"""
+        return self.qty - self.filled_qty
+
     def __repr__(self) -> str:
         return (
             f"Order(id={self.order_id}, symbol={self.symbol}, "

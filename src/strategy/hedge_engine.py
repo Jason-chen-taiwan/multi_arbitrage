@@ -88,6 +88,11 @@ class HedgeResult:
     fill_qty: Optional[Decimal] = None
     slippage_bps: Optional[float] = None
 
+    # ==================== 成本追蹤 (rebate 模式用) ====================
+    hedge_side: Optional[str] = None        # 對沖方向 ("buy" / "sell")
+    execution_price: Optional[Decimal] = None  # 實際成交價 (同 fill_price，語義更清楚)
+    fee_paid: Decimal = Decimal("0")        # 實際手續費
+
     # 重試信息
     attempts: int = 0
     latency_ms: float = 0.0

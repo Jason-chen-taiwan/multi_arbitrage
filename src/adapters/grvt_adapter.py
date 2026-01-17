@@ -5,10 +5,11 @@ GRVT Exchange Adapter Implementation
 API Documentation: https://api-docs.grvt.io/
 
 注意：GRVT SDK 是同步的，所有方法使用 asyncio.to_thread 包裝
+支援 WebSocket 即時推送 (v1.fill, v1.state, v1.position)
 """
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable, Awaitable
 from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime
 from dataclasses import dataclass
@@ -27,6 +28,14 @@ from .base_adapter import (
     Orderbook,
     SymbolInfo
 )
+
+# WebSocket client (conditional import to avoid circular deps)
+try:
+    from .grvt_ws_client import GRVTWebSocketClient, GRVTFillEvent, GRVTOrderStateEvent
+except ImportError:
+    GRVTWebSocketClient = None
+    GRVTFillEvent = None
+    GRVTOrderStateEvent = None
 
 # GRVT SDK imports
 from pysdk.grvt_raw_env import GrvtEnv
@@ -150,6 +159,15 @@ class GRVTAdapter(BasePerpAdapter):
         self._symbol_specs: Dict[str, SymbolInfo] = {}
         self._symbol_specs_ts: Dict[str, float] = {}
 
+        # WebSocket client for real-time updates
+        self._ws_client: Optional[GRVTWebSocketClient] = None
+        self._ws_task: Optional[asyncio.Task] = None
+        self._ws_enabled = False
+
+        # WebSocket callbacks (external handlers)
+        self._fill_callbacks: List[Callable[[GRVTFillEvent], Awaitable[None]]] = []
+        self._order_state_callbacks: List[Callable[[GRVTOrderStateEvent], Awaitable[None]]] = []
+
     # ==================== 生命週期 ====================
 
     async def connect(self) -> bool:
@@ -212,9 +230,204 @@ class GRVTAdapter(BasePerpAdapter):
         except Exception as e:
             logger.warning(f"Error fetching instruments: {e}")
 
+    # ==================== WebSocket Support ====================
+
+    def on_fill(self, callback: Callable[[GRVTFillEvent], Awaitable[None]]):
+        """
+        Register callback for fill events (WebSocket)
+
+        Args:
+            callback: Async function to call when a fill occurs
+        """
+        if GRVTWebSocketClient is None:
+            logger.warning("WebSocket client not available")
+            return self
+        self._fill_callbacks.append(callback)
+        return self
+
+    def on_order_state(self, callback: Callable[[GRVTOrderStateEvent], Awaitable[None]]):
+        """
+        Register callback for order state events (WebSocket)
+
+        Args:
+            callback: Async function to call when order state changes
+        """
+        if GRVTWebSocketClient is None:
+            logger.warning("WebSocket client not available")
+            return self
+        self._order_state_callbacks.append(callback)
+        return self
+
+    async def start_websocket(self, instruments: List[str] = None) -> bool:
+        """
+        Start WebSocket connection for real-time updates
+
+        Args:
+            instruments: List of instruments to subscribe (default: ["BTC_USDT_Perp"])
+
+        Returns:
+            True if WebSocket started successfully
+        """
+        logger.info("[WebSocket] ========== Starting WebSocket initialization ==========")
+
+        if GRVTWebSocketClient is None:
+            logger.error("[WebSocket] GRVTWebSocketClient not available - check import")
+            return False
+
+        if self._ws_enabled:
+            logger.warning("[WebSocket] WebSocket already running")
+            return True
+
+        # 從 SDK client 獲取 session cookie
+        session_cookie = None
+        try:
+            if self._client and hasattr(self._client, '_session'):
+                logger.info("[WebSocket] Found SDK _session attribute")
+                cookies = self._client._session.cookies
+
+                # 列出所有 cookies 以便調試
+                all_cookies = dict(cookies)
+                logger.info(f"[WebSocket] SDK session cookies: {list(all_cookies.keys())}")
+
+                # 嘗試多種可能的 cookie 名稱
+                cookie_names = ['gravity', 'grvt_session', 'grvt', 'session', 'auth']
+                for name in cookie_names:
+                    if name in all_cookies:
+                        session_cookie = all_cookies[name]
+                        logger.info(f"[WebSocket] Found cookie '{name}' (length={len(session_cookie) if session_cookie else 0})")
+                        break
+
+                if not session_cookie:
+                    # 嘗試刷新 cookie
+                    logger.info("[WebSocket] No cookie found, attempting refresh...")
+                    try:
+                        self._client._refresh_cookie()
+                        cookies = self._client._session.cookies
+                        all_cookies = dict(cookies)
+                        logger.info(f"[WebSocket] After refresh, cookies: {list(all_cookies.keys())}")
+
+                        for name in cookie_names:
+                            if name in all_cookies:
+                                session_cookie = all_cookies[name]
+                                logger.info(f"[WebSocket] Found cookie '{name}' after refresh")
+                                break
+                    except Exception as refresh_err:
+                        logger.warning(f"[WebSocket] Cookie refresh failed: {refresh_err}")
+            else:
+                logger.warning("[WebSocket] SDK client or _session not available")
+        except Exception as e:
+            logger.warning(f"[WebSocket] Failed to get session cookie: {e}", exc_info=True)
+
+        # 如果沒有 session cookie，使用 API key 作為 fallback
+        if not session_cookie:
+            logger.warning("[WebSocket] No session cookie found, using API key as fallback")
+            session_cookie = self.api_key
+
+        # 確保有 trading_account_id
+        trading_account = self.trading_account_id or self._main_account_id
+        if not trading_account:
+            logger.error("[WebSocket] No trading_account_id available")
+            return False
+
+        logger.info(f"[WebSocket] Creating client with account_id={trading_account}, testnet={self.testnet}")
+        logger.info(f"[WebSocket] Cookie/API key length: {len(session_cookie) if session_cookie else 0}")
+
+        try:
+            # Create WebSocket client
+            self._ws_client = GRVTWebSocketClient(
+                api_key=session_cookie,
+                trading_account_id=trading_account,
+                testnet=self.testnet,
+            )
+
+            # Register internal handlers that forward to external callbacks
+            async def _on_fill(fill: GRVTFillEvent):
+                logger.info(
+                    f"[GRVT WS] Fill received: {fill.side} {fill.size} @ {fill.price} "
+                    f"(maker={fill.is_maker}, fee={fill.fee})"
+                )
+                for cb in self._fill_callbacks:
+                    try:
+                        await cb(fill)
+                    except Exception as e:
+                        logger.error(f"Fill callback error: {e}")
+
+            async def _on_order_state(order: GRVTOrderStateEvent):
+                logger.debug(f"[GRVT WS] Order state: {order.order_id} {order.state}")
+                for cb in self._order_state_callbacks:
+                    try:
+                        await cb(order)
+                    except Exception as e:
+                        logger.error(f"Order state callback error: {e}")
+
+            self._ws_client.on_fill(_on_fill)
+            self._ws_client.on_order_state(_on_order_state)
+
+            # Connect
+            logger.info("[WebSocket] Attempting to connect...")
+            success = await self._ws_client.connect()
+            if not success:
+                logger.error("[WebSocket] Failed to connect GRVT WebSocket")
+                return False
+
+            logger.info("[WebSocket] Connected successfully, subscribing to instruments...")
+
+            # Subscribe to instruments
+            instruments = instruments or ["BTC_USDT_Perp"]
+            for inst in instruments:
+                await self._ws_client.subscribe_fills(inst)
+                await self._ws_client.subscribe_order_states(inst)
+                logger.info(f"[WebSocket] Subscribed: {inst}")
+
+            # Start message processing loop
+            self._ws_task = asyncio.create_task(self._ws_client.run())
+            self._ws_enabled = True
+
+            logger.info(f"[WebSocket] ========== WebSocket started successfully for {instruments} ==========")
+            return True
+
+        except Exception as e:
+            logger.error(f"[WebSocket] Failed to start GRVT WebSocket: {e}", exc_info=True)
+            return False
+
+    async def stop_websocket(self):
+        """Stop WebSocket connection"""
+        if not self._ws_enabled:
+            return
+
+        self._ws_enabled = False
+
+        if self._ws_client:
+            await self._ws_client.disconnect()
+
+        if self._ws_task:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+            self._ws_task = None
+
+        logger.info("GRVT WebSocket stopped")
+
+    @property
+    def ws_connected(self) -> bool:
+        """Whether WebSocket is connected"""
+        return self._ws_client.is_connected if self._ws_client else False
+
+    def get_ws_stats(self) -> Dict[str, Any]:
+        """Get WebSocket statistics"""
+        if self._ws_client:
+            return self._ws_client.get_stats()
+        return {"enabled": False}
+
     async def disconnect(self) -> bool:
         """斷開連接"""
         try:
+            # Stop WebSocket if running
+            if self._ws_enabled:
+                await self.stop_websocket()
+
             self._client = None
             self._connected = False
             return True
@@ -363,9 +576,19 @@ class GRVTAdapter(BasePerpAdapter):
 
         positions = []
         for pos_data in result.result or []:
-            # 過濾 symbol
-            if symbol and pos_data.instrument != symbol:
-                continue
+            # 診斷日誌
+            logger.info(f"[GRVT] Position data: instrument={pos_data.instrument}, balance={pos_data.balance}")
+
+            # 過濾 symbol（更智能的匹配）
+            if symbol:
+                # 提取 base asset (BTC, ETH, etc.)
+                symbol_base = symbol.upper().replace("-", "_").replace("/", "_").split("_")[0]
+                instrument_base = pos_data.instrument.upper().split("_")[0]
+
+                # 只要 base asset 匹配就算匹配成功
+                if symbol_base != instrument_base:
+                    logger.debug(f"[GRVT] Skipping position: {pos_data.instrument} (base {instrument_base} != {symbol_base})")
+                    continue
 
             position = Position(
                 symbol=pos_data.instrument,
@@ -700,13 +923,22 @@ class GRVTAdapter(BasePerpAdapter):
         if isinstance(result, GrvtError):
             raise Exception(f"API Error: {result}")
 
+        # 診斷日誌：原始返回
+        raw_count = len(result.result) if result.result else 0
+        logger.debug(f"[GRVT OpenOrders] Raw count={raw_count}, filter_symbol={symbol}")
+
         orders = []
         for order_data in result.result or []:
-            # 過濾 symbol
-            if symbol and order_data.legs[0].instrument != symbol:
-                continue
+            # 過濾 symbol（使用包含匹配，更靈活）
+            instrument = order_data.legs[0].instrument if order_data.legs else ""
+            if symbol:
+                # 同時支持精確匹配和包含匹配
+                if instrument != symbol and symbol not in instrument and instrument not in symbol:
+                    logger.debug(f"[GRVT OpenOrders] Skipping order: instrument={instrument}, filter={symbol}")
+                    continue
             orders.append(self._parse_order(order_data))
 
+        logger.debug(f"[GRVT OpenOrders] Returning {len(orders)} orders after filter")
         return orders
 
     # ==================== 訂單簿 ====================
@@ -864,9 +1096,23 @@ class GRVTAdapter(BasePerpAdapter):
         # 安全獲取屬性（GRVT SDK 不同版本可能有不同屬性名）
         filled_size = getattr(order_data, 'filled_size', None) or getattr(order_data, 'filled_qty', None) or "0"
 
+        # client_order_id 在 metadata 對象中（下單時設置的位置）
+        metadata = getattr(order_data, 'metadata', None)
+        client_order_id = getattr(metadata, 'client_order_id', None) if metadata else None
+        # 如果 metadata 沒有，嘗試直接從 order_data 獲取（兼容不同版本）
+        if not client_order_id:
+            client_order_id = getattr(order_data, 'client_order_id', None)
+
+        # 診斷日誌：訂單解析
+        order_id = getattr(order_data, 'order_id', None)
+        logger.debug(
+            f"[GRVT ParseOrder] order_id={order_id}, client_order_id={client_order_id}, "
+            f"metadata={metadata}, filled_size={filled_size}"
+        )
+
         return Order(
             order_id=order_data.order_id,
-            client_order_id=getattr(order_data, 'client_order_id', None),
+            client_order_id=client_order_id,
             symbol=leg.instrument if leg else "",
             side="buy" if leg and leg.is_buying_asset else "sell",
             order_type="market" if getattr(order_data, 'is_market', False) else "limit",

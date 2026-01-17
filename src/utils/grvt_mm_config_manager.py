@@ -17,11 +17,30 @@ from ruamel.yaml import YAML
 
 
 @dataclass
+class GRVTStrategyConfig:
+    """策略模式配置"""
+    mode: str = "uptime"  # "uptime" | "rebate"
+    aggressiveness: str = "moderate"  # "aggressive" | "moderate" | "conservative"
+
+
+@dataclass
 class GRVTQuoteConfig:
     """報價配置"""
     order_distance_bps: int = 8
     cancel_distance_bps: int = 3
     rebalance_distance_bps: int = 12
+    cancel_on_approach: bool = True  # rebate 模式設為 False
+    post_only: bool = False  # rebate 模式設為 True
+    min_spread_ticks: int = 2  # 最小 spread 保護
+
+
+@dataclass
+class GRVTFeesConfig:
+    """費率配置 (負數=收rebate, 正數=付fee)"""
+    maker_bps: float = -1.0  # GRVT maker rebate
+    taker_bps: float = 3.0   # GRVT taker fee
+    hedge_bps: float = 2.0   # StandX hedge fee
+    track_enabled: bool = True
 
 
 @dataclass
@@ -75,8 +94,10 @@ class GRVTMMConfigData:
         "primary": "BTC_USDT_Perp",
         "hedge": "BTC-USD"
     })
+    strategy: GRVTStrategyConfig = field(default_factory=GRVTStrategyConfig)
     quote: GRVTQuoteConfig = field(default_factory=GRVTQuoteConfig)
     position: GRVTPositionConfig = field(default_factory=GRVTPositionConfig)
+    fees: GRVTFeesConfig = field(default_factory=GRVTFeesConfig)
     volatility: GRVTVolatilityConfig = field(default_factory=GRVTVolatilityConfig)
     order: GRVTOrderConfig = field(default_factory=GRVTOrderConfig)
     execution: GRVTExecutionConfig = field(default_factory=GRVTExecutionConfig)
@@ -86,8 +107,10 @@ class GRVTMMConfigData:
         """轉換為字典"""
         return {
             "symbols": self.symbols,
+            "strategy": asdict(self.strategy),
             "quote": asdict(self.quote),
             "position": asdict(self.position),
+            "fees": asdict(self.fees),
             "volatility": asdict(self.volatility),
             "order": asdict(self.order),
             "execution": asdict(self.execution),
@@ -106,10 +129,31 @@ class GRVTMMConfigData:
     def from_dict(cls, data: Dict[str, Any]) -> 'GRVTMMConfigData':
         """從字典創建"""
         hedge_data = data.get("hedge", {})
+        strategy_data = data.get("strategy", {})
+        quote_data = data.get("quote", {})
+        fees_data = data.get("fees", {})
+
         return cls(
             symbols=data.get("symbols", {}),
-            quote=GRVTQuoteConfig(**data.get("quote", {})),
+            strategy=GRVTStrategyConfig(
+                mode=strategy_data.get("mode", "uptime"),
+                aggressiveness=strategy_data.get("aggressiveness", "moderate"),
+            ),
+            quote=GRVTQuoteConfig(
+                order_distance_bps=quote_data.get("order_distance_bps", 8),
+                cancel_distance_bps=quote_data.get("cancel_distance_bps", 3),
+                rebalance_distance_bps=quote_data.get("rebalance_distance_bps", 12),
+                cancel_on_approach=quote_data.get("cancel_on_approach", True),
+                post_only=quote_data.get("post_only", False),
+                min_spread_ticks=quote_data.get("min_spread_ticks", 2),
+            ),
             position=GRVTPositionConfig(**data.get("position", {})),
+            fees=GRVTFeesConfig(
+                maker_bps=fees_data.get("maker_bps", -1.0),
+                taker_bps=fees_data.get("taker_bps", 3.0),
+                hedge_bps=fees_data.get("hedge_bps", 2.0),
+                track_enabled=fees_data.get("track_enabled", True),
+            ),
             volatility=GRVTVolatilityConfig(**data.get("volatility", {})),
             order=GRVTOrderConfig(**data.get("order", {})),
             execution=GRVTExecutionConfig(**data.get("execution", {})),
@@ -157,6 +201,15 @@ class GRVTMMConfigManager:
         """重置單例 (用於測試)"""
         cls._instance = None
 
+    def _to_plain_dict(self, data) -> Dict[str, Any]:
+        """遞歸轉換 ruamel.yaml CommentedMap 為普通 dict"""
+        if hasattr(data, 'items'):
+            return {k: self._to_plain_dict(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._to_plain_dict(item) for item in data]
+        else:
+            return data
+
     def _load_config(self):
         """從文件加載配置"""
         if not self._config_path.exists():
@@ -172,11 +225,23 @@ class GRVTMMConfigManager:
 
             if data:
                 self._raw_yaml = data
-                self._config = GRVTMMConfigData.from_dict(dict(data))
-                print(f"Loaded GRVT MM config from {self._config_path}")
+                # 遞歸轉換為普通 dict（重要：ruamel.yaml 返回的是 CommentedMap）
+                plain_data = self._to_plain_dict(data)
+
+                # 診斷：打印原始 YAML 中的 strategy 區段
+                strategy_raw = plain_data.get("strategy", {})
+                print(f"[ConfigManager] Raw strategy from YAML: {strategy_raw}")
+
+                self._config = GRVTMMConfigData.from_dict(plain_data)
+
+                # 診斷：打印解析後的配置
+                print(f"[ConfigManager] Parsed config: strategy.mode={self._config.strategy.mode}, strategy.aggressiveness={self._config.strategy.aggressiveness}")
+                print(f"[ConfigManager] Loaded GRVT MM config from {self._config_path}")
 
         except Exception as e:
             print(f"Error loading GRVT MM config: {e}, using defaults")
+            import traceback
+            traceback.print_exc()
 
     def reload(self):
         """重新加載配置"""

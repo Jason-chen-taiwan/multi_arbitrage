@@ -2,10 +2,12 @@
 StandX WebSocket 客戶端
 StandX WebSocket Client for Real-time Order and Price Updates
 
-參考 frozen-cherry/standx-mm 的 ws_client.py 設計
-- 雙 WebSocket 連接 (市場數據 + 用戶數據)
-- 自動重連機制
-- 事件回調系統
+基於 StandX 官方 WebSocket API 文檔:
+https://docs.standx.com/standx-api/perps-ws
+
+Endpoints:
+- Market Stream: wss://perps.standx.com/ws-stream/v1
+- Order Response Stream: wss://perps.standx.com/ws-api/v1
 """
 import asyncio
 import json
@@ -71,31 +73,33 @@ class StandXWebSocketClient:
     """
     StandX WebSocket 客戶端
 
-    實現:
-    - 市場數據 WebSocket (價格推送)
-    - 用戶數據 WebSocket (訂單/倉位更新)
-    - 自動重連 (5秒延遲)
-    - 心跳維持
+    基於官方 API 文檔:
+    - Market Stream: wss://perps.standx.com/ws-stream/v1
+    - 支援公開頻道: price, depth_book, public_trade
+    - 支援認證頻道: order, position, balance, trade
     """
+
+    # 正確的 WebSocket endpoint
+    WS_STREAM_URL = "wss://perps.standx.com/ws-stream/v1"
 
     def __init__(
         self,
-        ws_url: str = "wss://perps.standx.com/ws",
+        ws_url: str = None,  # 保持兼容性，但會被忽略
         auth_token: Optional[str] = None,
         reconnect_delay: int = 5,
     ):
-        self.ws_url = ws_url
+        # 強制使用正確的 URL
+        self.ws_url = self.WS_STREAM_URL
         self.auth_token = auth_token
         self.reconnect_delay = reconnect_delay
 
-        # WebSocket 連接
-        self._market_ws: Optional[aiohttp.ClientWebSocketResponse] = None
-        self._user_ws: Optional[aiohttp.ClientWebSocketResponse] = None
+        # WebSocket 連接 (單一連接)
+        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._session: Optional[aiohttp.ClientSession] = None
 
         # 連接狀態
-        self._market_connected = False
-        self._user_connected = False
+        self._connected = False
+        self._authenticated = False
         self._running = False
 
         # 回調列表
@@ -134,155 +138,174 @@ class StandXWebSocketClient:
     async def connect(self) -> bool:
         """建立 WebSocket 連接"""
         try:
+            logger.info(f"[StandX WS] Connecting to {self.ws_url}")
+
             self._session = aiohttp.ClientSession()
 
-            # 連接市場數據 WebSocket
-            market_success = await self._connect_market_ws()
-
-            # 連接用戶數據 WebSocket (需要認證)
-            if self.auth_token:
-                user_success = await self._connect_user_ws()
-            else:
-                user_success = True  # 沒有 token 則跳過用戶 WS
-                logger.warning("No auth token provided, user WebSocket disabled")
-
-            self._running = market_success
-            return market_success and user_success
-
-        except Exception as e:
-            logger.error(f"WebSocket connection failed: {e}")
-            return False
-
-    async def _connect_market_ws(self) -> bool:
-        """連接市場數據 WebSocket"""
-        try:
-            # StandX 市場 WebSocket URL
-            market_url = f"{self.ws_url}/market"
-
-            self._market_ws = await self._session.ws_connect(
-                market_url,
-                heartbeat=30,
-                receive_timeout=60,
+            # 連接到 Market Stream
+            self._ws = await self._session.ws_connect(
+                self.ws_url,
+                heartbeat=10,  # StandX 每 10 秒發送 ping
+                receive_timeout=300,  # 5 分鐘超時
             )
 
-            self._market_connected = True
-            logger.info(f"Market WebSocket connected: {market_url}")
+            self._connected = True
+            logger.info(f"[StandX WS] Connected to Market Stream")
+
+            # 如果有 auth token，進行認證並訂閱用戶頻道
+            if self.auth_token:
+                auth_success = await self._authenticate()
+                if auth_success:
+                    self._authenticated = True
+                    logger.info("[StandX WS] Authenticated successfully")
+                else:
+                    logger.warning("[StandX WS] Authentication failed, user channels disabled")
+            else:
+                logger.warning("[StandX WS] No auth token, user channels disabled")
+
+            self._running = True
             return True
 
         except Exception as e:
-            logger.error(f"Market WebSocket connection failed: {e}")
-            self._market_connected = False
+            logger.error(f"[StandX WS] Connection failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
-    async def _connect_user_ws(self) -> bool:
-        """連接用戶數據 WebSocket (需要認證)"""
+    async def _authenticate(self) -> bool:
+        """
+        認證並訂閱用戶頻道
+
+        格式: { "auth": { "token": "<jwt>", "streams": [{ "channel": "order" }, ...] } }
+        """
         try:
-            # StandX 用戶 WebSocket URL
-            user_url = f"{self.ws_url}/user"
-
-            self._user_ws = await self._session.ws_connect(
-                user_url,
-                heartbeat=30,
-                receive_timeout=60,
-            )
-
-            # 發送認證消息
             auth_message = {
-                "type": "auth",
-                "token": self.auth_token
+                "auth": {
+                    "token": self.auth_token,
+                    "streams": [
+                        {"channel": "order"},
+                        {"channel": "trade"},
+                        {"channel": "position"},
+                        {"channel": "balance"},
+                    ]
+                }
             }
-            await self._user_ws.send_json(auth_message)
 
-            # 等待認證響應
-            response = await asyncio.wait_for(
-                self._user_ws.receive_json(),
-                timeout=10
-            )
+            logger.info("[StandX WS] Sending auth message...")
+            await self._ws.send_json(auth_message)
 
-            if response.get("type") == "auth_success":
-                self._user_connected = True
-                logger.info("User WebSocket authenticated")
-                return True
-            else:
-                logger.error(f"User WebSocket auth failed: {response}")
-                return False
+            # 等待認證響應 (可能需要一點時間)
+            try:
+                response = await asyncio.wait_for(
+                    self._ws.receive(),
+                    timeout=10
+                )
+
+                if response.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(response.data)
+                    logger.info(f"[StandX WS] Auth response: {data}")
+
+                    # 檢查是否認證成功
+                    if data.get("code") == 0 or data.get("success") or "auth" in data:
+                        return True
+                    else:
+                        logger.error(f"[StandX WS] Auth failed: {data}")
+                        return False
+                else:
+                    logger.warning(f"[StandX WS] Unexpected response type: {response.type}")
+                    return False
+
+            except asyncio.TimeoutError:
+                logger.warning("[StandX WS] Auth response timeout, assuming success")
+                return True  # 某些情況下可能沒有明確的響應
 
         except Exception as e:
-            logger.error(f"User WebSocket connection failed: {e}")
-            self._user_connected = False
+            logger.error(f"[StandX WS] Authentication error: {e}")
             return False
 
     async def disconnect(self):
         """斷開連接"""
         self._running = False
+        self._connected = False
+        self._authenticated = False
 
-        if self._market_ws:
-            await self._market_ws.close()
-            self._market_ws = None
-            self._market_connected = False
-
-        if self._user_ws:
-            await self._user_ws.close()
-            self._user_ws = None
-            self._user_connected = False
+        if self._ws:
+            await self._ws.close()
+            self._ws = None
 
         if self._session:
             await self._session.close()
             self._session = None
 
-        logger.info("WebSocket disconnected")
+        logger.info("[StandX WS] Disconnected")
 
     async def _reconnect(self):
         """重新連接"""
-        logger.info(f"Reconnecting in {self.reconnect_delay} seconds...")
+        logger.info(f"[StandX WS] Reconnecting in {self.reconnect_delay} seconds...")
         await asyncio.sleep(self.reconnect_delay)
+
+        # 清理舊連接
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+        # 重新連接
         await self.connect()
+
+        # 重新訂閱
+        for symbol in self._subscribed_symbols:
+            await self.subscribe_symbol(symbol)
 
     # ==================== 訂閱管理 ====================
 
     async def subscribe_symbol(self, symbol: str):
-        """訂閱符號的價格更新"""
-        if not self._market_connected or not self._market_ws:
-            logger.warning("Market WebSocket not connected")
+        """
+        訂閱符號的價格更新
+
+        格式: { "subscribe": { "channel": "depth_book", "symbol": "BTC-USD" } }
+        """
+        if not self._connected or not self._ws:
+            logger.warning("[StandX WS] Not connected, cannot subscribe")
             return
 
+        # 訂閱 depth_book 頻道
         subscribe_message = {
-            "type": "subscribe",
-            "channel": "ticker",
-            "symbol": symbol
+            "subscribe": {
+                "channel": "depth_book",
+                "symbol": symbol
+            }
         }
 
-        await self._market_ws.send_json(subscribe_message)
+        await self._ws.send_json(subscribe_message)
         self._subscribed_symbols.add(symbol)
-        logger.info(f"Subscribed to {symbol} price updates")
+        logger.info(f"[StandX WS] Subscribed to depth_book for {symbol}")
+
+        # 也訂閱 price 頻道
+        price_message = {
+            "subscribe": {
+                "channel": "price",
+                "symbol": symbol
+            }
+        }
+        await self._ws.send_json(price_message)
+        logger.info(f"[StandX WS] Subscribed to price for {symbol}")
 
     async def subscribe_orders(self):
-        """訂閱訂單更新"""
-        if not self._user_connected or not self._user_ws:
-            logger.warning("User WebSocket not connected")
+        """訂閱訂單更新 (已在 auth 時訂閱)"""
+        if not self._authenticated:
+            logger.warning("[StandX WS] Not authenticated, cannot subscribe to orders")
             return
-
-        subscribe_message = {
-            "type": "subscribe",
-            "channel": "orders"
-        }
-
-        await self._user_ws.send_json(subscribe_message)
-        logger.info("Subscribed to order updates")
+        logger.info("[StandX WS] Order channel already subscribed via auth")
 
     async def subscribe_positions(self):
-        """訂閱倉位更新"""
-        if not self._user_connected or not self._user_ws:
-            logger.warning("User WebSocket not connected")
+        """訂閱倉位更新 (已在 auth 時訂閱)"""
+        if not self._authenticated:
+            logger.warning("[StandX WS] Not authenticated, cannot subscribe to positions")
             return
-
-        subscribe_message = {
-            "type": "subscribe",
-            "channel": "positions"
-        }
-
-        await self._user_ws.send_json(subscribe_message)
-        logger.info("Subscribed to position updates")
+        logger.info("[StandX WS] Position channel already subscribed via auth")
 
     # ==================== 消息處理循環 ====================
 
@@ -290,175 +313,253 @@ class StandXWebSocketClient:
         """運行消息處理循環"""
         while self._running:
             try:
-                # 並行處理兩個 WebSocket
-                tasks = []
-
-                if self._market_ws and self._market_connected:
-                    tasks.append(self._handle_market_messages())
-
-                if self._user_ws and self._user_connected:
-                    tasks.append(self._handle_user_messages())
-
-                if tasks:
-                    await asyncio.gather(*tasks)
-                else:
-                    # 沒有連接，嘗試重連
+                if not self._ws or self._ws.closed:
+                    logger.warning("[StandX WS] Connection lost, reconnecting...")
                     await self._reconnect()
+                    continue
 
+                # 接收消息
+                msg = await asyncio.wait_for(
+                    self._ws.receive(),
+                    timeout=60  # 1 分鐘超時
+                )
+
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await self._process_message(msg.data)
+                elif msg.type == aiohttp.WSMsgType.PING:
+                    # 響應 ping
+                    await self._ws.pong()
+                    self._last_heartbeat = time.time()
+                elif msg.type == aiohttp.WSMsgType.PONG:
+                    self._last_heartbeat = time.time()
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f"[StandX WS] WebSocket error: {msg.data}")
+                    break
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    logger.warning("[StandX WS] WebSocket closed")
+                    break
+
+            except asyncio.TimeoutError:
+                # 超時，發送 ping 保持連接
+                if self._ws and not self._ws.closed:
+                    try:
+                        await self._ws.ping()
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                logger.info("[StandX WS] Message loop cancelled")
+                break
             except Exception as e:
-                logger.error(f"WebSocket run loop error: {e}")
+                logger.error(f"[StandX WS] Message loop error: {e}")
                 if self._running:
                     await self._reconnect()
 
-    async def _handle_market_messages(self):
-        """處理市場數據消息"""
-        try:
-            async for msg in self._market_ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._process_market_message(msg.data)
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error(f"Market WS error: {msg.data}")
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.warning("Market WS closed")
-                    break
+        self._connected = False
 
-        except Exception as e:
-            logger.error(f"Market message handler error: {e}")
-
-        self._market_connected = False
-
-    async def _handle_user_messages(self):
-        """處理用戶數據消息"""
-        try:
-            async for msg in self._user_ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._process_user_message(msg.data)
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error(f"User WS error: {msg.data}")
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    logger.warning("User WS closed")
-                    break
-
-        except Exception as e:
-            logger.error(f"User message handler error: {e}")
-
-        self._user_connected = False
-
-    async def _process_market_message(self, data: str):
-        """處理市場數據消息"""
+    async def _process_message(self, data: str):
+        """處理接收到的消息"""
         try:
             message = json.loads(data)
             self._message_count += 1
 
-            msg_type = message.get("type")
+            # 識別消息類型
+            channel = message.get("channel")
 
-            if msg_type == "ticker":
-                # 價格更新
+            if channel == "depth_book":
+                await self._handle_depth_book(message)
+            elif channel == "price":
+                await self._handle_price(message)
+            elif channel == "order":
+                await self._handle_order(message)
+            elif channel == "trade":
+                await self._handle_trade(message)
+            elif channel == "position":
+                await self._handle_position(message)
+            elif channel == "balance":
+                await self._handle_balance(message)
+            elif "ping" in message or message.get("type") == "ping":
+                # 響應心跳
+                await self._ws.send_json({"pong": message.get("ping", time.time())})
+                self._last_heartbeat = time.time()
+            else:
+                # 其他消息 (可能是訂閱確認等)
+                logger.debug(f"[StandX WS] Unknown message: {message}")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[StandX WS] JSON decode error: {e}, data: {data[:200]}")
+        except Exception as e:
+            logger.error(f"[StandX WS] Message processing error: {e}")
+
+    async def _handle_depth_book(self, message: Dict):
+        """處理深度數據"""
+        try:
+            data = message.get("data", message)
+            symbol = data.get("symbol", "")
+
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+
+            if bids and asks:
+                best_bid = Decimal(str(bids[0][0])) if bids else Decimal("0")
+                best_ask = Decimal(str(asks[0][0])) if asks else Decimal("0")
+                mid_price = (best_bid + best_ask) / 2
+
                 price_update = PriceUpdate(
-                    symbol=message.get("symbol", ""),
-                    mark_price=Decimal(str(message.get("mark_price", 0))),
-                    index_price=Decimal(str(message.get("index_price", 0))),
-                    best_bid=Decimal(str(message.get("best_bid", 0))),
-                    best_ask=Decimal(str(message.get("best_ask", 0))),
+                    symbol=symbol,
+                    mark_price=mid_price,
+                    index_price=mid_price,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
                     timestamp=datetime.now(),
                 )
 
-                # 觸發回調
                 for callback in self._price_callbacks:
                     try:
                         await callback(price_update)
                     except Exception as e:
-                        logger.error(f"Price callback error: {e}")
-
-            elif msg_type == "ping":
-                # 響應心跳
-                await self._market_ws.send_json({"type": "pong"})
-                self._last_heartbeat = time.time()
+                        logger.error(f"[StandX WS] Price callback error: {e}")
 
         except Exception as e:
-            logger.error(f"Market message parse error: {e}")
+            logger.error(f"[StandX WS] Depth book handler error: {e}")
 
-    async def _process_user_message(self, data: str):
-        """處理用戶數據消息"""
+    async def _handle_price(self, message: Dict):
+        """處理價格更新"""
         try:
-            message = json.loads(data)
-            self._message_count += 1
+            data = message.get("data", message)
+            symbol = data.get("symbol", "")
 
-            msg_type = message.get("type")
+            price_update = PriceUpdate(
+                symbol=symbol,
+                mark_price=Decimal(str(data.get("mark_price", 0))),
+                index_price=Decimal(str(data.get("index_price", 0))),
+                best_bid=Decimal(str(data.get("best_bid", 0))),
+                best_ask=Decimal(str(data.get("best_ask", 0))),
+                timestamp=datetime.now(),
+            )
 
-            if msg_type == "order_update":
-                # 訂單更新
-                order_update = self._parse_order_update(message)
+            for callback in self._price_callbacks:
+                try:
+                    await callback(price_update)
+                except Exception as e:
+                    logger.error(f"[StandX WS] Price callback error: {e}")
 
-                # 觸發訂單回調
-                for callback in self._order_callbacks:
+        except Exception as e:
+            logger.error(f"[StandX WS] Price handler error: {e}")
+
+    async def _handle_order(self, message: Dict):
+        """處理訂單更新"""
+        try:
+            data = message.get("data", message)
+
+            order_update = OrderUpdate(
+                order_id=str(data.get("id", data.get("order_id", ""))),
+                client_order_id=data.get("cl_ord_id", data.get("client_order_id", "")),
+                symbol=data.get("symbol", ""),
+                side=data.get("side", ""),
+                order_type=data.get("order_type", ""),
+                price=Decimal(str(data.get("price", 0))),
+                qty=Decimal(str(data.get("qty", 0))),
+                filled_qty=Decimal(str(data.get("filled_qty", 0))),
+                remaining_qty=Decimal(str(data.get("remaining_qty", data.get("qty", 0)))),
+                status=data.get("status", ""),
+                avg_fill_price=Decimal(str(data.get("fill_avg_price", 0))) if data.get("fill_avg_price") else None,
+                timestamp=datetime.now(),
+            )
+
+            logger.info(f"[StandX WS] Order update: {order_update.order_id} {order_update.status} "
+                       f"filled={order_update.filled_qty}/{order_update.qty}")
+
+            # 觸發訂單回調
+            for callback in self._order_callbacks:
+                try:
+                    await callback(order_update)
+                except Exception as e:
+                    logger.error(f"[StandX WS] Order callback error: {e}")
+
+            # 如果有成交，觸發成交回調
+            if order_update.status == "filled" or order_update.filled_qty > 0:
+                for callback in self._fill_callbacks:
                     try:
                         await callback(order_update)
                     except Exception as e:
-                        logger.error(f"Order callback error: {e}")
-
-                # 如果是成交，觸發成交回調
-                if order_update.status == "filled" or order_update.filled_qty > 0:
-                    for callback in self._fill_callbacks:
-                        try:
-                            await callback(order_update)
-                        except Exception as e:
-                            logger.error(f"Fill callback error: {e}")
-
-            elif msg_type == "position_update":
-                # 倉位更新
-                position_update = PositionUpdate(
-                    symbol=message.get("symbol", ""),
-                    size=Decimal(str(message.get("size", 0))),
-                    entry_price=Decimal(str(message.get("entry_price", 0))),
-                    mark_price=Decimal(str(message.get("mark_price", 0))),
-                    unrealized_pnl=Decimal(str(message.get("upnl", 0))),
-                    timestamp=datetime.now(),
-                )
-
-                for callback in self._position_callbacks:
-                    try:
-                        await callback(position_update)
-                    except Exception as e:
-                        logger.error(f"Position callback error: {e}")
-
-            elif msg_type == "ping":
-                await self._user_ws.send_json({"type": "pong"})
-                self._last_heartbeat = time.time()
+                        logger.error(f"[StandX WS] Fill callback error: {e}")
 
         except Exception as e:
-            logger.error(f"User message parse error: {e}")
+            logger.error(f"[StandX WS] Order handler error: {e}")
 
-    def _parse_order_update(self, message: Dict[str, Any]) -> OrderUpdate:
-        """解析訂單更新消息"""
-        return OrderUpdate(
-            order_id=str(message.get("order_id", "")),
-            client_order_id=message.get("cl_ord_id", ""),
-            symbol=message.get("symbol", ""),
-            side=message.get("side", ""),
-            order_type=message.get("order_type", ""),
-            price=Decimal(str(message.get("price", 0))),
-            qty=Decimal(str(message.get("qty", 0))),
-            filled_qty=Decimal(str(message.get("filled_qty", 0))),
-            remaining_qty=Decimal(str(message.get("remaining_qty", 0))),
-            status=message.get("status", ""),
-            avg_fill_price=Decimal(str(message.get("avg_price", 0))) if message.get("avg_price") else None,
-            timestamp=datetime.now(),
-        )
+    async def _handle_trade(self, message: Dict):
+        """處理交易/成交更新"""
+        try:
+            data = message.get("data", message)
+
+            # Trade 頻道通常是成交記錄
+            order_update = OrderUpdate(
+                order_id=str(data.get("order_id", "")),
+                client_order_id=data.get("cl_ord_id", ""),
+                symbol=data.get("symbol", ""),
+                side=data.get("side", ""),
+                order_type="",
+                price=Decimal(str(data.get("price", 0))),
+                qty=Decimal(str(data.get("qty", 0))),
+                filled_qty=Decimal(str(data.get("qty", 0))),  # trade 就是成交
+                remaining_qty=Decimal("0"),
+                status="filled",
+                avg_fill_price=Decimal(str(data.get("price", 0))),
+                timestamp=datetime.now(),
+            )
+
+            logger.info(f"[StandX WS] Trade: {order_update.side} {order_update.filled_qty} @ {order_update.price}")
+
+            # 觸發成交回調
+            for callback in self._fill_callbacks:
+                try:
+                    await callback(order_update)
+                except Exception as e:
+                    logger.error(f"[StandX WS] Fill callback error: {e}")
+
+        except Exception as e:
+            logger.error(f"[StandX WS] Trade handler error: {e}")
+
+    async def _handle_position(self, message: Dict):
+        """處理倉位更新"""
+        try:
+            data = message.get("data", message)
+
+            position_update = PositionUpdate(
+                symbol=data.get("symbol", ""),
+                size=Decimal(str(data.get("qty", data.get("size", 0)))),
+                entry_price=Decimal(str(data.get("entry_price", 0))),
+                mark_price=Decimal(str(data.get("mark_price", 0))),
+                unrealized_pnl=Decimal(str(data.get("upnl", data.get("unrealized_pnl", 0)))),
+                timestamp=datetime.now(),
+            )
+
+            for callback in self._position_callbacks:
+                try:
+                    await callback(position_update)
+                except Exception as e:
+                    logger.error(f"[StandX WS] Position callback error: {e}")
+
+        except Exception as e:
+            logger.error(f"[StandX WS] Position handler error: {e}")
+
+    async def _handle_balance(self, message: Dict):
+        """處理餘額更新"""
+        # 目前只記錄，不觸發回調
+        data = message.get("data", message)
+        logger.debug(f"[StandX WS] Balance update: {data}")
 
     # ==================== 狀態查詢 ====================
 
     @property
     def is_connected(self) -> bool:
         """是否已連接"""
-        return self._market_connected
+        return self._connected and self._ws is not None and not self._ws.closed
 
     @property
     def is_user_connected(self) -> bool:
-        """用戶 WebSocket 是否已連接"""
-        return self._user_connected
+        """用戶頻道是否已連接 (已認證)"""
+        return self._authenticated
 
     @property
     def message_count(self) -> int:
@@ -468,11 +569,12 @@ class StandXWebSocketClient:
     def get_stats(self) -> Dict:
         """獲取統計"""
         return {
-            "market_connected": self._market_connected,
-            "user_connected": self._user_connected,
+            "connected": self.is_connected,
+            "authenticated": self._authenticated,
             "message_count": self._message_count,
             "subscribed_symbols": list(self._subscribed_symbols),
             "last_heartbeat": self._last_heartbeat,
+            "ws_url": self.ws_url,
         }
 
 

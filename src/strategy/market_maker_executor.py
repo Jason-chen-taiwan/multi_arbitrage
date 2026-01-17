@@ -24,6 +24,13 @@ from enum import Enum
 from .mm_state import MMState, OrderInfo, FillEvent
 from .hedge_engine import HedgeEngine, HedgeResult, HedgeStatus
 
+# WebSocket types (conditional import)
+try:
+    from ..adapters.grvt_ws_client import GRVTFillEvent, GRVTOrderStateEvent
+except ImportError:
+    GRVTFillEvent = None
+    GRVTOrderStateEvent = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,17 +54,40 @@ class MMConfig:
     - cancel_distance_bps: 價格接近訂單時撤單，防止成交
     - rebalance_distance_bps: 價格遠離訂單時撤單重掛，獲得更好價格
 
-    Uptime 策略：
-    - 掛單距離 8 bps（留 2 bps 緩衝）
-    - 價格靠近 3 bps 時撤單（避免成交）
-    - 價格遠離 12 bps 時重掛（超出 10 bps uptime 要求後再 2 bps）
+    策略模式：
+    - uptime: StandX uptime 獎勵模式（避免成交，掛單距離 8 bps，價格靠近時撤單）
+    - rebate: GRVT maker rebate 模式（追求成交，貼近 best 報價，不撤單）
     """
     # 交易對（通用）
     symbol: str = "BTC-USD"              # 主交易對
     hedge_symbol: str = "BTC_USDT_Perp"  # 對沖交易對
     hedge_exchange: str = "grvt"         # 對沖交易所 ("grvt", "standx", "binance")
 
-    # 報價參數 (優化版：8 bps 掛單距離，留緩衝給 uptime)
+    # ==================== 策略模式 ====================
+    strategy_mode: str = "uptime"        # "uptime" (StandX) | "rebate" (GRVT)
+
+    # 報價激進度 (rebate 模式用)
+    # - aggressive: 貼 best_bid/best_ask（最高成交率）
+    # - moderate: 離 best 1 bps（外側，較安全）
+    # - conservative: 離 best 2 bps（外側）
+    aggressiveness: str = "moderate"
+
+    # 是否在價格接近時取消訂單 (rebate 模式設為 False)
+    cancel_on_approach: bool = True
+
+    # 強制 post_only (rebate 模式必須開啟，確保 maker)
+    post_only: bool = False
+
+    # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
+    min_spread_ticks: int = 2
+
+    # ==================== 費率設定 ====================
+    # 負數 = 收 rebate, 正數 = 付 fee
+    maker_fee_bps: Decimal = Decimal("-1")   # GRVT maker rebate
+    taker_fee_bps: Decimal = Decimal("3")    # GRVT taker fee
+    hedge_fee_bps: Decimal = Decimal("2")    # StandX hedge fee (備用)
+
+    # ==================== 報價參數 (uptime 模式) ====================
     order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
     cancel_distance_bps: int = 3         # 價格靠近時撤單（防止成交）
     rebalance_distance_bps: int = 12     # 價格遠離時撤單重掛 (超出 10 bps 後)
@@ -127,9 +157,18 @@ class MarketMakerExecutor:
 
         # 重入保護鎖
         self._fill_lock = asyncio.Lock()
+        self._placing_lock = asyncio.Lock()  # 下單鎖，防止重複下單
+
+        # 下單中標記（防止競態條件）
+        self._placing_bid = False
+        self._placing_ask = False
 
         # 交易對規格（啟動時從 adapter 獲取）
         self._tick_size: Decimal = Decimal("0.01")  # 默認值，會在初始化時更新
+
+        # WebSocket support (for real-time fill detection)
+        self._use_websocket = False  # Will be set to True if WebSocket is available
+        self._ws_connected = False
 
     # ==================== 生命週期 ====================
 
@@ -139,7 +178,14 @@ class MarketMakerExecutor:
             logger.warning("Executor already running")
             return
 
-        logger.info("Starting Market Maker Executor...")
+        # 【診斷】啟動時打印完整配置
+        logger.info(f"Starting Market Maker Executor with config:")
+        logger.info(f"  symbol={self.config.symbol}")
+        logger.info(f"  hedge_symbol={self.config.hedge_symbol}")
+        logger.info(f"  strategy_mode={self.config.strategy_mode}")
+        logger.info(f"  aggressiveness={self.config.aggressiveness}")
+        logger.info(f"  order_size_btc={self.config.order_size_btc}")
+        logger.info(f"  max_position_btc={self.config.max_position_btc}")
         self._status = ExecutorStatus.STARTING
 
         try:
@@ -172,6 +218,15 @@ class MarketMakerExecutor:
 
         logger.info("Stopping Market Maker Executor...")
         self._running = False
+
+        # Stop WebSocket if running
+        if self._use_websocket and hasattr(self.standx, 'stop_websocket'):
+            try:
+                await self.standx.stop_websocket()
+                self._ws_connected = False
+                logger.info("[WebSocket] Stopped")
+            except Exception as e:
+                logger.warning(f"[WebSocket] Error stopping: {e}")
 
         # 取消主循環
         if self._task:
@@ -219,6 +274,9 @@ class MarketMakerExecutor:
         else:
             logger.info(f"[Init] Skipping order cancel in dry_run mode")
 
+        # Initialize WebSocket for real-time fill detection (if adapter supports it)
+        await self._init_websocket()
+
         logger.info("Executor initialized")
 
     async def _cancel_all_existing_orders(self):
@@ -246,6 +304,278 @@ class MarketMakerExecutor:
         except Exception as e:
             logger.error(f"Failed to get existing orders: {e}", exc_info=True)
 
+    async def _init_websocket(self):
+        """
+        Initialize WebSocket for real-time fill detection
+
+        If the adapter supports WebSocket (has start_websocket method),
+        use it for real-time fill detection instead of polling.
+        """
+        logger.info("=" * 60)
+        logger.info("[WebSocket] Initializing WebSocket for real-time fill detection")
+        logger.info(f"[WebSocket] Adapter type: {type(self.standx).__name__}")
+
+        # Check if adapter has WebSocket support
+        if not hasattr(self.standx, 'start_websocket'):
+            logger.info("[WebSocket] Adapter does not support WebSocket (no start_websocket method)")
+            logger.info("[WebSocket] Using POLLING mode for fill detection")
+            self._use_websocket = False
+            return
+
+        logger.info("[WebSocket] Adapter supports WebSocket, attempting to start...")
+
+        try:
+            # Register fill callback
+            if hasattr(self.standx, 'on_fill'):
+                self.standx.on_fill(self._on_ws_fill)
+                logger.info("[WebSocket] Registered fill callback")
+            else:
+                logger.warning("[WebSocket] Adapter has no on_fill method")
+
+            # Register order state callback (optional)
+            if hasattr(self.standx, 'on_order_state'):
+                self.standx.on_order_state(self._on_ws_order_state)
+                logger.info("[WebSocket] Registered order state callback")
+
+            # Start WebSocket with the trading symbol
+            # Use appropriate symbol format based on adapter type
+            adapter_type = type(self.standx).__name__
+            if adapter_type == "StandXAdapter":
+                # StandX uses BTC-USD format
+                ws_symbol = self._normalize_to_standx_symbol(self.config.symbol)
+            else:
+                # GRVT uses BTC_USDT_Perp format
+                ws_symbol = self._normalize_to_grvt_symbol(self.config.symbol)
+            logger.info(f"[WebSocket] Starting WebSocket for symbol: {ws_symbol} (adapter: {adapter_type})")
+
+            success = await self.standx.start_websocket(instruments=[ws_symbol])
+
+            if success:
+                self._use_websocket = True
+                self._ws_connected = True
+                logger.info(f"[WebSocket] SUCCESS - Using WEBSOCKET mode for fill detection")
+                logger.info(f"[WebSocket] Subscribed to: {ws_symbol}")
+            else:
+                logger.warning("[WebSocket] FAILED - Falling back to POLLING mode")
+                self._use_websocket = False
+
+        except Exception as e:
+            logger.error(f"[WebSocket] Initialization error: {e}", exc_info=True)
+            logger.warning("[WebSocket] FAILED - Falling back to POLLING mode")
+            self._use_websocket = False
+
+        logger.info(f"[WebSocket] Final mode: {'WEBSOCKET' if self._use_websocket else 'POLLING'}")
+        logger.info("=" * 60)
+
+    def _normalize_to_grvt_symbol(self, symbol: str) -> str:
+        """Convert generic symbol to GRVT format (BTC_USDT_Perp)"""
+        if '_Perp' in symbol:
+            return symbol
+
+        # Normalize separators
+        normalized = symbol.upper().replace('-', '_').replace('/', '_')
+
+        # Common conversions
+        conversions = {
+            'BTC_USD': 'BTC_USDT_Perp',
+            'BTCUSD': 'BTC_USDT_Perp',
+            'BTC_USDT': 'BTC_USDT_Perp',
+            'BTCUSDT': 'BTC_USDT_Perp',
+            'ETH_USD': 'ETH_USDT_Perp',
+            'ETHUSD': 'ETH_USDT_Perp',
+            'ETH_USDT': 'ETH_USDT_Perp',
+            'ETHUSDT': 'ETH_USDT_Perp',
+        }
+
+        if normalized in conversions:
+            return conversions[normalized]
+
+        # Default: add _USDT_Perp
+        if normalized.endswith('USDT'):
+            base = normalized[:-4]
+            return f'{base}_USDT_Perp'
+        elif normalized.endswith('_USDT'):
+            return normalized + '_Perp'
+
+        return f'{normalized}_USDT_Perp'
+
+    def _normalize_to_standx_symbol(self, symbol: str) -> str:
+        """Convert generic symbol to StandX format (BTC-USD)"""
+        if '-USD' in symbol and '_Perp' not in symbol:
+            return symbol
+
+        # Normalize: remove _Perp suffix if present
+        normalized = symbol.replace('_Perp', '').upper()
+
+        # Convert underscore format to dash format
+        # BTC_USDT -> BTC-USD
+        # BTC_USDT_Perp -> BTC-USD
+        conversions = {
+            'BTC_USDT': 'BTC-USD',
+            'BTCUSDT': 'BTC-USD',
+            'BTC_USD': 'BTC-USD',
+            'ETH_USDT': 'ETH-USD',
+            'ETHUSDT': 'ETH-USD',
+            'ETH_USD': 'ETH-USD',
+        }
+
+        if normalized in conversions:
+            return conversions[normalized]
+
+        # Default: replace underscore with dash, remove T from USDT
+        base = normalized.replace('_USDT', '').replace('USDT', '').replace('_', '')
+        return f'{base}-USD'
+
+    async def _on_ws_fill(self, fill_event):
+        """
+        Handle fill event from WebSocket
+
+        This provides real-time fill detection, much faster than polling.
+        Supports both GRVT (GRVTFillEvent) and StandX (OrderUpdate) formats.
+        """
+        # Detect event type and extract common fields
+        adapter_type = type(self.standx).__name__
+
+        if adapter_type == "StandXAdapter":
+            # StandX OrderUpdate format
+            side = fill_event.side  # "buy" or "sell"
+            fill_qty = fill_event.filled_qty
+            fill_price = fill_event.avg_fill_price or fill_event.price
+            order_id = fill_event.order_id
+            client_order_id = fill_event.client_order_id or ""
+            symbol = fill_event.symbol
+            timestamp = fill_event.timestamp
+            is_maker = None  # StandX doesn't provide is_maker in WebSocket
+
+            logger.info(
+                f"[WebSocket Fill] StandX: {side} {fill_qty} @ {fill_price} "
+                f"(order_id={order_id}, status={fill_event.status})"
+            )
+        else:
+            # GRVT GRVTFillEvent format
+            if GRVTFillEvent is None:
+                logger.warning("[WebSocket] GRVTFillEvent type not available")
+                return
+
+            side = fill_event.side
+            fill_qty = fill_event.size
+            fill_price = fill_event.price
+            order_id = fill_event.order_id
+            client_order_id = fill_event.client_order_id or ""
+            symbol = fill_event.instrument
+            timestamp = fill_event.timestamp
+            is_maker = fill_event.is_maker
+
+            logger.info(
+                f"[WebSocket Fill] GRVT: {side} {fill_qty} @ {fill_price} "
+                f"(maker={is_maker}, fee={fill_event.fee})"
+            )
+
+        # Convert WebSocket fill event to internal FillEvent
+        internal_fill = FillEvent(
+            order_id=order_id,
+            client_order_id=client_order_id,
+            symbol=symbol,
+            side=side,
+            fill_qty=fill_qty,
+            fill_price=fill_price,
+            remaining_qty=Decimal("0"),  # WebSocket fill events are per-fill, not remaining
+            is_fully_filled=True,  # Each WS event is a complete fill notification
+            timestamp=timestamp,
+            is_maker=is_maker,
+        )
+
+        # Clear the corresponding order from local state
+        if side == "buy":
+            self.state.clear_bid_order()
+        else:
+            self.state.clear_ask_order()
+
+        # Process the fill event
+        await self.on_fill_event(internal_fill)
+
+    async def _on_ws_order_state(self, order_event):
+        """
+        Handle order state event from WebSocket
+
+        Updates local order state based on exchange notifications.
+        Supports both GRVT (GRVTOrderStateEvent) and StandX (OrderUpdate) formats.
+        """
+        adapter_type = type(self.standx).__name__
+
+        if adapter_type == "StandXAdapter":
+            # StandX OrderUpdate format
+            order_id = order_event.order_id
+            client_order_id = order_event.client_order_id
+            status = order_event.status  # "open", "filled", "cancelled", "rejected"
+            filled_qty = order_event.filled_qty
+            total_qty = order_event.qty
+
+            logger.debug(
+                f"[WebSocket Order] StandX: {order_id} {status} "
+                f"filled={filled_qty}/{total_qty}"
+            )
+
+            # Normalize status for comparison
+            state = status.upper()
+        else:
+            # GRVT GRVTOrderStateEvent format
+            if GRVTOrderStateEvent is None:
+                logger.warning("[WebSocket] GRVTOrderStateEvent type not available")
+                return
+
+            order_id = order_event.order_id
+            client_order_id = getattr(order_event, 'client_order_id', None)
+            state = order_event.state
+            filled_qty = order_event.filled_size
+            total_qty = order_event.size
+
+            logger.debug(
+                f"[WebSocket Order] GRVT: {order_id} {state} "
+                f"filled={filled_qty}/{total_qty}"
+            )
+
+        # Handle different states
+        if state == "FILLED":
+            # Order fully filled - this is also covered by fill events
+            pass
+        elif state == "CANCELLED":
+            # Order was cancelled
+            logger.info(f"[WebSocket] Order cancelled: {order_id}")
+            # Clear from local state by order_id or client_order_id
+            self._clear_order_from_state(order_id, client_order_id)
+        elif state == "REJECTED":
+            # Order was rejected
+            reject_reason = getattr(order_event, 'reject_reason', 'unknown')
+            logger.warning(f"[WebSocket] Order rejected: {order_id}, reason={reject_reason}")
+            # Clear from local state
+            self._clear_order_from_state(order_id, client_order_id, record_post_only=True)
+
+    def _clear_order_from_state(self, order_id: str, client_order_id: str = None, record_post_only: bool = False):
+        """Helper to clear order from local state by order_id or client_order_id"""
+        bid = self.state.get_bid_order()
+        ask = self.state.get_ask_order()
+
+        # Try matching by order_id first, then by client_order_id
+        matched_bid = False
+        matched_ask = False
+
+        if bid:
+            if bid.order_id == order_id or (client_order_id and bid.client_order_id == client_order_id):
+                matched_bid = True
+        if ask:
+            if ask.order_id == order_id or (client_order_id and ask.client_order_id == client_order_id):
+                matched_ask = True
+
+        if matched_bid:
+            self.state.clear_bid_order()
+            if record_post_only:
+                self.state.record_post_only_reject()
+        elif matched_ask:
+            self.state.clear_ask_order()
+            if record_post_only:
+                self.state.record_post_only_reject()
+
     # ==================== 主循環 ====================
 
     async def _run_loop(self):
@@ -267,6 +597,11 @@ class MarketMakerExecutor:
         # 如果正在對沖，跳過
         if self._status == ExecutorStatus.HEDGING:
             return
+
+        # 每 10 個 tick 記錄一次 WebSocket 狀態（診斷用）
+        self._tick_count = getattr(self, '_tick_count', 0) + 1
+        if self._tick_count % 10 == 1:
+            logger.debug(f"[Tick] ws_enabled={self._use_websocket}, ws_connected={self._ws_connected}")
 
         # 如果在 PAUSED 狀態（風控模式），檢查是否可以恢復
         if self._status == ExecutorStatus.PAUSED and self.hedge_engine:
@@ -304,8 +639,16 @@ class MarketMakerExecutor:
 
         # 檢查訂單狀態 (輪詢模式：檢測成交)
         if not self.config.dry_run:
+            # 如果使用 WebSocket，不需要用倉位變化檢測成交（WebSocket 提供即時推送）
+            if not self._use_websocket:
+                # 【關鍵】每個 tick 都同步倉位，用倉位變化偵測成交（輪詢模式 fallback）
+                await self._check_position_and_fill()
+                # 如果成交後進入對沖狀態，不繼續下單
+                if self._status == ExecutorStatus.HEDGING:
+                    return
+
             await self._check_order_status()
-            # 如果成交後進入對沖狀態，不繼續下單
+            # 再次檢查（可能在 _check_order_status 中觸發成交）
             if self._status == ExecutorStatus.HEDGING:
                 return
 
@@ -327,19 +670,22 @@ class MarketMakerExecutor:
                 await self._on_status_change(self._status)
 
         # 檢查是否需要撤單 (價格太近)
-        orders_to_cancel = self.state.get_orders_to_cancel(
-            mid_price,
-            self.config.cancel_distance_bps
-        )
-        for client_order_id in orders_to_cancel:
-            # 判斷是買單還是賣單
-            bid = self.state.get_bid_order()
-            ask = self.state.get_ask_order()
-            if bid and bid.client_order_id == client_order_id:
-                self.state.record_cancel("buy", "price")
-            elif ask and ask.client_order_id == client_order_id:
-                self.state.record_cancel("sell", "price")
-            await self._cancel_order(client_order_id, reason="price too close")
+        # 只在 uptime 模式或 cancel_on_approach=True 時執行
+        # rebate 模式不撤單 - 讓訂單成交以獲得 maker rebate
+        if self.config.cancel_on_approach and self.config.strategy_mode == "uptime":
+            orders_to_cancel = self.state.get_orders_to_cancel(
+                mid_price,
+                self.config.cancel_distance_bps
+            )
+            for client_order_id in orders_to_cancel:
+                # 判斷是買單還是賣單
+                bid = self.state.get_bid_order()
+                ask = self.state.get_ask_order()
+                if bid and bid.client_order_id == client_order_id:
+                    self.state.record_cancel("buy", "price")
+                elif ask and ask.client_order_id == client_order_id:
+                    self.state.record_cancel("sell", "price")
+                await self._cancel_order(client_order_id, reason="price too close")
 
         # 檢查是否需要重掛 (價格太遠)
         should_rebalance = self.state.should_rebalance_orders(
@@ -360,34 +706,64 @@ class MarketMakerExecutor:
     # ==================== 訂單管理 ====================
 
     async def _place_orders(self, mid_price: Decimal, best_bid: Optional[Decimal] = None, best_ask: Optional[Decimal] = None):
-        """掛雙邊訂單"""
+        """掛雙邊訂單 - 含 spread 保護和 post_only 支援"""
         # 防禦性檢查：只在 RUNNING 狀態下掛單
         if self._status != ExecutorStatus.RUNNING:
             logger.debug(f"Skipping order placement, status={self._status}")
             return
 
+        # ==================== Spread 保護 (rebate 模式) ====================
+        if self.config.strategy_mode == "rebate":
+            spread = best_ask - best_bid
+            min_spread = self._tick_size * Decimal(self.config.min_spread_ticks)
+
+            if spread < min_spread:
+                # Spread 太窄：根據庫存只掛一邊，避免 post_only reject 或自成交
+                logger.warning(f"Spread too narrow: {spread}, min_spread={min_spread}, placing one side only")
+                current_position = self.state.get_standx_position()
+
+                if current_position > 0:
+                    # 多頭庫存 → 只掛 ask（想賣出）
+                    if not self.state.has_ask_order() and not self._placing_ask:
+                        await self._place_ask(best_ask, post_only=True)
+                else:
+                    # 空頭或中性庫存 → 只掛 bid（想買入）
+                    if not self.state.has_bid_order() and not self._placing_bid:
+                        await self._place_bid(best_bid, post_only=True)
+                return
+
         # 獲取當前倉位 (正=long, 負=short)
         current_position = self.state.get_standx_position()
         max_pos = self.config.max_position_btc
 
+        # 診斷日誌：下單決策（使用 DEBUG 級別減少噪音）
+        logger.debug(f"[PlaceOrders] position={current_position}, max_pos={max_pos}, has_bid={self.state.has_bid_order()}, has_ask={self.state.has_ask_order()}")
+
         # 計算報價
         bid_price, ask_price = self._calculate_prices(mid_price, best_bid, best_ask)
+
+        # 決定是否使用 post_only
+        use_post_only = self.config.post_only or self.config.strategy_mode == "rebate"
 
         # 掛買單 - 如果已經 long 太多，不再買入
         if current_position >= max_pos:
             logger.debug(f"Position too long ({current_position}), skipping bid")
         elif self.state.has_bid_order():
             logger.debug("Already have bid order, skipping")
+        elif self._placing_bid:
+            logger.debug("Bid order already being placed, skipping")
         else:
-            await self._place_bid(bid_price)
+            await self._place_bid(bid_price, post_only=use_post_only)
 
         # 掛賣單 - 如果已經 short 太多，不再賣出
         if current_position <= -max_pos:
             logger.debug(f"Position too short ({current_position}), skipping ask")
         elif self.state.has_ask_order():
             logger.debug("Already have ask order, skipping")
+        elif self._placing_ask:
+            logger.debug("Ask order already being placed, skipping")
         else:
-            await self._place_ask(ask_price)
+            await self._place_ask(ask_price, post_only=use_post_only)
 
     def _calculate_prices(
         self,
@@ -398,42 +774,89 @@ class MarketMakerExecutor:
         """
         計算報價
 
-        正確策略：
-        - bid_price = best_bid * (1 - order_distance_bps / 10000)
-        - ask_price = best_ask * (1 + order_distance_bps / 10000)
+        策略模式：
+        - uptime: 從 best_bid/best_ask 往外 order_distance_bps
+        - rebate: 根據 aggressiveness 靠近市場（但永遠在外側）
 
-        從 best_bid/best_ask 計算，而非從 mid_price 計算
+        關鍵：rebate 模式下報價永遠在 best 的「外側」
+        - bid 永遠 <= best_bid
+        - ask 永遠 >= best_ask
         """
-        distance_ratio = Decimal(self.config.order_distance_bps) / Decimal("10000")
-
-        # 從 best_bid/best_ask 計算報價（而非 mid_price）
-        bid_price = best_bid * (Decimal("1") - distance_ratio)
-        ask_price = best_ask * (Decimal("1") + distance_ratio)
-
-        # 對齊到 tick size (floor for buy, ceil for sell)
         import math
         tick_size = self._tick_size
 
-        # Floor for buy (更保守的買價)
-        bid_price = Decimal(str(math.floor(float(bid_price) / float(tick_size)) * float(tick_size)))
-        # Ceil for sell (更保守的賣價)
-        ask_price = Decimal(str(math.ceil(float(ask_price) / float(tick_size)) * float(tick_size)))
+        if self.config.strategy_mode == "rebate":
+            # Rebate 模式：根據 aggressiveness 設定距離
+            if self.config.aggressiveness == "aggressive":
+                # 貼 best（最高成交率，但仍是 maker）
+                bid_price = best_bid
+                ask_price = best_ask
+            elif self.config.aggressiveness == "moderate":
+                # 離 best 1 bps（外側，較安全）
+                offset = mid_price * Decimal("0.0001")  # 1 bps
+                bid_price = best_bid - offset   # 往下（外側）
+                ask_price = best_ask + offset   # 往上（外側）
+            else:  # conservative
+                # 離 best 2 bps（外側）
+                offset = mid_price * Decimal("0.0002")
+                bid_price = best_bid - offset
+                ask_price = best_ask + offset
 
-        logger.debug(
-            f"Quote prices: bid={bid_price} (from best_bid={best_bid}), "
-            f"ask={ask_price} (from best_ask={best_ask}), "
-            f"distance={self.config.order_distance_bps}bps"
-        )
+            # 確保不會跨價（防禦性檢查）
+            bid_price = min(bid_price, best_bid)
+            ask_price = max(ask_price, best_ask)
+
+            logger.debug(
+                f"[Rebate] Quote prices: bid={bid_price}, ask={ask_price}, "
+                f"aggressiveness={self.config.aggressiveness}"
+            )
+        else:
+            # Uptime 模式：原有邏輯
+            distance_ratio = Decimal(self.config.order_distance_bps) / Decimal("10000")
+            bid_price = best_bid * (Decimal("1") - distance_ratio)
+            ask_price = best_ask * (Decimal("1") + distance_ratio)
+
+            logger.debug(
+                f"[Uptime] Quote prices: bid={bid_price} (from best_bid={best_bid}), "
+                f"ask={ask_price} (from best_ask={best_ask}), "
+                f"distance={self.config.order_distance_bps}bps"
+            )
+
+        # 對齊到 tick size (floor for buy, ceil for sell)
+        bid_price = Decimal(str(math.floor(float(bid_price) / float(tick_size)) * float(tick_size)))
+        ask_price = Decimal(str(math.ceil(float(ask_price) / float(tick_size)) * float(tick_size)))
 
         return bid_price, ask_price
 
-    async def _place_bid(self, price: Decimal):
+    def _generate_client_order_id(self) -> str:
+        """
+        生成 client_order_id - 使用策略模式區分範圍
+
+        - uptime 模式: 0 ~ 1B
+        - rebate 模式: 1B ~ 2B
+
+        這樣可以在日誌和交易所後台識別訂單來源
+        """
+        import random
+        if self.config.strategy_mode == "rebate":
+            # Rebate 模式: 1,000,000,000 ~ 1,999,999,999
+            return str(random.randint(1_000_000_000, 1_999_999_999))
+        else:
+            # Uptime 模式: 0 ~ 999,999,999
+            return str(random.randint(0, 999_999_999))
+
+    async def _place_bid(self, price: Decimal, post_only: bool = False):
         """掛買單"""
         if self.config.dry_run:
-            logger.info(f"[DRY RUN] Would place bid: {self.config.order_size_btc} @ {price}")
+            logger.info(f"[DRY RUN] Would place bid: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
 
+        # 設置下單中標記，防止重複下單
+        self._placing_bid = True
         try:
+            # 生成策略專用的 client_order_id
+            client_order_id = self._generate_client_order_id()
+
             order = await self.standx.place_order(
                 symbol=self.config.symbol,
                 side="buy",
@@ -441,6 +864,8 @@ class MarketMakerExecutor:
                 quantity=self.config.order_size_btc,
                 price=price,
                 time_in_force=self.config.time_in_force,
+                post_only=post_only,
+                client_order_id=client_order_id,
             )
 
             order_info = OrderInfo(
@@ -464,18 +889,25 @@ class MarketMakerExecutor:
                 reason="new order",
             )
 
-            logger.info(f"Bid placed: {self.config.order_size_btc} @ {price}")
+            logger.info(f"Bid placed: {self.config.order_size_btc} @ {price} (order_id={order.order_id}, client_order_id={order.client_order_id})")
 
         except Exception as e:
             logger.error(f"Failed to place bid: {e}")
+        finally:
+            self._placing_bid = False
 
-    async def _place_ask(self, price: Decimal):
+    async def _place_ask(self, price: Decimal, post_only: bool = False):
         """掛賣單"""
         if self.config.dry_run:
-            logger.info(f"[DRY RUN] Would place ask: {self.config.order_size_btc} @ {price}")
+            logger.info(f"[DRY RUN] Would place ask: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
 
+        # 設置下單中標記，防止重複下單
+        self._placing_ask = True
         try:
+            # 生成策略專用的 client_order_id
+            client_order_id = self._generate_client_order_id()
+
             order = await self.standx.place_order(
                 symbol=self.config.symbol,
                 side="sell",
@@ -483,6 +915,8 @@ class MarketMakerExecutor:
                 quantity=self.config.order_size_btc,
                 price=price,
                 time_in_force=self.config.time_in_force,
+                post_only=post_only,
+                client_order_id=client_order_id,
             )
 
             order_info = OrderInfo(
@@ -506,10 +940,12 @@ class MarketMakerExecutor:
                 reason="new order",
             )
 
-            logger.info(f"Ask placed: {self.config.order_size_btc} @ {price}")
+            logger.info(f"Ask placed: {self.config.order_size_btc} @ {price} (order_id={order.order_id}, client_order_id={order.client_order_id})")
 
         except Exception as e:
             logger.error(f"Failed to place ask: {e}")
+        finally:
+            self._placing_ask = False
 
     async def _cancel_order(self, client_order_id: str, reason: str = ""):
         """撤銷單個訂單（帶容錯處理）"""
@@ -604,6 +1040,10 @@ class MarketMakerExecutor:
         1. 檢測部分成交（通過 remaining_qty 變化）
         2. 檢測訂單消失（等待時間閾值後處理）
         3. API 失敗時不推進 disappeared_since_ts
+
+        WebSocket 模式：
+        - 跳過訂單消失檢測（由 WebSocket 處理成交）
+        - 仍檢測部分成交（更新 remaining_qty）
         """
         import time
 
@@ -613,6 +1053,19 @@ class MarketMakerExecutor:
         if not bid and not ask:
             return  # 沒有訂單需要檢查
 
+        # WebSocket 模式：減少 API 調用頻率
+        if self._use_websocket:
+            # 只做輕量級檢查，不處理訂單消失
+            return
+
+        # 診斷日誌：本地追蹤的訂單
+        tracked_ids = []
+        if bid:
+            tracked_ids.append(f"bid:{bid.client_order_id}")
+        if ask:
+            tracked_ids.append(f"ask:{ask.client_order_id}")
+        logger.debug(f"[OrderCheck] Tracking orders: {tracked_ids}")
+
         # API 調用可能失敗，需要容錯
         try:
             open_orders = await self.standx.get_open_orders(self.config.symbol)
@@ -621,7 +1074,19 @@ class MarketMakerExecutor:
             # API 失敗時，不推進 disappeared_since_ts
             return
 
-        open_order_map = {o.client_order_id: o for o in open_orders}
+        # 診斷日誌：交易所返回的訂單
+        logger.debug(f"[OrderCheck] Exchange returned {len(open_orders)} open orders")
+        for o in open_orders:
+            logger.debug(f"[OrderCheck] Remote order: client_order_id={o.client_order_id}, order_id={o.order_id}, status={o.status}")
+
+        # 構建 open_order_map（同時用 client_order_id 和 order_id 匹配）
+        open_order_map = {}
+        for o in open_orders:
+            if o.client_order_id:
+                open_order_map[o.client_order_id] = o
+            # 同時用 order_id 作為 key（備用匹配）
+            if o.order_id:
+                open_order_map[f"oid:{o.order_id}"] = o
 
         # 收集消失的訂單（統一處理）
         disappeared_orders = []
@@ -630,15 +1095,20 @@ class MarketMakerExecutor:
             if not order:
                 continue
 
-            if order.client_order_id in open_order_map:
+            # 嘗試匹配：優先 client_order_id，其次 order_id
+            remote_order = open_order_map.get(order.client_order_id)
+            if not remote_order and order.order_id:
+                remote_order = open_order_map.get(f"oid:{order.order_id}")
+
+            if remote_order:
                 # 訂單仍存在
-                remote = open_order_map[order.client_order_id]
+                logger.debug(f"[OrderCheck] Order {order.client_order_id} still open (matched via {'client_order_id' if open_order_map.get(order.client_order_id) else 'order_id'})")
                 order.disappeared_since_ts = None  # 重置
 
                 # 部分成交檢測（用 delta）
-                if hasattr(remote, 'remaining_qty') and remote.remaining_qty is not None:
+                if hasattr(remote_order, 'remaining_qty') and remote_order.remaining_qty is not None:
                     # 容忍 remote 可能回傳 float
-                    remote_remaining = Decimal(str(remote.remaining_qty))
+                    remote_remaining = Decimal(str(remote_order.remaining_qty))
                     filled_delta = order.last_remaining_qty - remote_remaining
 
                     # filled_delta 非負保護
@@ -663,9 +1133,10 @@ class MarketMakerExecutor:
                 now = time.time()
                 if order.disappeared_since_ts is None:
                     order.disappeared_since_ts = now
-                    logger.debug(f"Order disappeared: {order.client_order_id}")
+                    logger.info(f"[OrderCheck] Order disappeared: {order.side} client_order_id={order.client_order_id}, order_id={order.order_id}")
                 elif now - order.disappeared_since_ts >= self.config.disappear_time_sec:
                     # 消失超過時間閾值
+                    logger.info(f"[OrderCheck] Order confirmed disappeared (>{self.config.disappear_time_sec}s): {order.client_order_id}")
                     disappeared_orders.append(order)
 
         # 統一處理消失的訂單
@@ -706,11 +1177,15 @@ class MarketMakerExecutor:
         - 單張消失：用倉位變化推斷，delta=0 需多輪確認
         - 多張消失：先 sync position，若 delta!=0 記 unknown_fill
         """
+        logger.info(f"[FillDetect] Handling {len(orders)} disappeared order(s): {[o.client_order_id for o in orders]}")
+
         # 先同步倉位（無論單張多張）
         old_position = self.state.get_standx_position()
         await self._sync_standx_position()
         new_position = self.state.get_standx_position()
         position_delta = new_position - old_position
+
+        logger.info(f"[FillDetect] Position sync: old={old_position}, new={new_position}, delta={position_delta}")
 
         if len(orders) > 1:
             # 【保險絲 1】多張同時消失
@@ -822,22 +1297,78 @@ class MarketMakerExecutor:
 
     # ==================== 成交處理 ====================
 
+    async def _check_position_and_fill(self):
+        """
+        【關鍵】用倉位變化偵測成交
+
+        這比「訂單消失」更可靠，因為：
+        1. 訂單可能被 rebalance 取消，但倉位不會說謊
+        2. 即使 tick_interval 較長，倉位變化還是能偵測到
+        """
+        old_position = self.state.get_standx_position()
+        new_position = await self._sync_standx_position()
+        position_delta = new_position - old_position
+
+        # 檢測倉位變化（容忍微小誤差）
+        if abs(position_delta) > Decimal("0.0001"):
+            logger.info(f"[PositionFill] Position changed: {old_position} → {new_position}, delta={position_delta}")
+
+            # 推斷成交方向和數量
+            if position_delta > 0:
+                # 倉位增加 = 買入成交
+                fill_side = "buy"
+                fill_qty = position_delta
+            else:
+                # 倉位減少 = 賣出成交
+                fill_side = "sell"
+                fill_qty = abs(position_delta)
+
+            # 創建成交事件
+            fill_event = FillEvent(
+                order_id="position_inferred",
+                client_order_id="position_inferred",
+                symbol=self.config.symbol,
+                side=fill_side,
+                fill_qty=fill_qty,
+                fill_price=self._last_mid_price or Decimal("0"),  # 用中間價估算
+                remaining_qty=Decimal("0"),
+                is_fully_filled=True,
+                timestamp=datetime.now(),
+            )
+
+            # 清除對應方向的訂單（因為已經成交了）
+            if fill_side == "buy":
+                self.state.clear_bid_order()
+            else:
+                self.state.clear_ask_order()
+
+            # 觸發成交處理流程
+            await self.on_fill_event(fill_event)
+
     async def _sync_standx_position(self) -> Decimal:
-        """從 StandX 同步實際倉位"""
+        """從主交易所同步實際倉位（GRVT MM 中這是 GRVT）"""
         try:
             positions = await self.standx.get_positions(self.config.symbol)
+            logger.debug(f"[Sync] Got {len(positions)} positions for {self.config.symbol}")
+
+            # 提取 base asset 用於匹配 (BTC, ETH, etc.)
+            symbol_base = self.config.symbol.upper().replace("-", "_").replace("/", "_").split("_")[0]
+
             for pos in positions:
-                if pos.symbol == self.config.symbol:
+                # 智能匹配：只要 base asset 相同就算匹配
+                pos_base = pos.symbol.upper().split("_")[0]
+                if pos_base == symbol_base:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
                     self.state.set_standx_position(position_qty)
-                    logger.info(f"[Sync] StandX position: {position_qty}")
+                    logger.debug(f"[Sync] Primary exchange position: {position_qty} (symbol={pos.symbol}, matched base={symbol_base})")
                     return position_qty
+
             # 沒有找到倉位，設為 0
             self.state.set_standx_position(Decimal("0"))
-            logger.info("[Sync] StandX position: 0 (no position found)")
+            logger.debug(f"[Sync] Primary exchange position: 0 (no {symbol_base} position found)")
             return Decimal("0")
         except Exception as e:
-            logger.error(f"Failed to sync StandX position: {e}")
+            logger.error(f"Failed to sync primary exchange position: {e}")
             return self.state.get_standx_position()
 
     async def _sync_hedge_position(self) -> Decimal:
@@ -857,11 +1388,11 @@ class MarketMakerExecutor:
                 if hedge_symbol in pos.symbol or pos.symbol == hedge_symbol:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
                     self.state.set_hedge_position(position_qty)
-                    logger.info(f"[Sync] Hedge (GRVT) position: {position_qty}")
+                    logger.debug(f"[Sync] Hedge (GRVT) position: {position_qty}")
                     return position_qty
             # 沒有找到倉位，設為 0
             self.state.set_hedge_position(Decimal("0"))
-            logger.info("[Sync] Hedge (GRVT) position: 0 (no position found)")
+            logger.debug("[Sync] Hedge (GRVT) position: 0 (no position found)")
             return Decimal("0")
         except Exception as e:
             logger.error(f"Failed to sync hedge position: {e}")
@@ -879,10 +1410,30 @@ class MarketMakerExecutor:
 
         【保險絲 3】使用 try/finally 確保狀態回復
         """
-        logger.info(f"Fill received: {fill.side} {fill.fill_qty} @ {fill.fill_price}")
+        logger.info(f"Fill received: {fill.side} {fill.fill_qty} @ {fill.fill_price}, is_maker={fill.is_maker}")
 
         # 更新狀態
         self.state.record_fill()
+
+        # ==================== Rebate 追蹤 (rebate 模式) ====================
+        if self.config.strategy_mode == "rebate":
+            is_maker = fill.is_maker  # 可能是 True/False/None
+
+            # 根據 is_maker 選擇費率
+            if is_maker is True:
+                fee_bps = self.config.maker_fee_bps   # 負數 = rebate
+            elif is_maker is False:
+                fee_bps = self.config.taker_fee_bps   # 正數 = 付費
+            else:
+                # Unknown - 保守估計用 taker fee
+                fee_bps = self.config.taker_fee_bps
+
+            self.state.record_rebate_fill(
+                fill.fill_qty,
+                fill.fill_price,
+                is_maker=is_maker,
+                fee_bps=fee_bps
+            )
 
         # 記錄操作歷史
         self.state.record_operation(
@@ -926,6 +1477,22 @@ class MarketMakerExecutor:
 
                 # 記錄對沖結果
                 self.state.record_hedge(hedge_result.success)
+
+                # ==================== 記錄對沖成本 (rebate 模式) ====================
+                if self.config.strategy_mode == "rebate" and hedge_result.success:
+                    # 計算滑點損失
+                    if hedge_result.execution_price and hedge_result.hedge_side:
+                        # 用 hedge_side 決定 sign
+                        side_sign = Decimal("1") if hedge_result.hedge_side == "buy" else Decimal("-1")
+                        slippage_loss = (hedge_result.execution_price - fill.fill_price) * fill.fill_qty * side_sign
+                    else:
+                        # 回退：用 fill_price 估算
+                        slippage_loss = Decimal("0")
+
+                    self.state.record_hedge_cost(
+                        fee_paid=hedge_result.fee_paid,
+                        slippage_loss=slippage_loss
+                    )
 
                 # 對沖完成後，同步對沖交易所實際倉位
                 await self._sync_hedge_position()
@@ -1004,7 +1571,7 @@ class MarketMakerExecutor:
         if self._started_at:
             uptime = (datetime.now() - self._started_at).total_seconds()
 
-        return {
+        stats = {
             "status": self._status.value,
             "uptime_seconds": uptime,
             "total_quotes": self._total_quotes,
@@ -1013,7 +1580,16 @@ class MarketMakerExecutor:
             "volatility_bps": self.state.get_volatility_bps(),
             **self.state.get_stats(),
             "hedge_stats": self.hedge_engine.get_stats() if self.hedge_engine else None,
+            # WebSocket status
+            "websocket_enabled": self._use_websocket,
+            "websocket_connected": self._ws_connected,
         }
+
+        # Add WebSocket stats if available
+        if self._use_websocket and hasattr(self.standx, 'get_ws_stats'):
+            stats["websocket_stats"] = self.standx.get_ws_stats()
+
+        return stats
 
     def to_dict(self) -> dict:
         """序列化"""
@@ -1026,6 +1602,12 @@ class MarketMakerExecutor:
                 "max_position_btc": float(self.config.max_position_btc),
                 "volatility_threshold_bps": self.config.volatility_threshold_bps,
                 "dry_run": self.config.dry_run,
+                # 策略模式參數
+                "strategy_mode": self.config.strategy_mode,
+                "aggressiveness": self.config.aggressiveness,
+                "post_only": self.config.post_only,
+                "cancel_on_approach": self.config.cancel_on_approach,
+                "min_spread_ticks": self.config.min_spread_ticks,
             },
             "state": self.state.to_dict(),
             "stats": self.get_stats(),

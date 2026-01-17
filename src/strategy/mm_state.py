@@ -62,6 +62,10 @@ class FillEvent:
     is_fully_filled: bool
     timestamp: datetime = field(default_factory=datetime.now)
 
+    # Maker/Taker 狀態 (rebate 追蹤用)
+    # None = unknown (adapter 未實作), True = maker, False = taker
+    is_maker: Optional[bool] = None
+
 
 @dataclass
 class OperationRecord:
@@ -151,6 +155,19 @@ class MMState:
         # 操作歷史記錄 (最多保留 50 筆)
         self._operation_history: List[OperationRecord] = []
         self._max_history_size = 50
+
+        # ==================== Rebate 追蹤 (GRVT rebate 模式) ====================
+        self._maker_volume: Decimal = Decimal("0")       # Maker 成交額
+        self._taker_volume: Decimal = Decimal("0")       # Taker 成交額
+        self._rebates_received: Decimal = Decimal("0")   # 收到的 rebate
+        self._fees_paid: Decimal = Decimal("0")          # 付出的手續費
+        self._hedge_fees: Decimal = Decimal("0")         # 對沖手續費
+        self._hedge_slippage: Decimal = Decimal("0")     # 對沖滑點損失
+        self._maker_fill_count: int = 0
+        self._taker_fill_count: int = 0
+        self._unknown_fill_count: int = 0                # adapter 未實作 is_maker
+        self._post_only_rejects: int = 0                 # post_only 被拒次數
+        self._raw_fee_sum: Decimal = Decimal("0")        # 原始符號費用總和（對帳用）
 
     # ==================== 訂單管理 ====================
 
@@ -420,6 +437,108 @@ class MMState:
         """記錄未知成交（多張消失+倉位變化）"""
         with self._lock:
             self._unknown_fills_detected += 1
+
+    # ==================== Rebate 追蹤方法 ====================
+
+    def record_rebate_fill(
+        self,
+        fill_qty: Decimal,
+        fill_price: Decimal,
+        is_maker: Optional[bool],
+        fee_bps: Decimal
+    ):
+        """
+        記錄成交 (rebate 模式) - 保持原始符號
+
+        Args:
+            fill_qty: 成交數量
+            fill_price: 成交價格
+            is_maker: True=maker, False=taker, None=unknown
+            fee_bps: 費率 (負數=rebate, 正數=fee)
+        """
+        notional = fill_qty * fill_price
+
+        # 計算 fee (正=付錢, 負=收錢)
+        fee = notional * fee_bps / Decimal("10000")
+
+        with self._lock:
+            self._raw_fee_sum += fee  # 保留原始符號方便對帳
+
+            # 記錄 maker/taker/unknown
+            if is_maker is True:
+                self._maker_volume += notional
+                self._maker_fill_count += 1
+            elif is_maker is False:
+                self._taker_volume += notional
+                self._taker_fill_count += 1
+            else:
+                # is_maker is None → unknown
+                self._unknown_fill_count += 1
+                logger.warning("Fill without is_maker flag - adapter needs update")
+
+            # 分開記錄收入和支出
+            if fee < 0:
+                self._rebates_received += abs(fee)
+            else:
+                self._fees_paid += fee
+
+    def record_hedge_cost(
+        self,
+        fee_paid: Decimal,
+        slippage_loss: Decimal
+    ):
+        """
+        記錄對沖成本 - 拆分手續費和滑點
+
+        Args:
+            fee_paid: 對沖手續費
+            slippage_loss: 滑點損失 (正數=損失, 負數=獲利)
+        """
+        with self._lock:
+            self._hedge_fees += fee_paid
+            self._hedge_slippage += slippage_loss
+
+    def record_post_only_reject(self):
+        """記錄 post_only 被拒"""
+        with self._lock:
+            self._post_only_rejects += 1
+
+    def get_rebate_stats(self) -> Dict:
+        """
+        獲取 rebate 統計 (含淨收益)
+
+        Returns:
+            dict: rebate 相關統計數據
+        """
+        with self._lock:
+            total_costs = self._fees_paid + self._hedge_fees + self._hedge_slippage
+            net_profit = self._rebates_received - total_costs
+            total_fills = self._maker_fill_count + self._taker_fill_count + self._unknown_fill_count
+            maker_ratio = (
+                self._maker_fill_count / total_fills * 100
+                if total_fills > 0 else 0
+            )
+            unknown_ratio = (
+                self._unknown_fill_count / total_fills * 100
+                if total_fills > 0 else 0
+            )
+            return {
+                "maker_volume_usdt": float(self._maker_volume),
+                "taker_volume_usdt": float(self._taker_volume),
+                "rebates_received_usdt": float(self._rebates_received),
+                "fees_paid_usdt": float(self._fees_paid),
+                "hedge_fees_usdt": float(self._hedge_fees),
+                "hedge_slippage_usdt": float(self._hedge_slippage),
+                "raw_fee_sum_usdt": float(self._raw_fee_sum),
+                "net_profit_usdt": float(net_profit),
+                "total_fills": total_fills,
+                "maker_fill_count": self._maker_fill_count,
+                "taker_fill_count": self._taker_fill_count,
+                "unknown_fill_count": self._unknown_fill_count,
+                "maker_ratio_pct": maker_ratio,
+                "unknown_ratio_pct": unknown_ratio,
+                "post_only_rejects": self._post_only_rejects,
+            }
 
     def record_operation(
         self,

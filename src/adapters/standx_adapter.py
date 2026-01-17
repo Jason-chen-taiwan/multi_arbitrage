@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable, Awaitable
 from decimal import Decimal
 from datetime import datetime
 from uuid import uuid4
@@ -17,6 +17,7 @@ from eth_account import Account
 
 from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook, SymbolInfo, Trade
 from .order_validator import validate_and_normalize_order
+from .standx_ws_client import StandXWebSocketClient, OrderUpdate
 from ..auth import AsyncStandXAuth
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,12 @@ class StandXAdapter(BasePerpAdapter):
         # Symbol specs cache
         self._symbol_specs: Dict[str, SymbolInfo] = {}
         self._symbol_specs_ts: Dict[str, float] = {}
+
+        # WebSocket support
+        self._ws_client: Optional[StandXWebSocketClient] = None
+        self._ws_task: Optional[asyncio.Task] = None
+        self._fill_callbacks: List[Any] = []
+        self._order_state_callbacks: List[Any] = []
     
     async def connect(self) -> bool:
         """連接到 StandX 並完成認證"""
@@ -692,3 +699,161 @@ class StandXAdapter(BasePerpAdapter):
             created_at=data.get('created_at'),
             updated_at=data.get('updated_at'),
         )
+
+    # ==================== WebSocket 支援 ====================
+
+    def on_fill(self, callback):
+        """
+        註冊成交回調
+
+        Args:
+            callback: async def callback(order_update: OrderUpdate)
+        """
+        self._fill_callbacks.append(callback)
+        logger.info(f"[StandX WS] Registered fill callback: {callback.__name__}")
+
+    def on_order_state(self, callback):
+        """
+        註冊訂單狀態回調
+
+        Args:
+            callback: async def callback(order_update: OrderUpdate)
+        """
+        self._order_state_callbacks.append(callback)
+        logger.info(f"[StandX WS] Registered order state callback: {callback.__name__}")
+
+    async def start_websocket(self, instruments: List[str] = None) -> bool:
+        """
+        啟動 WebSocket 連接
+
+        Args:
+            instruments: 要訂閱的交易對列表
+
+        Returns:
+            bool: 是否成功啟動
+        """
+        logger.info("=" * 60)
+        logger.info("[StandX WS] ========== Starting WebSocket initialization ==========")
+        logger.info(f"[StandX WS] Auth mode: {self._auth_mode}")
+        logger.info(f"[StandX WS] Instruments: {instruments}")
+
+        try:
+            # 獲取認證 token
+            auth_token = None
+            if self._auth_mode == "token":
+                auth_token = self.auth._api_token
+                logger.info(f"[StandX WS] Using API token (length: {len(auth_token) if auth_token else 0})")
+            elif self.auth.access_token:
+                auth_token = self.auth.access_token
+                logger.info(f"[StandX WS] Using access token (length: {len(auth_token)})")
+
+            if not auth_token:
+                logger.warning("[StandX WS] No auth token available, user channels will be disabled")
+
+            # 創建 WebSocket 客戶端 (使用正確的官方 endpoint)
+            # URL: wss://perps.standx.com/ws-stream/v1
+            self._ws_client = StandXWebSocketClient(
+                auth_token=auth_token,
+                reconnect_delay=5,
+            )
+            logger.info(f"[StandX WS] WebSocket URL: {self._ws_client.ws_url}")
+
+            # 註冊內部回調（轉發到外部回調）
+            async def internal_fill_callback(order_update: OrderUpdate):
+                """內部成交回調 - 轉發到外部"""
+                logger.info(f"[StandX WS] Fill event: {order_update.side} {order_update.filled_qty} @ {order_update.avg_fill_price or order_update.price}")
+                for callback in self._fill_callbacks:
+                    try:
+                        await callback(order_update)
+                    except Exception as e:
+                        logger.error(f"[StandX WS] Fill callback error: {e}")
+
+            async def internal_order_callback(order_update: OrderUpdate):
+                """內部訂單回調 - 轉發到外部"""
+                logger.debug(f"[StandX WS] Order state: {order_update.client_order_id} -> {order_update.status}")
+                for callback in self._order_state_callbacks:
+                    try:
+                        await callback(order_update)
+                    except Exception as e:
+                        logger.error(f"[StandX WS] Order state callback error: {e}")
+
+            self._ws_client.on_fill(internal_fill_callback)
+            self._ws_client.on_order(internal_order_callback)
+
+            # 連接 WebSocket
+            logger.info("[StandX WS] Connecting to WebSocket...")
+            success = await self._ws_client.connect()
+
+            if not success:
+                logger.error("[StandX WS] Failed to connect WebSocket")
+                return False
+
+            logger.info(f"[StandX WS] Connected! Market: {self._ws_client.is_connected}, User: {self._ws_client.is_user_connected}")
+
+            # 訂閱交易對
+            if instruments:
+                for symbol in instruments:
+                    await self._ws_client.subscribe_symbol(symbol)
+                    logger.info(f"[StandX WS] Subscribed to {symbol}")
+
+            # 訂閱訂單和倉位更新
+            if self._ws_client.is_user_connected:
+                await self._ws_client.subscribe_orders()
+                await self._ws_client.subscribe_positions()
+                logger.info("[StandX WS] Subscribed to orders and positions")
+
+            # 啟動消息處理循環
+            self._ws_task = asyncio.create_task(self._ws_client.run())
+            logger.info("[StandX WS] WebSocket message loop started")
+            logger.info("=" * 60)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[StandX WS] Failed to start WebSocket: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    async def stop_websocket(self):
+        """停止 WebSocket 連接"""
+        logger.info("[StandX WS] Stopping WebSocket...")
+
+        try:
+            if self._ws_task:
+                self._ws_task.cancel()
+                try:
+                    await self._ws_task
+                except asyncio.CancelledError:
+                    pass
+                self._ws_task = None
+
+            if self._ws_client:
+                await self._ws_client.disconnect()
+                self._ws_client = None
+
+            logger.info("[StandX WS] WebSocket stopped")
+
+        except Exception as e:
+            logger.error(f"[StandX WS] Error stopping WebSocket: {e}")
+
+    @property
+    def ws_connected(self) -> bool:
+        """WebSocket 是否已連接"""
+        if self._ws_client:
+            # 市場數據連接成功即可使用 WebSocket 模式
+            # 用戶頻道認證是可選的 (用於成交即時通知)
+            return self._ws_client.is_connected
+        return False
+
+    def get_ws_stats(self) -> Dict:
+        """獲取 WebSocket 統計"""
+        if self._ws_client:
+            return self._ws_client.get_stats()
+        return {
+            "connected": False,
+            "authenticated": False,
+            "message_count": 0,
+            "subscribed_symbols": [],
+            "ws_url": "wss://perps.standx.com/ws-stream/v1",
+        }

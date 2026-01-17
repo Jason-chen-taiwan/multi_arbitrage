@@ -6,24 +6,60 @@ symbols:
   primary: "BTC_USDT_Perp"
   hedge: "BTC-USD"  # StandX 對沖交易對
 
+# ==================== 策略模式 ====================
+strategy:
+  # 策略模式: "uptime" (StandX uptime 獎勵) | "rebate" (GRVT maker rebate)
+  mode: "rebate"
+
+  # 報價激進度 (rebate 模式用)
+  # - aggressive: 貼 best_bid/best_ask（最高成交率）
+  # - moderate: 離 best 1 bps（外側，較安全）
+  # - conservative: 離 best 2 bps（外側）
+  aggressiveness: "aggressive"
+
 # 報價參數
 quote:
-  # 掛單距離 mark price (bps)
+  # 掛單距離 mark price (bps) - uptime 模式用
   order_distance_bps: 8
 
-  # 價格靠近時撤單距離 (bps)
+  # 價格靠近時撤單距離 (bps) - uptime 模式用
   cancel_distance_bps: 3
 
+  # 是否在價格接近時取消訂單 (rebate 模式設為 false)
+  cancel_on_approach: false
+
   # 價格遠離時重掛距離 (bps)
-  rebalance_distance_bps: 12
+  rebalance_distance_bps: 20
+
+  # 強制 post_only (rebate 模式建議開啟，確保 maker)
+  post_only: true
+
+  # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
+  # 設為 1 允許在 1 tick spread 時雙邊掛單
+  min_spread_ticks: 1
 
 # 倉位參數
 position:
   # 單邊訂單量 (BTC)
-  order_size_btc: 0.002
+  order_size_btc: 0.001
 
   # 最大持倉量 (BTC)
-  max_position_btc: 1
+  max_position_btc: 0.005
+
+# ==================== 費率設定 ====================
+# 負數 = 收 rebate, 正數 = 付 fee
+fees:
+  # GRVT maker rebate (依 tier 可能不同)
+  maker_bps: -1
+
+  # GRVT taker fee (依 tier 可能不同)
+  taker_bps: 3
+
+  # StandX hedge fee (備用估算)
+  hedge_bps: 2
+
+  # 是否啟用 rebate 追蹤
+  track_enabled: true
 
 # 波動率控制
 volatility:
@@ -40,8 +76,8 @@ order:
 
 # 執行參數
 execution:
-  # 主循環間隔 (毫秒)
-  tick_interval_ms: 100
+  # 主循環間隔 (毫秒) - GRVT 有嚴格 rate limit，需要較長間隔
+  tick_interval_ms: 2000
 
   # 訂單消失判定時間 (秒)
   disappear_time_sec: 2.0
