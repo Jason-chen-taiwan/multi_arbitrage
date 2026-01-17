@@ -562,8 +562,11 @@ class GRVTAdapter(BasePerpAdapter):
 
     def _get_positions_sync(self, symbol: Optional[str] = None) -> List[Position]:
         """同步查詢持倉"""
+        account_id = self.trading_account_id or self._main_account_id
+        logger.debug(f"[GRVT] Querying positions: sub_account_id={account_id}, symbol={symbol}")
+
         req = ApiPositionsRequest(
-            sub_account_id=self.trading_account_id or self._main_account_id,
+            sub_account_id=account_id,
             kind=["PERPETUAL"],
             base=[],
             quote=[]
@@ -572,12 +575,17 @@ class GRVTAdapter(BasePerpAdapter):
         result = self._client.positions_v1(req)
 
         if isinstance(result, GrvtError):
+            logger.error(f"[GRVT] positions_v1 error: {result}")
             raise Exception(f"API Error: {result}")
+
+        # 診斷：記錄原始回應
+        raw_count = len(result.result) if result.result else 0
+        logger.debug(f"[GRVT] positions_v1 returned {raw_count} positions")
 
         positions = []
         for pos_data in result.result or []:
-            # 診斷日誌
-            logger.info(f"[GRVT] Position data: instrument={pos_data.instrument}, balance={pos_data.balance}")
+            # 診斷日誌 - 使用正確的屬性名 'size' (不是 'balance')
+            logger.info(f"[GRVT] Position data: instrument={pos_data.instrument}, size={pos_data.size}")
 
             # 過濾 symbol（更智能的匹配）
             if symbol:
@@ -590,15 +598,17 @@ class GRVTAdapter(BasePerpAdapter):
                     logger.debug(f"[GRVT] Skipping position: {pos_data.instrument} (base {instrument_base} != {symbol_base})")
                     continue
 
+            # GRVT SDK 使用 'size' 屬性 (正數=long, 負數=short)
+            position_size = Decimal(str(pos_data.size or "0"))
             position = Position(
                 symbol=pos_data.instrument,
-                side="long" if Decimal(str(pos_data.balance)) > 0 else "short",
-                size=abs(Decimal(str(pos_data.balance))),
+                side="long" if position_size > 0 else "short",
+                size=abs(position_size),
                 entry_price=Decimal(str(pos_data.entry_price or "0")),
                 mark_price=Decimal(str(pos_data.mark_price or "0")),
-                liquidation_price=Decimal(str(pos_data.liquidation_price or "0")),
+                liquidation_price=Decimal(str(pos_data.est_liquidation_price or "0")),
                 unrealized_pnl=Decimal(str(pos_data.unrealized_pnl or "0")),
-                leverage=1,
+                leverage=int(pos_data.leverage) if pos_data.leverage else 1,
                 margin=Decimal(str(pos_data.notional or "0"))
             )
             positions.append(position)
