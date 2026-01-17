@@ -11,11 +11,11 @@ symbols:
 quote:
   # 掛單距離 mark price (bps)
   # 需要 < 10 bps 才符合 StandX uptime 要求
-  order_distance_bps: 7
+  order_distance_bps: 5
 
   # 價格靠近時撤單距離 (bps)
   # 防止訂單被成交
-  cancel_distance_bps: 5
+  cancel_distance_bps: 3
 
   # 價格遠離時重掛距離 (bps)
   # 超出 uptime 要求後重新掛單
@@ -29,7 +29,7 @@ quote:
 position:
   # 單邊訂單量 (BTC)
   # $661 餘額，保守配置 (~$40 雙邊保證金，約 6%)
-  order_size_btc: 0.01
+  order_size_btc: 0.02
 
   # 最大持倉量 (BTC)
   # 設為訂單大小的 5 倍，留足對沖空間

@@ -80,26 +80,27 @@ class GRVTAdapter(BasePerpAdapter):
     SYMBOL_SPECS_TTL_SEC = 3600  # 1 小時
 
     # Fallback symbol specs (API 失敗時使用)
+    # GRVT tick size 通常為 0.1（BTC/ETH）或 0.01（小幣）
     _FALLBACK_SPECS = {
         "BTC_USDT_Perp": SymbolInfo(
             symbol="BTC_USDT_Perp",
             min_qty=Decimal("0.001"),
             qty_step=Decimal("0.001"),
-            price_tick=Decimal("0.01"),
+            price_tick=Decimal("0.1"),  # GRVT BTC tick = 0.1
             min_notional=Decimal("10"),
         ),
         "ETH_USDT_Perp": SymbolInfo(
             symbol="ETH_USDT_Perp",
             min_qty=Decimal("0.01"),
             qty_step=Decimal("0.01"),
-            price_tick=Decimal("0.01"),
+            price_tick=Decimal("0.01"),  # GRVT ETH tick = 0.01
             min_notional=Decimal("10"),
         ),
         "SOL_USDT_Perp": SymbolInfo(
             symbol="SOL_USDT_Perp",
             min_qty=Decimal("0.1"),
             qty_step=Decimal("0.1"),
-            price_tick=Decimal("0.01"),
+            price_tick=Decimal("0.01"),  # GRVT SOL tick = 0.01
             min_notional=Decimal("10"),
         ),
     }
@@ -431,6 +432,10 @@ class GRVTAdapter(BasePerpAdapter):
         # 轉換參數
         is_bid = side in [OrderSide.BUY, "buy", "long"]
 
+        # 計算名義價值並記錄
+        notional = float(quantity) * float(price) if price else 0
+        logger.info(f"[GRVT Order] {grvt_symbol} {side} qty={quantity} price={price} notional=${notional:.2f}")
+
         # 構建訂單腿
         legs = [OrderLeg(
             instrument=grvt_symbol,
@@ -710,15 +715,27 @@ class GRVTAdapter(BasePerpAdapter):
         # TODO: 實現從 GRVT API 獲取 instruments
         # instruments = await asyncio.to_thread(self._get_instruments_sync)
 
-        # 使用默認值
-        self._contract_specs[symbol] = ContractSpec(
-            symbol=symbol,
-            min_qty=Decimal("0.001"),
-            qty_step=Decimal("0.001"),
-            price_tick=Decimal("0.01"),
-            contract_multiplier=Decimal("1"),
-            qty_must_be_integer=False,
-        )
+        # 使用 fallback specs 的值（如果有）
+        fallback = self._FALLBACK_SPECS.get(symbol)
+        if fallback:
+            self._contract_specs[symbol] = ContractSpec(
+                symbol=symbol,
+                min_qty=fallback.min_qty,
+                qty_step=fallback.qty_step,
+                price_tick=fallback.price_tick,
+                contract_multiplier=Decimal("1"),
+                qty_must_be_integer=False,
+            )
+        else:
+            # 默認值（BTC tick = 0.1）
+            self._contract_specs[symbol] = ContractSpec(
+                symbol=symbol,
+                min_qty=Decimal("0.001"),
+                qty_step=Decimal("0.001"),
+                price_tick=Decimal("0.1"),
+                contract_multiplier=Decimal("1"),
+                qty_must_be_integer=False,
+            )
 
         return self._contract_specs[symbol]
 

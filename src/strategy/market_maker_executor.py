@@ -128,6 +128,9 @@ class MarketMakerExecutor:
         # 重入保護鎖
         self._fill_lock = asyncio.Lock()
 
+        # 交易對規格（啟動時從 adapter 獲取）
+        self._tick_size: Decimal = Decimal("0.01")  # 默認值，會在初始化時更新
+
     # ==================== 生命週期 ====================
 
     async def start(self):
@@ -190,6 +193,17 @@ class MarketMakerExecutor:
     async def _initialize(self):
         """初始化：同步狀態"""
         logger.info("Initializing executor state...")
+
+        # 獲取交易對規格（tick size）
+        try:
+            symbol_info = await self.standx.get_symbol_info(self.config.symbol)
+            if symbol_info and symbol_info.price_tick:
+                self._tick_size = symbol_info.price_tick
+                logger.info(f"[Init] Symbol {self.config.symbol} tick_size={self._tick_size}")
+            else:
+                logger.warning(f"[Init] Could not get tick_size for {self.config.symbol}, using default {self._tick_size}")
+        except Exception as e:
+            logger.warning(f"[Init] Failed to get symbol info: {e}, using default tick_size={self._tick_size}")
 
         # 同步 StandX 倉位
         await self._sync_standx_position()
@@ -397,7 +411,7 @@ class MarketMakerExecutor:
 
         # 對齊到 tick size (floor for buy, ceil for sell)
         import math
-        tick_size = Decimal("0.01")
+        tick_size = self._tick_size
 
         # Floor for buy (更保守的買價)
         bid_price = Decimal(str(math.floor(float(bid_price) / float(tick_size)) * float(tick_size)))

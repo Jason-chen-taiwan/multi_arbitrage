@@ -20,7 +20,7 @@ quote:
 # 倉位參數
 position:
   # 單邊訂單量 (BTC)
-  order_size_btc: 0.01
+  order_size_btc: 0.002
 
   # 最大持倉量 (BTC)
   max_position_btc: 1
