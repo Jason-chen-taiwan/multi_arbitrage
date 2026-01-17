@@ -124,8 +124,22 @@ class StandXAdapter(BasePerpAdapter):
     async def connect(self) -> bool:
         """連接到 StandX 並完成認證"""
         try:
-            # Create HTTP session
-            self.session = aiohttp.ClientSession()
+            # Create HTTP session with longer timeout for DNS issues
+            timeout = aiohttp.ClientTimeout(
+                total=30,        # 總超時 30 秒
+                connect=15,      # 連接超時 15 秒（包含 DNS）
+                sock_connect=10, # Socket 連接超時 10 秒
+                sock_read=10     # Socket 讀取超時 10 秒
+            )
+            connector = aiohttp.TCPConnector(
+                limit=10,        # 最大連接數
+                ttl_dns_cache=300,  # DNS 快取 5 分鐘
+                use_dns_cache=True,
+            )
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            )
 
             if self._auth_mode == "token":
                 # Token 模式: 無需認證，直接使用提供的 token
@@ -288,14 +302,15 @@ class StandXAdapter(BasePerpAdapter):
         endpoint: str,
         params: Optional[Dict] = None,
         data: Optional[Dict] = None,
-        sign_body: bool = False
+        sign_body: bool = False,
+        max_retries: int = 3
     ) -> Dict:
-        """Make authenticated API request."""
+        """Make authenticated API request with retry for network errors."""
         if not self.session:
             raise Exception("Not connected. Call connect() first.")
-        
+
         url = f"{self.perps_url}{endpoint}"
-        
+
         # Prepare headers
         payload_str = json.dumps(data) if data else None
         headers = self.auth.get_auth_headers(
@@ -312,33 +327,48 @@ class StandXAdapter(BasePerpAdapter):
         # Add session ID for order operations
         if '/order' in endpoint or '/cancel' in endpoint:
             headers['x-session-id'] = self.session_id
-        
-        # Make request
-        async with self.session.request(
-            method=method,
-            url=url,
-            params=params,
-            json=data if data else None,
-            headers=headers
-        ) as response:
-            # 處理錯誤狀態碼
-            if response.status >= 400:
-                error_text = await response.text()
 
-                # 400 錯誤：詳細記錄請求資料（遮罩敏感資訊）
-                if response.status == 400:
-                    safe_body = self._redact_sensitive(data or {})
-                    logger.error(
-                        f"StandX API 400 Bad Request:\n"
-                        f"  URL: {url}\n"
-                        f"  Method: {method}\n"
-                        f"  Request Body: {json.dumps(safe_body, indent=2)}\n"
-                        f"  Response: {error_text}"
-                    )
+        # Make request with retry for network errors
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=data if data else None,
+                    headers=headers
+                ) as response:
+                    # 處理錯誤狀態碼
+                    if response.status >= 400:
+                        error_text = await response.text()
 
-                response.raise_for_status()
+                        # 400 錯誤：詳細記錄請求資料（遮罩敏感資訊）
+                        if response.status == 400:
+                            safe_body = self._redact_sensitive(data or {})
+                            logger.error(
+                                f"StandX API 400 Bad Request:\n"
+                                f"  URL: {url}\n"
+                                f"  Method: {method}\n"
+                                f"  Request Body: {json.dumps(safe_body, indent=2)}\n"
+                                f"  Response: {error_text}"
+                            )
 
-            return await response.json()
+                        response.raise_for_status()
+
+                    return await response.json()
+
+            except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # 2, 4, 6 秒
+                    logger.warning(f"StandX connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"StandX connection failed after {max_retries} attempts: {e}")
+                    raise
+
+        raise last_error
     
     async def get_balance(self) -> Balance:
         """查詢賬戶餘額"""
