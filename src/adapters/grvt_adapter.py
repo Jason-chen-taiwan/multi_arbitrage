@@ -819,18 +819,22 @@ class GRVTAdapter(BasePerpAdapter):
         """解析訂單數據"""
         leg = order_data.legs[0] if order_data.legs else None
 
+        # 安全獲取屬性（GRVT SDK 不同版本可能有不同屬性名）
+        filled_size = getattr(order_data, 'filled_size', None) or getattr(order_data, 'filled_qty', None) or "0"
+        remaining_size = getattr(order_data, 'remaining_size', None) or getattr(order_data, 'remaining_qty', None) or "0"
+
         return Order(
             order_id=order_data.order_id,
             symbol=leg.instrument if leg else "",
             side="buy" if leg and leg.is_buying_asset else "sell",
-            order_type="market" if order_data.is_market else "limit",
+            order_type="market" if getattr(order_data, 'is_market', False) else "limit",
             price=Decimal(str(leg.limit_price)) if leg else Decimal("0"),
             quantity=Decimal(str(leg.size)) if leg else Decimal("0"),
-            filled_quantity=Decimal(str(order_data.filled_size or "0")),
-            remaining_quantity=Decimal(str(order_data.remaining_size or "0")),
-            status=order_data.state or "UNKNOWN",
+            filled_quantity=Decimal(str(filled_size)),
+            remaining_quantity=Decimal(str(remaining_size)),
+            status=getattr(order_data, 'state', None) or "UNKNOWN",
             timestamp=datetime.now(),
-            time_in_force=order_data.time_in_force or "GTC",
-            reduce_only=order_data.reduce_only or False,
-            post_only=order_data.post_only or False
+            time_in_force=getattr(order_data, 'time_in_force', None) or "GTC",
+            reduce_only=getattr(order_data, 'reduce_only', False),
+            post_only=getattr(order_data, 'post_only', False)
         )
