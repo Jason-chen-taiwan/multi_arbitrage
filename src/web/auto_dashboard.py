@@ -1300,46 +1300,96 @@ async def root():
                     document.getElementById('grvtMmStatusBadge').style.background = '#2a3347';
                 }
 
-                // 更新統計
+                // 更新統計 (使用正確的欄位名稱)
                 if (exec.state) {
                     const state = exec.state;
-                    document.getElementById('grvtMmFillCount').textContent = state.total_fills || 0;
-                    document.getElementById('grvtMmPnl').textContent = '$' + (state.realized_pnl || 0).toFixed(2);
+                    const stats = state.stats || {};
 
-                    // 撤單統計
+                    // 成交次數和 PnL
+                    document.getElementById('grvtMmFillCount').textContent = state.fill_count || 0;
+                    document.getElementById('grvtMmPnl').textContent = '$' + (state.pnl_usd || 0).toFixed(2);
+
+                    // 撤單統計 (從 stats 物件取得)
                     document.getElementById('grvtMmBidFillRate').textContent =
-                        `${state.bid_cancels || 0}/${state.bid_queue_cancels || 0}/${state.bid_rebalances || 0}`;
+                        `${stats.bid_cancels || 0}/${stats.bid_queue_cancels || 0}/${stats.bid_rebalances || 0}`;
                     document.getElementById('grvtMmAskFillRate').textContent =
-                        `${state.ask_cancels || 0}/${state.ask_queue_cancels || 0}/${state.ask_rebalances || 0}`;
+                        `${stats.ask_cancels || 0}/${stats.ask_queue_cancels || 0}/${stats.ask_rebalances || 0}`;
 
                     // 波動率
                     document.getElementById('grvtMmVolatility').textContent = (state.volatility_bps || 0).toFixed(1);
-                    document.getElementById('grvtMmVolatilityPauseCount').textContent = state.volatility_pauses || 0;
+                    document.getElementById('grvtMmVolatilityPauseCount').textContent = stats.volatility_pause_count || 0;
 
-                    // 運行時間
-                    const runtimeSec = state.runtime_seconds || 0;
+                    // 運行時間 (從 executor.stats 取得)
+                    const runtimeSec = exec.stats?.uptime_seconds || 0;
                     const hours = Math.floor(runtimeSec / 3600);
                     const minutes = Math.floor((runtimeSec % 3600) / 60);
                     document.getElementById('grvtMmRuntime').textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
                     document.getElementById('grvtMmTotalQuotes').textContent = `${Math.floor(runtimeSec)}秒`;
 
-                    // 當前掛單價格
-                    if (state.current_bid_price) {
-                        document.getElementById('grvtMmSuggestedBid').textContent = parseFloat(state.current_bid_price).toFixed(2);
+                    // 當前掛單價格 (從 bid_order/ask_order 取得)
+                    if (state.bid_order && state.bid_order.price) {
+                        document.getElementById('grvtMmSuggestedBid').textContent = '$' + parseFloat(state.bid_order.price).toFixed(1);
+                    } else {
+                        document.getElementById('grvtMmSuggestedBid').textContent = '-';
                     }
-                    if (state.current_ask_price) {
-                        document.getElementById('grvtMmSuggestedAsk').textContent = parseFloat(state.current_ask_price).toFixed(2);
+                    if (state.ask_order && state.ask_order.price) {
+                        document.getElementById('grvtMmSuggestedAsk').textContent = '$' + parseFloat(state.ask_order.price).toFixed(1);
+                    } else {
+                        document.getElementById('grvtMmSuggestedAsk').textContent = '-';
                     }
 
                     // 訂單狀態
-                    document.getElementById('grvtMmBidStatus').textContent = state.bid_order_id ? '已掛單' : '無訂單';
-                    document.getElementById('grvtMmAskStatus').textContent = state.ask_order_id ? '已掛單' : '無訂單';
+                    document.getElementById('grvtMmBidStatus').textContent = state.bid_order ? `已掛單 (${state.bid_order.status})` : '無訂單';
+                    document.getElementById('grvtMmAskStatus').textContent = state.ask_order ? `已掛單 (${state.ask_order.status})` : '無訂單';
+
+                    // 對沖統計
+                    document.getElementById('grvtMmHedgeSuccessRate').textContent =
+                        stats.hedge_success_rate ? stats.hedge_success_rate.toFixed(1) + '%' : '-';
+
+                    // 更新操作歷史
+                    updateGrvtMmHistory(state.operation_history || []);
                 }
 
                 // 更新中間價
-                if (exec.last_mid_price) {
-                    document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.last_mid_price).toFixed(2);
+                if (exec.stats && exec.stats.last_mid_price) {
+                    document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.stats.last_mid_price).toFixed(2);
                 }
+            }
+
+            // GRVT MM 操作歷史顯示
+            function updateGrvtMmHistory(history) {
+                const container = document.getElementById('grvtMmHistoryList');
+                if (!container) return;
+
+                if (!history || history.length === 0) {
+                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">等待訂單操作...</div>';
+                    return;
+                }
+
+                // 最新的在前面
+                const recentHistory = history.slice().reverse().slice(0, 50);
+
+                container.innerHTML = recentHistory.map(op => {
+                    const actionColors = {
+                        'place': '#10b981',
+                        'cancel': '#ef4444',
+                        'rebalance': '#f59e0b',
+                        'fill': '#3b82f6',
+                        'hedge': '#8b5cf6'
+                    };
+                    const color = actionColors[op.action] || '#9ca3af';
+                    const sideIcon = op.side === 'buy' ? '🟢' : '🔴';
+
+                    return `
+                        <div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #1a1f2e;">
+                            <span style="color: #6b7280; font-size: 10px; min-width: 50px;">${op.time || '-'}</span>
+                            <span style="color: ${color}; font-weight: 600; min-width: 60px;">${op.action.toUpperCase()}</span>
+                            <span>${sideIcon}</span>
+                            <span style="color: #e4e6eb;">$${op.order_price ? parseFloat(op.order_price).toFixed(1) : '-'}</span>
+                            <span style="color: #6b7280; flex: 1; text-align: right; font-size: 10px;">${op.reason || ''}</span>
+                        </div>
+                    `;
+                }).join('');
             }
 
             // ===== 參數比較模擬功能 =====
