@@ -534,8 +534,19 @@ class GRVTAdapter(BasePerpAdapter):
         result = resp_json
 
         # 從 dict 響應中獲取 order_id
+        # GRVT 響應格式可能是: {"result": {"order": {"order_id": "..."}}}
+        # 或 {"result": {"order_id": "..."}}
         order_data = result.get("result", {})
-        order_id_result = order_data.get("order_id") or order_data.get("order", {}).get("order_id")
+        logger.debug(f"[GRVT Place] Response: {result}")
+
+        # 嘗試多種路徑獲取 order_id
+        order_id_result = (
+            order_data.get("order_id")
+            or order_data.get("order", {}).get("order_id")
+            or order_data.get("ack", {}).get("order_id")  # 某些 API 用 ack
+        )
+
+        logger.info(f"[GRVT Place] Order placed: order_id={order_id_result}, client_order_id={client_order_id}")
 
         return Order(
             order_id=order_id_result,
