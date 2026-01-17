@@ -69,8 +69,9 @@ def register_mm_routes(app, dependencies):
 
             # 創建配置（使用保存的報價參數）
             config = MMConfig(
-                standx_symbol="BTC-USD",
+                symbol="BTC-USD",
                 hedge_symbol="BTC_USDT_Perp",
+                hedge_exchange="grvt",
                 order_size_btc=order_size,
                 order_distance_bps=order_distance,
                 cancel_distance_bps=cancel_distance,

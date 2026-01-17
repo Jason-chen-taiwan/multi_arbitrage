@@ -1,0 +1,73 @@
+# GRVT Market Maker Configuration
+# GRVT 做市商配置文件
+
+# 交易對設定
+symbols:
+  primary: "BTC_USDT_Perp"
+  hedge: "BTC-USD"  # StandX 對沖交易對
+
+# 報價參數
+quote:
+  # 掛單距離 mark price (bps)
+  order_distance_bps: 8
+
+  # 價格靠近時撤單距離 (bps)
+  cancel_distance_bps: 3
+
+  # 價格遠離時重掛距離 (bps)
+  rebalance_distance_bps: 12
+
+# 倉位參數
+position:
+  # 單邊訂單量 (BTC)
+  order_size_btc: 0.01
+
+  # 最大持倉量 (BTC)
+  max_position_btc: 1
+
+# 波動率控制
+volatility:
+  # 觀察窗口 (秒)
+  window_sec: 5
+
+  # 波動率閾值 (bps)
+  threshold_bps: 5
+
+# 訂單參數
+order:
+  type: "limit"
+  time_in_force: "gtc"
+
+# 執行參數
+execution:
+  # 主循環間隔 (毫秒)
+  tick_interval_ms: 100
+
+  # 訂單消失判定時間 (秒)
+  disappear_time_sec: 2.0
+
+# 對沖參數 (StandX)
+hedge:
+  # 對沖交易所
+  exchange: "standx"
+
+  # 是否自動匹配交易對
+  auto_match_symbol: true
+
+  # 明確的交易對映射（優先使用）
+  symbol_map:
+    "BTC_USDT_Perp": "BTC-USD"
+    "ETH_USDT_Perp": "ETH-USD"
+    "SOL_USDT_Perp": "SOL-USD"
+
+  # 對沖超時 (毫秒)
+  timeout_ms: 1000
+
+  # 重試次數
+  retry_count: 3
+
+  # 重試間隔 (毫秒)
+  retry_delay_ms: 100
+
+  # 最大未對沖倉位 (BTC)
+  max_unhedged_position: 0.01

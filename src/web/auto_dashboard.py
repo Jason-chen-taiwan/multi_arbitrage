@@ -42,6 +42,7 @@ from src.web.system_manager import SystemManager
 
 # 全局變量
 mm_executor: Optional[MarketMakerExecutor] = None
+grvt_mm_executor: Optional[MarketMakerExecutor] = None
 connected_clients: List[WebSocket] = []
 mm_status = {
     'running': False,
@@ -49,6 +50,12 @@ mm_status = {
     'dry_run': False,  # 實盤模式
     'order_size_btc': 0.001,
     'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
+}
+grvt_mm_status = {
+    'running': False,
+    'status': 'stopped',
+    'order_size_btc': 0.01,
+    'order_distance_bps': 8,
 }
 
 # Simulation comparison globals
@@ -179,10 +186,15 @@ async def broadcast_data():
                         'max_quantity': float(opp.max_quantity)
                     })
 
-                # 做市商狀態
+                # StandX 做市商狀態
                 data['mm_status'] = mm_status.copy()
                 if mm_executor:
                     data['mm_executor'] = serialize_for_json(mm_executor.to_dict())
+
+                # GRVT 做市商狀態
+                data['grvt_mm_status'] = grvt_mm_status.copy()
+                if grvt_mm_executor:
+                    data['grvt_mm_executor'] = serialize_for_json(grvt_mm_executor.to_dict())
 
                 # 做市商實時倉位
                 positions = {
@@ -287,15 +299,25 @@ def _set_mm_executor(value):
     global mm_executor
     mm_executor = value
 
+def _get_grvt_mm_executor():
+    return grvt_mm_executor
+
+def _set_grvt_mm_executor(value):
+    global grvt_mm_executor
+    grvt_mm_executor = value
+
 api_dependencies = {
     'config_manager': config_manager,
     'adapters_getter': get_adapters,
     'executor_getter': get_executor,
     'mm_executor_getter': _get_mm_executor,
     'mm_executor_setter': _set_mm_executor,
+    'grvt_mm_executor_getter': _get_grvt_mm_executor,
+    'grvt_mm_executor_setter': _set_grvt_mm_executor,
     'monitor_getter': get_monitor,
     'system_status': get_system_status(),
     'mm_status': mm_status,
+    'grvt_mm_status': grvt_mm_status,
     'init_system': init_system,
     'add_exchange': add_exchange,
     'remove_exchange': remove_exchange,
@@ -329,7 +351,8 @@ async def root():
             <div class="nav-logo">Trading Console</div>
             <div class="nav-tabs">
                 <button class="nav-tab active" onclick="switchPage('arbitrage')">套利監控</button>
-                <button class="nav-tab" onclick="switchPage('marketmaker')">做市商</button>
+                <button class="nav-tab" onclick="switchPage('marketmaker')">StandX MM</button>
+                <button class="nav-tab" onclick="switchPage('grvt-marketmaker')">GRVT MM</button>
                 <button class="nav-tab" onclick="switchPage('settings')">設定</button>
                 <button class="nav-tab" onclick="switchPage('comparison')">參數比較</button>
             </div>
@@ -644,7 +667,7 @@ async def root():
                     netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
                 }
 
-                // 更新 UI 按鈕狀態
+                // 更新 StandX MM UI 按鈕狀態
                 if (data.mm_status) {
                     const running = data.mm_status.running;
                     document.getElementById('mmStartBtn').style.display = running ? 'none' : 'block';
@@ -658,6 +681,15 @@ async def root():
                         badge.textContent = '停止';
                         badge.style.background = '#2a3347';
                     }
+                }
+
+                // 更新 GRVT MM UI
+                if (data.grvt_mm_status) {
+                    const grvtMmData = { running: data.grvt_mm_status.running };
+                    if (data.grvt_mm_executor) {
+                        grvtMmData.executor = data.grvt_mm_executor;
+                    }
+                    updateGrvtMM(grvtMmData);
                 }
 
                 // 從 StandX 數據更新（需要市場數據）
@@ -1130,6 +1162,183 @@ async def root():
                     document.getElementById('mmStopBtn').style.display = 'none';
                     document.getElementById('mmStatusBadge').textContent = '停止';
                     document.getElementById('mmStatusBadge').style.background = '#2a3347';
+                }
+            }
+
+            // ===== GRVT 做市商控制 =====
+            let grvtMmConfig = null;
+
+            async function loadGrvtMMConfig() {
+                try {
+                    document.getElementById('grvtMmConfigStatus').textContent = '加載中...';
+                    const res = await fetch('/api/grvt-mm/config');
+                    grvtMmConfig = await res.json();
+                    console.log('Loaded GRVT MM config:', grvtMmConfig);
+
+                    // 填充表單
+                    if (grvtMmConfig.quote) {
+                        document.getElementById('grvtMmOrderDistance').value = grvtMmConfig.quote.order_distance_bps || 8;
+                        document.getElementById('grvtMmCancelDistance').value = grvtMmConfig.quote.cancel_distance_bps || 3;
+                        document.getElementById('grvtMmRebalanceDistance').value = grvtMmConfig.quote.rebalance_distance_bps || 12;
+                    }
+                    if (grvtMmConfig.position) {
+                        document.getElementById('grvtMmOrderSize').value = grvtMmConfig.position.order_size_btc || 0.01;
+                        document.getElementById('grvtMmMaxPosition').value = grvtMmConfig.position.max_position_btc || 1;
+                    }
+                    if (grvtMmConfig.volatility) {
+                        document.getElementById('grvtMmVolatilityWindow').value = grvtMmConfig.volatility.window_sec || 5;
+                        document.getElementById('grvtMmVolatilityThreshold').value = grvtMmConfig.volatility.threshold_bps || 5;
+                    }
+
+                    // 更新策略描述
+                    const orderDist = grvtMmConfig.quote?.order_distance_bps || 8;
+                    const cancelDist = grvtMmConfig.quote?.cancel_distance_bps || 3;
+                    const rebalDist = grvtMmConfig.quote?.rebalance_distance_bps || 12;
+                    document.getElementById('grvtMmStrategyDesc').textContent =
+                        `距離市價 ${orderDist} bps 掛單，${cancelDist} bps 撤單，${rebalDist} bps 重掛`;
+
+                    document.getElementById('grvtMmConfigStatus').textContent = '已加載';
+                    setTimeout(() => {
+                        document.getElementById('grvtMmConfigStatus').textContent = '';
+                    }, 2000);
+                } catch (e) {
+                    console.error('Error loading GRVT MM config:', e);
+                    document.getElementById('grvtMmConfigStatus').textContent = '加載失敗';
+                }
+            }
+
+            async function saveGrvtMMConfig() {
+                try {
+                    const config = {
+                        quote: {
+                            order_distance_bps: parseInt(document.getElementById('grvtMmOrderDistance').value),
+                            cancel_distance_bps: parseInt(document.getElementById('grvtMmCancelDistance').value),
+                            rebalance_distance_bps: parseInt(document.getElementById('grvtMmRebalanceDistance').value),
+                        },
+                        position: {
+                            order_size_btc: parseFloat(document.getElementById('grvtMmOrderSize').value),
+                            max_position_btc: parseFloat(document.getElementById('grvtMmMaxPosition').value),
+                        },
+                        volatility: {
+                            window_sec: parseInt(document.getElementById('grvtMmVolatilityWindow').value),
+                            threshold_bps: parseFloat(document.getElementById('grvtMmVolatilityThreshold').value),
+                        }
+                    };
+
+                    const res = await fetch('/api/grvt-mm/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(config)
+                    });
+                    const result = await res.json();
+                    if (result.success) {
+                        document.getElementById('grvtMmConfigStatus').textContent = '已保存';
+                        grvtMmConfig = result.config;
+                        setTimeout(() => {
+                            document.getElementById('grvtMmConfigStatus').textContent = '';
+                        }, 2000);
+                    }
+                } catch (e) {
+                    console.error('Error saving GRVT MM config:', e);
+                }
+            }
+
+            async function startGrvtMM() {
+                const orderSize = parseFloat(document.getElementById('grvtMmOrderSize').value);
+                const orderDistance = parseInt(document.getElementById('grvtMmOrderDistance').value);
+
+                if (!confirm('確定啟動 GRVT 做市商？將使用真實資金進行交易！')) {
+                    return;
+                }
+
+                const res = await fetch('/api/grvt-mm/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        order_size: orderSize,
+                        order_distance: orderDistance
+                    })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    document.getElementById('grvtMmStartBtn').style.display = 'none';
+                    document.getElementById('grvtMmStopBtn').style.display = 'block';
+                    document.getElementById('grvtMmStatusBadge').textContent = '運行中';
+                    document.getElementById('grvtMmStatusBadge').style.background = '#10b981';
+                } else {
+                    alert('啟動失敗: ' + result.error);
+                }
+            }
+
+            async function stopGrvtMM() {
+                const res = await fetch('/api/grvt-mm/stop', { method: 'POST' });
+                const result = await res.json();
+                if (result.success) {
+                    document.getElementById('grvtMmStartBtn').style.display = 'block';
+                    document.getElementById('grvtMmStopBtn').style.display = 'none';
+                    document.getElementById('grvtMmStatusBadge').textContent = '停止';
+                    document.getElementById('grvtMmStatusBadge').style.background = '#2a3347';
+                }
+            }
+
+            // GRVT MM 頁面更新
+            function updateGrvtMM(grvtMmData) {
+                if (!grvtMmData || !grvtMmData.executor) return;
+
+                const exec = grvtMmData.executor;
+
+                // 更新狀態
+                if (grvtMmData.running) {
+                    document.getElementById('grvtMmStartBtn').style.display = 'none';
+                    document.getElementById('grvtMmStopBtn').style.display = 'block';
+                    document.getElementById('grvtMmStatusBadge').textContent = '運行中';
+                    document.getElementById('grvtMmStatusBadge').style.background = '#10b981';
+                } else {
+                    document.getElementById('grvtMmStartBtn').style.display = 'block';
+                    document.getElementById('grvtMmStopBtn').style.display = 'none';
+                    document.getElementById('grvtMmStatusBadge').textContent = '停止';
+                    document.getElementById('grvtMmStatusBadge').style.background = '#2a3347';
+                }
+
+                // 更新統計
+                if (exec.state) {
+                    const state = exec.state;
+                    document.getElementById('grvtMmFillCount').textContent = state.total_fills || 0;
+                    document.getElementById('grvtMmPnl').textContent = '$' + (state.realized_pnl || 0).toFixed(2);
+
+                    // 撤單統計
+                    document.getElementById('grvtMmBidFillRate').textContent =
+                        `${state.bid_cancels || 0}/${state.bid_queue_cancels || 0}/${state.bid_rebalances || 0}`;
+                    document.getElementById('grvtMmAskFillRate').textContent =
+                        `${state.ask_cancels || 0}/${state.ask_queue_cancels || 0}/${state.ask_rebalances || 0}`;
+
+                    // 波動率
+                    document.getElementById('grvtMmVolatility').textContent = (state.volatility_bps || 0).toFixed(1);
+                    document.getElementById('grvtMmVolatilityPauseCount').textContent = state.volatility_pauses || 0;
+
+                    // 運行時間
+                    const runtimeSec = state.runtime_seconds || 0;
+                    const hours = Math.floor(runtimeSec / 3600);
+                    const minutes = Math.floor((runtimeSec % 3600) / 60);
+                    document.getElementById('grvtMmRuntime').textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+                    document.getElementById('grvtMmTotalQuotes').textContent = `${Math.floor(runtimeSec)}秒`;
+
+                    // 當前掛單價格
+                    if (state.current_bid_price) {
+                        document.getElementById('grvtMmSuggestedBid').textContent = parseFloat(state.current_bid_price).toFixed(2);
+                    }
+                    if (state.current_ask_price) {
+                        document.getElementById('grvtMmSuggestedAsk').textContent = parseFloat(state.current_ask_price).toFixed(2);
+                    }
+
+                    // 訂單狀態
+                    document.getElementById('grvtMmBidStatus').textContent = state.bid_order_id ? '已掛單' : '無訂單';
+                    document.getElementById('grvtMmAskStatus').textContent = state.ask_order_id ? '已掛單' : '無訂單';
+                }
+
+                // 更新中間價
+                if (exec.last_mid_price) {
+                    document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.last_mid_price).toFixed(2);
                 }
             }
 
@@ -1821,7 +2030,8 @@ async def root():
             connect();
             updateExchangeOptions();
             loadConfiguredExchanges();
-            loadMMConfig();  // 加載做市商配置
+            loadMMConfig();  // 加載 StandX 做市商配置
+            loadGrvtMMConfig();  // 加載 GRVT 做市商配置
         </script>
     </body>
     </html>

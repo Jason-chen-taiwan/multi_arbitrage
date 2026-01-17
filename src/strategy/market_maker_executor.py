@@ -52,9 +52,10 @@ class MMConfig:
     - 價格靠近 3 bps 時撤單（避免成交）
     - 價格遠離 12 bps 時重掛（超出 10 bps uptime 要求後再 2 bps）
     """
-    # 交易對
-    standx_symbol: str = "BTC-USD"
-    hedge_symbol: str = "BTC_USDT_Perp"  # GRVT 對沖交易對
+    # 交易對（通用）
+    symbol: str = "BTC-USD"              # 主交易對
+    hedge_symbol: str = "BTC_USDT_Perp"  # 對沖交易對
+    hedge_exchange: str = "grvt"         # 對沖交易所 ("grvt", "standx", "binance")
 
     # 報價參數 (優化版：8 bps 掛單距離，留緩衝給 uptime)
     order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
@@ -208,9 +209,9 @@ class MarketMakerExecutor:
 
     async def _cancel_all_existing_orders(self):
         """取消交易所上的所有現有訂單"""
-        logger.info(f"[Cancel] Querying open orders for {self.config.standx_symbol}")
+        logger.info(f"[Cancel] Querying open orders for {self.config.symbol}")
         try:
-            open_orders = await self.standx.get_open_orders(self.config.standx_symbol)
+            open_orders = await self.standx.get_open_orders(self.config.symbol)
             logger.info(f"[Cancel] Found {len(open_orders)} open orders")
             if open_orders:
                 logger.info(f"Cancelling {len(open_orders)} existing orders on StandX")
@@ -219,7 +220,7 @@ class MarketMakerExecutor:
                         logger.info(f"[Cancel] Cancelling order: {order.client_order_id} (order_id={order.order_id}) @ {order.price}")
                         # 使用 client_order_id 作為關鍵字參數
                         await self.standx.cancel_order(
-                            symbol=self.config.standx_symbol,
+                            symbol=self.config.symbol,
                             client_order_id=order.client_order_id
                         )
                         logger.info(f"Cancelled existing order: {order.client_order_id}")
@@ -262,7 +263,7 @@ class MarketMakerExecutor:
 
         # 獲取最新價格
         try:
-            orderbook = await self.standx.get_orderbook(self.config.standx_symbol)
+            orderbook = await self.standx.get_orderbook(self.config.symbol)
             if not orderbook or not orderbook.bids or not orderbook.asks:
                 return
 
@@ -382,20 +383,17 @@ class MarketMakerExecutor:
         """
         計算報價
 
-        策略 (參考 frozen-cherry/standx-mm)：
-        1. 從 mark price (mid_price) 計算固定距離的報價
-        2. 使用 order_distance_bps 參數（默認 10 bps = 0.1%）
-        3. 依靠 cancel_distance_bps 在價格接近時撤單來避免成交
+        正確策略：
+        - bid_price = best_bid * (1 - order_distance_bps / 10000)
+        - ask_price = best_ask * (1 + order_distance_bps / 10000)
 
-        計算公式：
-        - buy_price = mid_price * (1 - order_distance_bps / 10000)
-        - sell_price = mid_price * (1 + order_distance_bps / 10000)
+        從 best_bid/best_ask 計算，而非從 mid_price 計算
         """
-        # 從 mark price 計算報價
         distance_ratio = Decimal(self.config.order_distance_bps) / Decimal("10000")
 
-        bid_price = mid_price * (Decimal("1") - distance_ratio)
-        ask_price = mid_price * (Decimal("1") + distance_ratio)
+        # 從 best_bid/best_ask 計算報價（而非 mid_price）
+        bid_price = best_bid * (Decimal("1") - distance_ratio)
+        ask_price = best_ask * (Decimal("1") + distance_ratio)
 
         # 對齊到 tick size (floor for buy, ceil for sell)
         import math
@@ -407,8 +405,9 @@ class MarketMakerExecutor:
         ask_price = Decimal(str(math.ceil(float(ask_price) / float(tick_size)) * float(tick_size)))
 
         logger.debug(
-            f"Quote prices: bid={bid_price}, ask={ask_price}, "
-            f"mid={mid_price}, distance={self.config.order_distance_bps}bps"
+            f"Quote prices: bid={bid_price} (from best_bid={best_bid}), "
+            f"ask={ask_price} (from best_ask={best_ask}), "
+            f"distance={self.config.order_distance_bps}bps"
         )
 
         return bid_price, ask_price
@@ -421,7 +420,7 @@ class MarketMakerExecutor:
 
         try:
             order = await self.standx.place_order(
-                symbol=self.config.standx_symbol,
+                symbol=self.config.symbol,
                 side="buy",
                 order_type=self.config.order_type,
                 quantity=self.config.order_size_btc,
@@ -463,7 +462,7 @@ class MarketMakerExecutor:
 
         try:
             order = await self.standx.place_order(
-                symbol=self.config.standx_symbol,
+                symbol=self.config.symbol,
                 side="sell",
                 order_type=self.config.order_type,
                 quantity=self.config.order_size_btc,
@@ -517,7 +516,7 @@ class MarketMakerExecutor:
 
         try:
             await self.standx.cancel_order(
-                symbol=self.config.standx_symbol,
+                symbol=self.config.symbol,
                 client_order_id=client_order_id,
             )
             self._total_cancels += 1
@@ -597,7 +596,7 @@ class MarketMakerExecutor:
 
         # API 調用可能失敗，需要容錯
         try:
-            open_orders = await self.standx.get_open_orders(self.config.standx_symbol)
+            open_orders = await self.standx.get_open_orders(self.config.symbol)
         except Exception as e:
             logger.warning(f"Failed to get open orders: {e}")
             # API 失敗時，不推進 disappeared_since_ts
@@ -791,7 +790,7 @@ class MarketMakerExecutor:
             fill_event = FillEvent(
                 order_id=order.order_id,
                 client_order_id=order.client_order_id,
-                symbol=self.config.standx_symbol,
+                symbol=self.config.symbol,
                 side=order.side,
                 fill_qty=fill_qty,
                 fill_price=fill_price,
@@ -807,9 +806,9 @@ class MarketMakerExecutor:
     async def _sync_standx_position(self) -> Decimal:
         """從 StandX 同步實際倉位"""
         try:
-            positions = await self.standx.get_positions(self.config.standx_symbol)
+            positions = await self.standx.get_positions(self.config.symbol)
             for pos in positions:
-                if pos.symbol == self.config.standx_symbol:
+                if pos.symbol == self.config.symbol:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
                     self.state.set_standx_position(position_qty)
                     logger.info(f"[Sync] StandX position: {position_qty}")
@@ -831,7 +830,7 @@ class MarketMakerExecutor:
             hedge_symbol = self.config.hedge_symbol
             if self.hedge_engine:
                 hedge_symbol = self.hedge_engine._match_hedge_symbol(
-                    self.config.standx_symbol
+                    self.config.symbol
                 ) or hedge_symbol
 
             positions = await self.hedge_adapter.get_positions(hedge_symbol)
@@ -903,7 +902,7 @@ class MarketMakerExecutor:
                     fill_side=fill.side,
                     fill_qty=fill.fill_qty,
                     fill_price=fill.fill_price,
-                    standx_symbol=self.config.standx_symbol,
+                    standx_symbol=self.config.symbol,
                 )
 
                 # 記錄對沖結果
@@ -1001,7 +1000,7 @@ class MarketMakerExecutor:
         """序列化"""
         return {
             "config": {
-                "standx_symbol": self.config.standx_symbol,
+                "symbol": self.config.symbol,
                 "hedge_symbol": self.config.hedge_symbol,
                 "order_distance_bps": self.config.order_distance_bps,
                 "order_size_btc": float(self.config.order_size_btc),
