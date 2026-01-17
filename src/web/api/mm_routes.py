@@ -43,9 +43,21 @@ def register_mm_routes(app, dependencies):
         """啟動做市商"""
         try:
             data = await request.json()
-            order_size = Decimal(str(data.get('order_size', '0.001')))
-            order_distance = int(data.get('order_distance', 8))
             dry_run = data.get('dry_run', True)
+
+            # 從保存的配置讀取參數
+            config_manager = get_mm_config()
+            saved_config = config_manager.get_dict()
+            quote_cfg = saved_config.get('quote', {})
+            position_cfg = saved_config.get('position', {})
+
+            # 使用保存的配置，如果沒有則使用默認值
+            order_size = Decimal(str(data.get('order_size', position_cfg.get('order_size_btc', 0.001))))
+            order_distance = int(data.get('order_distance', quote_cfg.get('order_distance_bps', 8)))
+            cancel_distance = int(quote_cfg.get('cancel_distance_bps', 3))
+            rebalance_distance = int(quote_cfg.get('rebalance_distance_bps', 12))
+            queue_position_limit = int(quote_cfg.get('queue_position_limit', 3))
+            max_position = Decimal(str(position_cfg.get('max_position_btc', 0.01)))
 
             adapters = adapters_getter()
 
@@ -56,14 +68,20 @@ def register_mm_routes(app, dependencies):
             standx = adapters['STANDX']
             grvt = adapters.get('GRVT')  # 可選，沒有則不對沖
 
-            # 創建配置
+            # 創建配置（使用保存的報價參數）
             config = MMConfig(
                 standx_symbol="BTC-USD",
                 hedge_symbol="BTC_USDT_Perp",
                 order_size_btc=order_size,
                 order_distance_bps=order_distance,
+                cancel_distance_bps=cancel_distance,
+                rebalance_distance_bps=rebalance_distance,
+                queue_position_limit=queue_position_limit,
+                max_position_btc=max_position,
                 dry_run=dry_run,
             )
+
+            logger.info(f"做市商配置: order_dist={order_distance}bps, cancel_dist={cancel_distance}bps, rebal_dist={rebalance_distance}bps")
 
             # 創建對沖引擎 (如果有 GRVT)
             hedge_engine = None
@@ -101,8 +119,12 @@ def register_mm_routes(app, dependencies):
             mm_status['dry_run'] = dry_run
             mm_status['order_size_btc'] = float(order_size)
             mm_status['order_distance_bps'] = order_distance
+            mm_status['cancel_distance_bps'] = cancel_distance
+            mm_status['rebalance_distance_bps'] = rebalance_distance
+            mm_status['queue_position_limit'] = queue_position_limit
+            mm_status['max_position_btc'] = float(max_position)
 
-            logger.info(f"做市商已啟動 (dry_run={dry_run})")
+            logger.info(f"做市商已啟動 (dry_run={dry_run}, order_dist={order_distance}bps)")
             return JSONResponse({'success': True})
 
         except Exception as e:
