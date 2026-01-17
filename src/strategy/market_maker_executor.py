@@ -39,47 +39,53 @@ logger = logging.getLogger(__name__)
 
 # ==================== 交易日誌設置 ====================
 # 專門記錄掛單、撤單、成交等操作的日誌
-# 每次啟動建立新的 log 檔案，方便追蹤各 session
+# 每次 executor 啟動建立新的 log 檔案，方便追蹤各 session
+# 注意：模組載入時不建立檔案，只有 executor.start() 呼叫時才建立
 
 # 全域變數：當前 session 的 log 檔案路徑
 _current_trade_log_file: Optional[Path] = None
 
-def _setup_trade_logger(exchange: str = "mm", force_new: bool = False):
+def _setup_trade_logger(exchange: str = "mm", create_file: bool = False):
     """
-    設置交易日誌 - 每次啟動建立新檔案
+    設置交易日誌
 
     Args:
         exchange: 交易所名稱，用於檔案命名 (mm, grvt, standx)
-        force_new: 強制建立新檔案（用於 executor 重啟）
+        create_file: 是否建立新的 log 檔案（只有 executor.start() 時設為 True）
     """
     global _current_trade_log_file
 
     trade_logger = logging.getLogger("mm_trade")
 
-    # 如果已有 handler 且不強制建立新檔案，直接返回
-    if trade_logger.handlers and not force_new:
+    # 模組載入時：只設定 logger，不建立檔案
+    if not create_file:
+        if not trade_logger.handlers:
+            trade_logger.setLevel(logging.INFO)
+            trade_logger.propagate = False
+            # 加一個 NullHandler 避免 "No handlers" 警告
+            trade_logger.addHandler(logging.NullHandler())
         return trade_logger
 
-    # 清除舊 handlers（如果 force_new）
-    if force_new:
-        for handler in trade_logger.handlers[:]:
-            handler.close()
-            trade_logger.removeHandler(handler)
+    # ==================== Executor 啟動時：建立新的 log 檔案 ====================
+    # 清除舊 handlers
+    for handler in trade_logger.handlers[:]:
+        handler.close()
+        trade_logger.removeHandler(handler)
 
     trade_logger.setLevel(logging.INFO)
-    trade_logger.propagate = False  # 不傳播到父 logger
+    trade_logger.propagate = False
 
     # 創建 logs 目錄
     log_dir = Path(__file__).parent.parent.parent / "logs"
     log_dir.mkdir(exist_ok=True)
 
-    # ==================== 新增：依時間戳建立檔案 ====================
+    # 依時間戳建立新檔案
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"mm_trades_{timestamp}.log"
     _current_trade_log_file = log_file
 
-    # 使用普通 FileHandler（不需要 rotating，因為每次啟動都是新檔案）
+    # 使用 FileHandler
     file_handler = logging.FileHandler(
         log_file,
         encoding='utf-8'
@@ -95,7 +101,7 @@ def _setup_trade_logger(exchange: str = "mm", force_new: bool = False):
 
     trade_logger.addHandler(file_handler)
 
-    # ==================== 清理舊 log 檔案（保留最近 20 個）====================
+    # 清理舊 log 檔案（保留最近 20 個）
     _cleanup_old_logs(log_dir, keep_count=20)
 
     return trade_logger
@@ -337,7 +343,7 @@ class MarketMakerExecutor:
         # 每次 executor 啟動都建立新的 session log
         trade_log = _setup_trade_logger(
             exchange=self.config.primary_exchange,
-            force_new=True
+            create_file=True
         )
         log_file = get_current_trade_log_file()
         logger.info(f"Trade log file: {log_file}")
