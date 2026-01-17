@@ -577,27 +577,38 @@ class GRVTAdapter(BasePerpAdapter):
         Args:
             symbol: 交易對 (為了兼容 StandX 介面，但 GRVT 不需要)
             order_id: GRVT 訂單 ID (優先使用)
-            client_order_id: 客戶端訂單 ID (GRVT 不支持，會被忽略)
+            client_order_id: 客戶端訂單 ID
 
-        Note: GRVT 只支持用 order_id 取消，client_order_id 會被忽略
+        Note: GRVT 支持用 order_id 或 client_order_id 取消
         """
         if not self._client:
             raise Exception("Not connected. Call connect() first.")
 
-        if not order_id:
-            logger.warning(f"[GRVT Cancel] No order_id provided, client_order_id={client_order_id} cannot be used")
+        # 檢查 order_id 是否有效（不是 None, 空字串, 或 "0x00"）
+        valid_order_id = order_id and order_id not in [None, "", "0x00", "0x0"]
+
+        if not valid_order_id and not client_order_id:
+            logger.warning(f"[GRVT Cancel] No valid order_id or client_order_id provided")
             return False
 
-        return await asyncio.to_thread(self._cancel_order_sync, order_id)
+        return await asyncio.to_thread(self._cancel_order_sync, order_id if valid_order_id else None, client_order_id)
 
-    def _cancel_order_sync(self, order_id: str) -> bool:
+    def _cancel_order_sync(self, order_id: Optional[str], client_order_id: Optional[str] = None) -> bool:
         """同步取消訂單"""
         try:
-            logger.info(f"[GRVT Cancel] Cancelling order_id={order_id}")
-            req = ApiCancelOrderRequest(
-                sub_account_id=self.trading_account_id or self._main_account_id,
-                order_id=order_id
-            )
+            # 構建取消請求，優先使用 order_id，否則使用 client_order_id
+            if order_id:
+                logger.info(f"[GRVT Cancel] Cancelling by order_id={order_id}")
+                req = ApiCancelOrderRequest(
+                    sub_account_id=self.trading_account_id or self._main_account_id,
+                    order_id=order_id
+                )
+            else:
+                logger.info(f"[GRVT Cancel] Cancelling by client_order_id={client_order_id}")
+                req = ApiCancelOrderRequest(
+                    sub_account_id=self.trading_account_id or self._main_account_id,
+                    client_order_id=client_order_id
+                )
 
             result = self._client.cancel_order_v1(req)
 
@@ -605,7 +616,7 @@ class GRVTAdapter(BasePerpAdapter):
                 logger.warning(f"Cancel order error: {result}")
                 return False
 
-            logger.info(f"[GRVT Cancel] Successfully cancelled order_id={order_id}")
+            logger.info(f"[GRVT Cancel] Successfully cancelled")
             return True
 
         except Exception as e:
