@@ -228,18 +228,19 @@ class MarketMakerExecutor:
             open_orders = await self.standx.get_open_orders(self.config.symbol)
             logger.info(f"[Cancel] Found {len(open_orders)} open orders")
             if open_orders:
-                logger.info(f"Cancelling {len(open_orders)} existing orders on StandX")
+                logger.info(f"Cancelling {len(open_orders)} existing orders")
                 for order in open_orders:
                     try:
-                        logger.info(f"[Cancel] Cancelling order: {order.client_order_id} (order_id={order.order_id}) @ {order.price}")
-                        # 使用 client_order_id 作為關鍵字參數
+                        logger.info(f"[Cancel] Cancelling order: order_id={order.order_id}, client_order_id={order.client_order_id} @ {order.price}")
+                        # 傳遞 order_id 和 client_order_id，讓 adapter 決定使用哪個
                         await self.standx.cancel_order(
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=order.client_order_id
                         )
-                        logger.info(f"Cancelled existing order: {order.client_order_id}")
+                        logger.info(f"Cancelled existing order: {order.order_id}")
                     except Exception as e:
-                        logger.warning(f"Failed to cancel order {order.client_order_id}: {e}")
+                        logger.warning(f"Failed to cancel order {order.order_id}: {e}")
             else:
                 logger.info("No existing orders to cancel")
         except Exception as e:
@@ -517,12 +518,15 @@ class MarketMakerExecutor:
         ask = self.state.get_ask_order()
         order_side = None
         order_price = Decimal("0")
+        order_id = None
         if bid and bid.client_order_id == client_order_id:
             order_side = "buy"
             order_price = bid.price
+            order_id = bid.order_id
         elif ask and ask.client_order_id == client_order_id:
             order_side = "sell"
             order_price = ask.price
+            order_id = ask.order_id
 
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Would cancel order: {client_order_id}")
@@ -531,6 +535,7 @@ class MarketMakerExecutor:
         try:
             await self.standx.cancel_order(
                 symbol=self.config.symbol,
+                order_id=order_id,
                 client_order_id=client_order_id,
             )
             self._total_cancels += 1

@@ -554,16 +554,35 @@ class GRVTAdapter(BasePerpAdapter):
 
     # ==================== 取消訂單 ====================
 
-    async def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> bool:
-        """取消訂單"""
+    async def cancel_order(
+        self,
+        symbol: str,
+        order_id: Optional[str] = None,
+        client_order_id: Optional[str] = None
+    ) -> bool:
+        """
+        取消訂單
+
+        Args:
+            symbol: 交易對 (為了兼容 StandX 介面，但 GRVT 不需要)
+            order_id: GRVT 訂單 ID (優先使用)
+            client_order_id: 客戶端訂單 ID (GRVT 不支持，會被忽略)
+
+        Note: GRVT 只支持用 order_id 取消，client_order_id 會被忽略
+        """
         if not self._client:
             raise Exception("Not connected. Call connect() first.")
+
+        if not order_id:
+            logger.warning(f"[GRVT Cancel] No order_id provided, client_order_id={client_order_id} cannot be used")
+            return False
 
         return await asyncio.to_thread(self._cancel_order_sync, order_id)
 
     def _cancel_order_sync(self, order_id: str) -> bool:
         """同步取消訂單"""
         try:
+            logger.info(f"[GRVT Cancel] Cancelling order_id={order_id}")
             req = ApiCancelOrderRequest(
                 sub_account_id=self.trading_account_id or self._main_account_id,
                 order_id=order_id
@@ -575,6 +594,7 @@ class GRVTAdapter(BasePerpAdapter):
                 logger.warning(f"Cancel order error: {result}")
                 return False
 
+            logger.info(f"[GRVT Cancel] Successfully cancelled order_id={order_id}")
             return True
 
         except Exception as e:
