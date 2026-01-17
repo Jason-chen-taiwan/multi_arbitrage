@@ -59,7 +59,8 @@ position:
   order_size_btc: 0.002
 
   # 最大持倉量 (BTC) - 軟停
-  max_position_btc: 1
+  # 用於計算 skew ratio，太大會導致 skew 無效
+  max_position_btc: 0.01
 
   # 硬停參數
   hard_stop_position_btc: 0.007   # 超過全停
