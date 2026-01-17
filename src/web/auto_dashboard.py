@@ -169,6 +169,23 @@ async def broadcast_data():
                     except Exception as e:
                         logger.warning(f"獲取 StandX 訂單簿失敗: {e}")
 
+                # 獲取 GRVT 訂單簿深度
+                if 'GRVT' in adapters:
+                    try:
+                        grvt = adapters['GRVT']
+                        ob = await grvt.get_orderbook('BTC_USDT_Perp', limit=50)
+                        if ob and ob.bids and ob.asks:
+                            bids = [[float(b[0]), float(b[1])] for b in ob.bids[:50]]
+                            asks = [[float(a[0]), float(a[1])] for a in ob.asks[:50]]
+                            data['orderbooks']['GRVT'] = {
+                                'BTC_USDT_Perp': {
+                                    'bids': bids,
+                                    'asks': asks
+                                }
+                            }
+                    except Exception as e:
+                        logger.warning(f"獲取 GRVT 訂單簿失敗: {e}")
+
                 # Debug: 打印發送的數據
                 if data['market_data']:
                     logger.debug(f"Broadcasting market data: {list(data['market_data'].keys())}")
@@ -689,6 +706,8 @@ async def root():
                     if (data.grvt_mm_executor) {
                         grvtMmData.executor = data.grvt_mm_executor;
                     }
+                    // 傳入 GRVT 訂單簿數據
+                    grvtMmData.orderbook = data.orderbooks?.GRVT?.['BTC_USDT_Perp'];
                     updateGrvtMM(grvtMmData);
                 }
 
@@ -1354,6 +1373,71 @@ async def root():
                 if (exec.stats && exec.stats.last_mid_price) {
                     document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.stats.last_mid_price).toFixed(2);
                 }
+
+                // 更新訂單簿顯示
+                const ob = grvtMmData.orderbook;
+                if (ob && ob.bids && ob.asks) {
+                    updateGrvtMmOrderbook(ob);
+                }
+            }
+
+            // GRVT MM 訂單簿顯示
+            function updateGrvtMmOrderbook(ob) {
+                const bidsContainer = document.getElementById('grvtMmBidRows');
+                const asksContainer = document.getElementById('grvtMmAskRows');
+                if (!bidsContainer || !asksContainer) return;
+
+                const bids = ob.bids.slice(0, 10);
+                const asks = ob.asks.slice(0, 10);
+
+                // 計算 mid price 和 spread
+                if (bids.length > 0 && asks.length > 0) {
+                    const bestBid = bids[0][0];
+                    const bestAsk = asks[0][0];
+                    const midPrice = (bestBid + bestAsk) / 2;
+                    const spreadBps = (bestAsk - bestBid) / midPrice * 10000;
+
+                    // 更新 header 中的 mid price
+                    const midPriceEl = document.getElementById('grvtMmMidPrice');
+                    if (midPriceEl && midPriceEl.textContent === '-') {
+                        midPriceEl.textContent = '$' + midPrice.toFixed(2);
+                    }
+
+                    // 更新 spread
+                    document.getElementById('grvtMmSpread').textContent = spreadBps.toFixed(1);
+                    document.getElementById('grvtMmSpreadDisplay').textContent = spreadBps.toFixed(1) + ' bps';
+
+                    // 深度分析
+                    const bidDepth = bids.reduce((sum, b) => sum + b[1], 0);
+                    const askDepth = asks.reduce((sum, a) => sum + a[1], 0);
+                    const totalDepth = bidDepth + askDepth;
+                    const bidPct = totalDepth > 0 ? (bidDepth / totalDepth * 100) : 50;
+                    const askPct = 100 - bidPct;
+
+                    document.getElementById('grvtMmDepthBid').style.width = bidPct + '%';
+                    document.getElementById('grvtMmDepthBid').textContent = bidDepth.toFixed(3) + ' BTC';
+                    document.getElementById('grvtMmDepthAsk').style.width = askPct + '%';
+                    document.getElementById('grvtMmDepthAsk').textContent = askDepth.toFixed(3) + ' BTC';
+
+                    const imbalance = ((bidDepth - askDepth) / totalDepth * 100).toFixed(1);
+                    document.getElementById('grvtMmImbalance').textContent = '平衡: ' + (imbalance > 0 ? '+' : '') + imbalance + '%';
+                }
+
+                // 渲染 bids
+                bidsContainer.innerHTML = bids.map(b => `
+                    <div class="ob-row">
+                        <span class="text-green">${b[0].toFixed(1)}</span>
+                        <span style="text-align:right">${b[1].toFixed(4)}</span>
+                    </div>
+                `).join('');
+
+                // 渲染 asks
+                asksContainer.innerHTML = asks.map(a => `
+                    <div class="ob-row">
+                        <span class="text-red">${a[0].toFixed(1)}</span>
+                        <span style="text-align:right">${a[1].toFixed(4)}</span>
+                    </div>
+                `).join('');
             }
 
             // GRVT MM 操作歷史顯示

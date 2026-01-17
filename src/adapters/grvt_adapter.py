@@ -821,20 +821,17 @@ class GRVTAdapter(BasePerpAdapter):
 
         # 安全獲取屬性（GRVT SDK 不同版本可能有不同屬性名）
         filled_size = getattr(order_data, 'filled_size', None) or getattr(order_data, 'filled_qty', None) or "0"
-        remaining_size = getattr(order_data, 'remaining_size', None) or getattr(order_data, 'remaining_qty', None) or "0"
 
         return Order(
             order_id=order_data.order_id,
+            client_order_id=getattr(order_data, 'client_order_id', None),
             symbol=leg.instrument if leg else "",
             side="buy" if leg and leg.is_buying_asset else "sell",
             order_type="market" if getattr(order_data, 'is_market', False) else "limit",
             price=Decimal(str(leg.limit_price)) if leg else Decimal("0"),
-            quantity=Decimal(str(leg.size)) if leg else Decimal("0"),
-            filled_quantity=Decimal(str(filled_size)),
-            remaining_quantity=Decimal(str(remaining_size)),
+            qty=Decimal(str(leg.size)) if leg else Decimal("0"),
+            filled_qty=Decimal(str(filled_size)),
             status=getattr(order_data, 'state', None) or "UNKNOWN",
-            timestamp=datetime.now(),
             time_in_force=getattr(order_data, 'time_in_force', None) or "GTC",
             reduce_only=getattr(order_data, 'reduce_only', False),
-            post_only=getattr(order_data, 'post_only', False)
         )
