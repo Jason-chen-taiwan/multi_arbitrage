@@ -56,7 +56,6 @@ def register_mm_routes(app, dependencies):
             order_distance = int(data.get('order_distance', quote_cfg.get('order_distance_bps', 8)))
             cancel_distance = int(quote_cfg.get('cancel_distance_bps', 3))
             rebalance_distance = int(quote_cfg.get('rebalance_distance_bps', 12))
-            queue_position_limit = int(quote_cfg.get('queue_position_limit', 3))
             max_position = Decimal(str(position_cfg.get('max_position_btc', 0.01)))
 
             adapters = adapters_getter()
@@ -76,7 +75,6 @@ def register_mm_routes(app, dependencies):
                 order_distance_bps=order_distance,
                 cancel_distance_bps=cancel_distance,
                 rebalance_distance_bps=rebalance_distance,
-                queue_position_limit=queue_position_limit,
                 max_position_btc=max_position,
                 dry_run=dry_run,
             )
@@ -121,7 +119,6 @@ def register_mm_routes(app, dependencies):
             mm_status['order_distance_bps'] = order_distance
             mm_status['cancel_distance_bps'] = cancel_distance
             mm_status['rebalance_distance_bps'] = rebalance_distance
-            mm_status['queue_position_limit'] = queue_position_limit
             mm_status['max_position_btc'] = float(max_position)
 
             logger.info(f"做市商已啟動 (dry_run={dry_run}, order_dist={order_distance}bps)")

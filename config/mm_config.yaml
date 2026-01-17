@@ -7,10 +7,11 @@ symbols:
   hedge: "BTC_USDT_Perp"  # GRVT 對沖交易對
 
 # 報價參數
+  binance: BTC/USDT:USDT
 quote:
   # 掛單距離 mark price (bps)
   # 需要 < 10 bps 才符合 StandX uptime 要求
-  order_distance_bps: 9
+  order_distance_bps: 7
 
   # 價格靠近時撤單距離 (bps)
   # 防止訂單被成交
@@ -31,7 +32,7 @@ position:
 
   # 最大持倉量 (BTC)
   # $50 餘額 @ 10x 槓桿，最多 0.005 BTC (~$475)
-  max_position_btc: 0.005
+  max_position_btc: 0.01
 
 # 波動率控制
 volatility:
@@ -40,7 +41,7 @@ volatility:
 
   # 波動率閾值 (bps)
   # 超過此值暫停掛單
-  threshold_bps: 5.0
+  threshold_bps: 5
 
 # 訂單參數
 order:
@@ -91,10 +92,10 @@ hedge:
 # Uptime Program 參數 (StandX 官方要求)
 uptime:
   # 訂單必須在 mark price ±10 bps 內才算 qualified
-  max_distance_bps: 10
+  max_distance_bps: 30
 
   # Boosted tier 需要 70% uptime
-  boosted_threshold: 0.70
+  boosted_threshold: 0.7
 
   # Standard tier 需要 50% uptime
-  standard_threshold: 0.50
+  standard_threshold: 0.5
