@@ -43,8 +43,19 @@ STANDX_ED25519_PRIVATE_KEY=your_ed25519_key
 
 ### 3. 啟動
 
+**一鍵啟動（推薦）：**
+
 ```bash
-# 啟動 Web Dashboard
+# Linux / macOS
+./start.sh
+
+# Windows
+start.bat
+```
+
+**手動啟動：**
+
+```bash
 python -m uvicorn src.web.auto_dashboard:app --host 127.0.0.1 --port 8888
 ```
 
