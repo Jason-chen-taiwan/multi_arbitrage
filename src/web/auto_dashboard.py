@@ -347,7 +347,6 @@ async def root():
             <div class="nav-tabs">
                 <button class="nav-tab active" onclick="switchPage('arbitrage')">套利監控</button>
                 <button class="nav-tab" onclick="switchPage('marketmaker')">StandX MM</button>
-                <button class="nav-tab" onclick="switchPage('grvt-marketmaker')">GRVT MM</button>
                 <button class="nav-tab" onclick="switchPage('settings')">設定</button>
                 <button class="nav-tab" onclick="switchPage('comparison')">參數比較</button>
             </div>

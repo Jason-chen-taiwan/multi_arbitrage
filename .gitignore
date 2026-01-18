@@ -50,8 +50,8 @@ data/
 .ipynb_checkpoints/
 *.ipynb
 
-# Config (keep examples)
-config/local_*.yaml
+# Config
+config/
 
 # Secrets
 *.key

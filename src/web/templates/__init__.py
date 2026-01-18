@@ -10,7 +10,6 @@ from .styles import get_css_styles
 from .pages import (
     get_arbitrage_page,
     get_marketmaker_page,
-    get_grvt_marketmaker_page,
     get_settings_page,
     get_comparison_page,
     get_all_pages,
@@ -20,7 +19,6 @@ __all__ = [
     'get_css_styles',
     'get_arbitrage_page',
     'get_marketmaker_page',
-    'get_grvt_marketmaker_page',
     'get_settings_page',
     'get_comparison_page',
     'get_all_pages',
