@@ -42,7 +42,6 @@ from src.web.system_manager import SystemManager
 
 # 全局變量
 mm_executor: Optional[MarketMakerExecutor] = None
-grvt_mm_executor: Optional[MarketMakerExecutor] = None
 connected_clients: List[WebSocket] = []
 mm_status = {
     'running': False,
@@ -50,12 +49,6 @@ mm_status = {
     'dry_run': False,  # 實盤模式
     'order_size_btc': 0.001,
     'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
-}
-grvt_mm_status = {
-    'running': False,
-    'status': 'stopped',
-    'order_size_btc': 0.01,
-    'order_distance_bps': 8,
 }
 
 # Simulation comparison globals
@@ -208,11 +201,6 @@ async def broadcast_data():
                 if mm_executor:
                     data['mm_executor'] = serialize_for_json(mm_executor.to_dict())
 
-                # GRVT 做市商狀態
-                data['grvt_mm_status'] = grvt_mm_status.copy()
-                if grvt_mm_executor:
-                    data['grvt_mm_executor'] = serialize_for_json(grvt_mm_executor.to_dict())
-
                 # 做市商實時倉位
                 positions = {
                     'standx': {'btc': 0, 'equity': 0},
@@ -316,25 +304,15 @@ def _set_mm_executor(value):
     global mm_executor
     mm_executor = value
 
-def _get_grvt_mm_executor():
-    return grvt_mm_executor
-
-def _set_grvt_mm_executor(value):
-    global grvt_mm_executor
-    grvt_mm_executor = value
-
 api_dependencies = {
     'config_manager': config_manager,
     'adapters_getter': get_adapters,
     'executor_getter': get_executor,
     'mm_executor_getter': _get_mm_executor,
     'mm_executor_setter': _set_mm_executor,
-    'grvt_mm_executor_getter': _get_grvt_mm_executor,
-    'grvt_mm_executor_setter': _set_grvt_mm_executor,
     'monitor_getter': get_monitor,
     'system_status': get_system_status(),
     'mm_status': mm_status,
-    'grvt_mm_status': grvt_mm_status,
     'init_system': init_system,
     'add_exchange': add_exchange,
     'remove_exchange': remove_exchange,
@@ -698,19 +676,6 @@ async def root():
                         badge.textContent = '停止';
                         badge.style.background = '#2a3347';
                     }
-                }
-
-                // 更新 GRVT MM UI
-                if (data.grvt_mm_status) {
-                    const grvtMmData = { running: data.grvt_mm_status.running };
-                    if (data.grvt_mm_executor) {
-                        grvtMmData.executor = data.grvt_mm_executor;
-                    }
-                    // 傳入 GRVT 訂單簿數據
-                    grvtMmData.orderbook = data.orderbooks?.GRVT?.['BTC_USDT_Perp'];
-                    // 傳入倉位和餘額數據
-                    grvtMmData.positions = data.mm_positions;
-                    updateGrvtMM(grvtMmData);
                 }
 
                 // 從 StandX 數據更新（需要市場數據）
@@ -1184,378 +1149,6 @@ async def root():
                     document.getElementById('mmStatusBadge').textContent = '停止';
                     document.getElementById('mmStatusBadge').style.background = '#2a3347';
                 }
-            }
-
-            // ===== GRVT 做市商控制 =====
-            let grvtMmConfig = null;
-
-            async function loadGrvtMMConfig() {
-                try {
-                    document.getElementById('grvtMmConfigStatus').textContent = '加載中...';
-                    const res = await fetch('/api/grvt-mm/config');
-                    grvtMmConfig = await res.json();
-                    console.log('Loaded GRVT MM config:', grvtMmConfig);
-
-                    // 填充表單
-                    if (grvtMmConfig.quote) {
-                        document.getElementById('grvtMmOrderDistance').value = grvtMmConfig.quote.order_distance_bps || 8;
-                        document.getElementById('grvtMmCancelDistance').value = grvtMmConfig.quote.cancel_distance_bps || 3;
-                        document.getElementById('grvtMmRebalanceDistance').value = grvtMmConfig.quote.rebalance_distance_bps || 12;
-                    }
-                    if (grvtMmConfig.position) {
-                        document.getElementById('grvtMmOrderSize').value = grvtMmConfig.position.order_size_btc || 0.01;
-                        document.getElementById('grvtMmMaxPosition').value = grvtMmConfig.position.max_position_btc || 1;
-                    }
-                    if (grvtMmConfig.volatility) {
-                        document.getElementById('grvtMmVolatilityWindow').value = grvtMmConfig.volatility.window_sec || 5;
-                        document.getElementById('grvtMmVolatilityThreshold').value = grvtMmConfig.volatility.threshold_bps || 5;
-                    }
-
-                    // 更新策略描述
-                    const orderDist = grvtMmConfig.quote?.order_distance_bps || 8;
-                    const cancelDist = grvtMmConfig.quote?.cancel_distance_bps || 3;
-                    const rebalDist = grvtMmConfig.quote?.rebalance_distance_bps || 12;
-                    document.getElementById('grvtMmStrategyDesc').textContent =
-                        `距離市價 ${orderDist} bps 掛單，${cancelDist} bps 撤單，${rebalDist} bps 重掛`;
-
-                    document.getElementById('grvtMmConfigStatus').textContent = '已加載';
-                    setTimeout(() => {
-                        document.getElementById('grvtMmConfigStatus').textContent = '';
-                    }, 2000);
-                } catch (e) {
-                    console.error('Error loading GRVT MM config:', e);
-                    document.getElementById('grvtMmConfigStatus').textContent = '加載失敗';
-                }
-            }
-
-            async function saveGrvtMMConfig() {
-                try {
-                    const config = {
-                        quote: {
-                            order_distance_bps: parseInt(document.getElementById('grvtMmOrderDistance').value),
-                            cancel_distance_bps: parseInt(document.getElementById('grvtMmCancelDistance').value),
-                            rebalance_distance_bps: parseInt(document.getElementById('grvtMmRebalanceDistance').value),
-                        },
-                        position: {
-                            order_size_btc: parseFloat(document.getElementById('grvtMmOrderSize').value),
-                            max_position_btc: parseFloat(document.getElementById('grvtMmMaxPosition').value),
-                        },
-                        volatility: {
-                            window_sec: parseInt(document.getElementById('grvtMmVolatilityWindow').value),
-                            threshold_bps: parseFloat(document.getElementById('grvtMmVolatilityThreshold').value),
-                        }
-                    };
-
-                    const res = await fetch('/api/grvt-mm/config', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(config)
-                    });
-                    const result = await res.json();
-                    if (result.success) {
-                        document.getElementById('grvtMmConfigStatus').textContent = '已保存';
-                        grvtMmConfig = result.config;
-                        setTimeout(() => {
-                            document.getElementById('grvtMmConfigStatus').textContent = '';
-                        }, 2000);
-                    }
-                } catch (e) {
-                    console.error('Error saving GRVT MM config:', e);
-                }
-            }
-
-            async function startGrvtMM() {
-                const orderSize = parseFloat(document.getElementById('grvtMmOrderSize').value);
-                const orderDistance = parseInt(document.getElementById('grvtMmOrderDistance').value);
-
-                if (!confirm('確定啟動 GRVT 做市商？將使用真實資金進行交易！')) {
-                    return;
-                }
-
-                const res = await fetch('/api/grvt-mm/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        order_size: orderSize,
-                        order_distance: orderDistance
-                    })
-                });
-                const result = await res.json();
-                if (result.success) {
-                    document.getElementById('grvtMmStartBtn').style.display = 'none';
-                    document.getElementById('grvtMmStopBtn').style.display = 'block';
-                    document.getElementById('grvtMmStatusBadge').textContent = '運行中';
-                    document.getElementById('grvtMmStatusBadge').style.background = '#10b981';
-                } else {
-                    alert('啟動失敗: ' + result.error);
-                }
-            }
-
-            async function stopGrvtMM() {
-                const res = await fetch('/api/grvt-mm/stop', { method: 'POST' });
-                const result = await res.json();
-                if (result.success) {
-                    document.getElementById('grvtMmStartBtn').style.display = 'block';
-                    document.getElementById('grvtMmStopBtn').style.display = 'none';
-                    document.getElementById('grvtMmStatusBadge').textContent = '停止';
-                    document.getElementById('grvtMmStatusBadge').style.background = '#2a3347';
-                }
-            }
-
-            // GRVT MM 頁面更新
-            function updateGrvtMM(grvtMmData) {
-                if (!grvtMmData) return;
-
-                // 先更新訂單簿（即使沒有 executor 也要顯示）
-                const ob = grvtMmData.orderbook;
-                if (ob && ob.bids && ob.asks) {
-                    updateGrvtMmOrderbook(ob);
-                }
-
-                // 如果沒有 executor，只更新訂單簿就返回
-                if (!grvtMmData.executor) return;
-
-                const exec = grvtMmData.executor;
-
-                // 更新狀態
-                if (grvtMmData.running) {
-                    document.getElementById('grvtMmStartBtn').style.display = 'none';
-                    document.getElementById('grvtMmStopBtn').style.display = 'block';
-                    document.getElementById('grvtMmStatusBadge').textContent = '運行中';
-                    document.getElementById('grvtMmStatusBadge').style.background = '#10b981';
-                } else {
-                    document.getElementById('grvtMmStartBtn').style.display = 'block';
-                    document.getElementById('grvtMmStopBtn').style.display = 'none';
-                    document.getElementById('grvtMmStatusBadge').textContent = '停止';
-                    document.getElementById('grvtMmStatusBadge').style.background = '#2a3347';
-                }
-
-                // 更新統計 (使用正確的欄位名稱)
-                if (exec.state) {
-                    const state = exec.state;
-                    const stats = state.stats || {};
-
-                    // 成交次數和 PnL
-                    document.getElementById('grvtMmFillCount').textContent = state.fill_count || 0;
-                    document.getElementById('grvtMmPnl').textContent = '$' + (state.pnl_usd || 0).toFixed(2);
-
-                    // 撤單統計 (從 stats 物件取得)
-                    document.getElementById('grvtMmBidFillRate').textContent =
-                        `${stats.bid_cancels || 0}/${stats.bid_queue_cancels || 0}/${stats.bid_rebalances || 0}`;
-                    document.getElementById('grvtMmAskFillRate').textContent =
-                        `${stats.ask_cancels || 0}/${stats.ask_queue_cancels || 0}/${stats.ask_rebalances || 0}`;
-
-                    // 波動率
-                    document.getElementById('grvtMmVolatility').textContent = (state.volatility_bps || 0).toFixed(1);
-                    document.getElementById('grvtMmVolatilityPauseCount').textContent = stats.volatility_pause_count || 0;
-
-                    // 運行時間 (從 executor.stats 取得)
-                    const runtimeSec = exec.stats?.uptime_seconds || 0;
-                    const hours = Math.floor(runtimeSec / 3600);
-                    const minutes = Math.floor((runtimeSec % 3600) / 60);
-                    document.getElementById('grvtMmRuntime').textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-                    document.getElementById('grvtMmTotalQuotes').textContent = `${Math.floor(runtimeSec)}秒`;
-
-                    // 當前掛單價格 (從 bid_order/ask_order 取得)
-                    if (state.bid_order && state.bid_order.price) {
-                        document.getElementById('grvtMmSuggestedBid').textContent = '$' + parseFloat(state.bid_order.price).toFixed(1);
-                    } else {
-                        document.getElementById('grvtMmSuggestedBid').textContent = '-';
-                    }
-                    if (state.ask_order && state.ask_order.price) {
-                        document.getElementById('grvtMmSuggestedAsk').textContent = '$' + parseFloat(state.ask_order.price).toFixed(1);
-                    } else {
-                        document.getElementById('grvtMmSuggestedAsk').textContent = '-';
-                    }
-
-                    // 訂單狀態
-                    document.getElementById('grvtMmBidStatus').textContent = state.bid_order ? `已掛單 (${state.bid_order.status})` : '無訂單';
-                    document.getElementById('grvtMmAskStatus').textContent = state.ask_order ? `已掛單 (${state.ask_order.status})` : '無訂單';
-
-                    // 倉位顯示 (GRVT MM: standx_position = GRVT主倉位, hedge_position = StandX對沖倉位)
-                    const grvtPos = state.standx_position || 0;
-                    const standxPos = state.hedge_position || 0;
-                    const netPos = state.net_position || (grvtPos + standxPos);
-                    document.getElementById('grvtMmGrvtPos').textContent = grvtPos.toFixed(4);
-                    document.getElementById('grvtMmStandxPos').textContent = standxPos.toFixed(4);
-                    document.getElementById('grvtMmNetPos').textContent = netPos.toFixed(4);
-                    // 淨敞口顏色
-                    const netPosEl = document.getElementById('grvtMmNetPos');
-                    if (Math.abs(netPos) < 0.0001) {
-                        netPosEl.style.color = '#10b981';  // 綠色 = 平衡
-                    } else {
-                        netPosEl.style.color = '#f59e0b';  // 橙色 = 有敞口
-                    }
-                }
-
-                // 餘額顯示 (從 mm_positions 獲取)
-                if (grvtMmData.positions) {
-                    const pos = grvtMmData.positions;
-                    document.getElementById('grvtMmGrvtUsdt').textContent = (pos.grvt?.usdt || 0).toFixed(2);
-                    document.getElementById('grvtMmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
-                }
-
-                // 對沖統計和操作歷史
-                if (grvtMmData.executor && grvtMmData.executor.state) {
-                    const execState = grvtMmData.executor.state;
-                    const stats = execState.stats || {};
-                    document.getElementById('grvtMmHedgeSuccessRate').textContent =
-                        stats.hedge_success_rate ? stats.hedge_success_rate.toFixed(1) + '%' : '-';
-
-                    // 更新操作歷史
-                    updateGrvtMmHistory(execState.operation_history || []);
-                }
-
-                // 更新止血策略參數顯示
-                if (exec.config) {
-                    const cfg = exec.config;
-                    // 策略模式
-                    const modeEl = document.getElementById('grvtMmStrategyMode');
-                    if (modeEl) {
-                        modeEl.textContent = cfg.strategy_mode || '-';
-                        modeEl.style.color = cfg.strategy_mode === 'rebate' ? '#10b981' : '#f59e0b';
-                    }
-                    const aggrEl = document.getElementById('grvtMmAggressiveness');
-                    if (aggrEl) aggrEl.textContent = cfg.aggressiveness || '-';
-                    const postOnlyEl = document.getElementById('grvtMmPostOnly');
-                    if (postOnlyEl) postOnlyEl.textContent = cfg.post_only ? '是' : '否';
-
-                    // Inventory Skew
-                    const skewEnabledEl = document.getElementById('grvtMmSkewEnabled');
-                    if (skewEnabledEl) {
-                        skewEnabledEl.textContent = cfg.inventory_skew_enabled ? '是' : '否';
-                        skewEnabledEl.style.color = cfg.inventory_skew_enabled ? '#10b981' : '#6b7280';
-                    }
-                    const skewPushEl = document.getElementById('grvtMmSkewPush');
-                    if (skewPushEl) skewPushEl.textContent = (cfg.inventory_skew_max_bps || 0) + ' bps';
-                    const skewPullEl = document.getElementById('grvtMmSkewPull');
-                    if (skewPullEl) skewPullEl.textContent = (cfg.inventory_skew_pull_bps || 0) + ' bps';
-
-                    // 硬停參數
-                    const hardStopEl = document.getElementById('grvtMmHardStop');
-                    if (hardStopEl) hardStopEl.textContent = (cfg.hard_stop_position_btc || 0) + ' BTC';
-                    const resumeEl = document.getElementById('grvtMmResumePos');
-                    if (resumeEl) resumeEl.textContent = (cfg.resume_position_btc || 0) + ' BTC';
-                    const fillPolicyEl = document.getElementById('grvtMmFillPolicy');
-                    if (fillPolicyEl) fillPolicyEl.textContent = cfg.fill_cancel_policy || 'none';
-                }
-
-                // 更新當前 Skew 狀態
-                if (exec.stats) {
-                    const posRatioEl = document.getElementById('grvtMmPosRatio');
-                    if (posRatioEl && exec.state) {
-                        const pos = exec.state.standx_position || 0;
-                        const maxPos = exec.config?.max_position_btc || 1;
-                        const ratio = maxPos > 0 ? (pos / maxPos * 100) : 0;
-                        posRatioEl.textContent = ratio.toFixed(1) + '%';
-                        posRatioEl.style.color = Math.abs(ratio) > 70 ? '#ef4444' : '#e4e6eb';
-                    }
-                    // Bid/Ask bps 可以從 stats 中獲取（如果有的話）
-                    const bidBpsEl = document.getElementById('grvtMmBidBps');
-                    const askBpsEl = document.getElementById('grvtMmAskBps');
-                    if (bidBpsEl) bidBpsEl.textContent = (exec.stats.current_bid_bps || '-') + ' bps';
-                    if (askBpsEl) askBpsEl.textContent = (exec.stats.current_ask_bps || '-') + ' bps';
-                }
-
-                // 更新中間價
-                if (exec.stats && exec.stats.last_mid_price) {
-                    document.getElementById('grvtMmMidPrice').textContent = '$' + parseFloat(exec.stats.last_mid_price).toFixed(2);
-                }
-            }
-
-            // GRVT MM 訂單簿顯示
-            function updateGrvtMmOrderbook(ob) {
-                const bidsContainer = document.getElementById('grvtMmBidRows');
-                const asksContainer = document.getElementById('grvtMmAskRows');
-                if (!bidsContainer || !asksContainer) return;
-
-                const bids = ob.bids.slice(0, 10);
-                const asks = ob.asks.slice(0, 10);
-
-                // 計算 mid price 和 spread
-                if (bids.length > 0 && asks.length > 0) {
-                    const bestBid = bids[0][0];
-                    const bestAsk = asks[0][0];
-                    const midPrice = (bestBid + bestAsk) / 2;
-                    const spreadBps = (bestAsk - bestBid) / midPrice * 10000;
-
-                    // 更新 header 中的 mid price
-                    const midPriceEl = document.getElementById('grvtMmMidPrice');
-                    if (midPriceEl && midPriceEl.textContent === '-') {
-                        midPriceEl.textContent = '$' + midPrice.toFixed(2);
-                    }
-
-                    // 更新 spread
-                    document.getElementById('grvtMmSpread').textContent = spreadBps.toFixed(1);
-                    document.getElementById('grvtMmSpreadDisplay').textContent = spreadBps.toFixed(1) + ' bps';
-
-                    // 深度分析
-                    const bidDepth = bids.reduce((sum, b) => sum + b[1], 0);
-                    const askDepth = asks.reduce((sum, a) => sum + a[1], 0);
-                    const totalDepth = bidDepth + askDepth;
-                    const bidPct = totalDepth > 0 ? (bidDepth / totalDepth * 100) : 50;
-                    const askPct = 100 - bidPct;
-
-                    document.getElementById('grvtMmDepthBid').style.width = bidPct + '%';
-                    document.getElementById('grvtMmDepthBid').textContent = bidDepth.toFixed(3) + ' BTC';
-                    document.getElementById('grvtMmDepthAsk').style.width = askPct + '%';
-                    document.getElementById('grvtMmDepthAsk').textContent = askDepth.toFixed(3) + ' BTC';
-
-                    const imbalance = ((bidDepth - askDepth) / totalDepth * 100).toFixed(1);
-                    document.getElementById('grvtMmImbalance').textContent = '平衡: ' + (imbalance > 0 ? '+' : '') + imbalance + '%';
-                }
-
-                // 渲染 bids
-                bidsContainer.innerHTML = bids.map(b => `
-                    <div class="ob-row">
-                        <span class="text-green">${b[0].toFixed(1)}</span>
-                        <span style="text-align:right">${b[1].toFixed(4)}</span>
-                    </div>
-                `).join('');
-
-                // 渲染 asks
-                asksContainer.innerHTML = asks.map(a => `
-                    <div class="ob-row">
-                        <span class="text-red">${a[0].toFixed(1)}</span>
-                        <span style="text-align:right">${a[1].toFixed(4)}</span>
-                    </div>
-                `).join('');
-            }
-
-            // GRVT MM 操作歷史顯示
-            function updateGrvtMmHistory(history) {
-                const container = document.getElementById('grvtMmHistoryList');
-                if (!container) return;
-
-                if (!history || history.length === 0) {
-                    container.innerHTML = '<div style="color: #9ca3af; text-align: center; padding: 20px;">等待訂單操作...</div>';
-                    return;
-                }
-
-                // 最新的在前面
-                const recentHistory = history.slice().reverse().slice(0, 50);
-
-                container.innerHTML = recentHistory.map(op => {
-                    const actionColors = {
-                        'place': '#10b981',
-                        'cancel': '#ef4444',
-                        'rebalance': '#f59e0b',
-                        'fill': '#3b82f6',
-                        'hedge': '#8b5cf6'
-                    };
-                    const color = actionColors[op.action] || '#9ca3af';
-                    const sideIcon = op.side === 'buy' ? '🟢' : '🔴';
-
-                    return `
-                        <div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #1a1f2e;">
-                            <span style="color: #6b7280; font-size: 10px; min-width: 50px;">${op.time || '-'}</span>
-                            <span style="color: ${color}; font-weight: 600; min-width: 60px;">${op.action.toUpperCase()}</span>
-                            <span>${sideIcon}</span>
-                            <span style="color: #e4e6eb;">$${op.order_price ? parseFloat(op.order_price).toFixed(1) : '-'}</span>
-                            <span style="color: #6b7280; flex: 1; text-align: right; font-size: 10px;">${op.reason || ''}</span>
-                        </div>
-                    `;
-                }).join('');
             }
 
             // ===== 參數比較模擬功能 =====
@@ -2247,7 +1840,6 @@ async def root():
             updateExchangeOptions();
             loadConfiguredExchanges();
             loadMMConfig();  // 加載 StandX 做市商配置
-            loadGrvtMMConfig();  // 加載 GRVT 做市商配置
         </script>
     </body>
     </html>

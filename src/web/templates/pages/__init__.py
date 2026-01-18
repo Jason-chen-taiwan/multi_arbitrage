@@ -6,7 +6,6 @@ HTML 頁面模組
 
 from .arbitrage import get_arbitrage_page
 from .marketmaker import get_marketmaker_page
-from .grvt_marketmaker import get_grvt_marketmaker_page
 from .settings import get_settings_page
 from .comparison import get_comparison_page
 
@@ -16,7 +15,6 @@ def get_all_pages() -> str:
     return "\n".join([
         get_arbitrage_page(),
         get_marketmaker_page(),
-        get_grvt_marketmaker_page(),
         get_settings_page(),
         get_comparison_page(),
     ])
@@ -25,7 +23,6 @@ def get_all_pages() -> str:
 __all__ = [
     'get_arbitrage_page',
     'get_marketmaker_page',
-    'get_grvt_marketmaker_page',
     'get_settings_page',
     'get_comparison_page',
     'get_all_pages',
