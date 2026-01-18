@@ -29,11 +29,11 @@ quote:
 position:
   # 單邊訂單量 (BTC)
   # $630 餘額，保守配置 (~$10 單邊保證金，約 1.5%)
-  order_size_btc: 0.02
+  order_size_btc: 0.001
 
   # 最大持倉量 (BTC)
   # 設為訂單大小的 3 倍，降低風險
-  max_position_btc: 0.1
+  max_position_btc: 0.01
 
 # 波動率控制
 volatility:

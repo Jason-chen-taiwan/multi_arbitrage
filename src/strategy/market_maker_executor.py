@@ -333,7 +333,8 @@ class MarketMakerExecutor:
         self._event_deduplicator = EventDeduplicator(ttl_sec=60.0)
 
         # 【新增】下單節流器 - 防止快速重複下單
-        self._order_throttle = OrderThrottle(cooldown_sec=2.0)
+        # 增加冷卻時間到 5 秒，適應 StandX API 延遲
+        self._order_throttle = OrderThrottle(cooldown_sec=5.0)
 
         # 【新增】REST Gate 失敗計數器
         self._rest_gate_failures = 0
@@ -1230,7 +1231,8 @@ class MarketMakerExecutor:
         can_place_bid = current_position < max_pos   # 還沒 long 到上限
         can_place_ask = current_position > -max_pos  # 還沒 short 到下限
 
-        # ==================== 掛買單（用 REST 結果判斷）====================
+        # ==================== 掛買單（用 REST 結果 + 本地狀態判斷）====================
+        local_bid = self.state.get_bid_order()
         if not can_place_bid:
             logger.debug(f"[Limit] Skipping bid: pos {current_position} >= max {max_pos}")
         elif has_bid_on_exchange:
@@ -1238,10 +1240,14 @@ class MarketMakerExecutor:
             logger.debug("Exchange already has bid order, skipping")
         elif self._placing_bid:
             logger.debug("Bid order already being placed, skipping")
+        elif local_bid and not has_bid_on_exchange:
+            # 【新增】本地有 bid 但 REST 沒查到 → 可能是 API 延遲，等待確認
+            logger.debug(f"[Local Guard] Local bid exists but not on exchange yet, waiting for confirmation")
         else:
             await self._place_bid(bid_price, post_only=use_post_only)
 
-        # ==================== 掛賣單（用 REST 結果判斷）====================
+        # ==================== 掛賣單（用 REST 結果 + 本地狀態判斷）====================
+        local_ask = self.state.get_ask_order()
         if not can_place_ask:
             logger.debug(f"[Limit] Skipping ask: pos {current_position} <= -{max_pos}")
         elif has_ask_on_exchange:
@@ -1249,6 +1255,9 @@ class MarketMakerExecutor:
             logger.debug("Exchange already has ask order, skipping")
         elif self._placing_ask:
             logger.debug("Ask order already being placed, skipping")
+        elif local_ask and not has_ask_on_exchange:
+            # 【新增】本地有 ask 但 REST 沒查到 → 可能是 API 延遲，等待確認
+            logger.debug(f"[Local Guard] Local ask exists but not on exchange yet, waiting for confirmation")
         else:
             await self._place_ask(ask_price, post_only=use_post_only)
 
