@@ -87,7 +87,7 @@ class OrderThrottle:
 
     def can_place(self, side: str) -> bool:
         """
-        檢查是否可以下單
+        檢查是否可以下單（僅檢查，不記錄）
 
         Args:
             side: 訂單方向 ("buy" or "sell")
@@ -103,9 +103,31 @@ class OrderThrottle:
                 return False
             return True
 
+    def try_acquire(self, side: str) -> bool:
+        """
+        原子性地檢查並獲取下單權限
+
+        這是推薦使用的方法，可以避免 can_place + record_order 之間的競爭條件。
+
+        Args:
+            side: 訂單方向 ("buy" or "sell")
+
+        Returns:
+            True 如果獲取成功（同時已記錄時間）
+        """
+        now = time.time()
+
+        with self._lock:
+            last = self._last_order.get(side, 0)
+            if now - last < self._cooldown:
+                return False
+            # 原子性地記錄時間
+            self._last_order[side] = now
+            return True
+
     def record_order(self, side: str):
         """
-        記錄下單時間
+        記錄下單時間（已廢棄，建議使用 try_acquire）
 
         Args:
             side: 訂單方向 ("buy" or "sell")

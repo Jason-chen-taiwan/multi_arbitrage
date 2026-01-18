@@ -1118,8 +1118,8 @@ class MarketMakerExecutor:
                 for order in sorted_bids[1:]:
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                         trade_log.info(
@@ -1136,8 +1136,8 @@ class MarketMakerExecutor:
                 for order in sorted_asks[1:]:
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                         trade_log.info(
@@ -1513,13 +1513,10 @@ class MarketMakerExecutor:
             logger.info(f"[DRY RUN] Would place bid: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
 
-        # 【新增】節流檢查 - 防止快速重複下單
-        if not self._order_throttle.can_place("buy"):
+        # 【修復】原子性節流檢查 - 同時檢查並記錄，防止競爭條件
+        if not self._order_throttle.try_acquire("buy"):
             logger.debug("[Throttle] Bid order throttled, cooldown active")
             return
-
-        # 【關鍵】立即記錄下單時間，防止競爭條件
-        self._order_throttle.record_order("buy")
 
         # 設置下單中標記，防止重複下單
         self._placing_bid = True
@@ -1581,13 +1578,10 @@ class MarketMakerExecutor:
             logger.info(f"[DRY RUN] Would place ask: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
 
-        # 【新增】節流檢查 - 防止快速重複下單
-        if not self._order_throttle.can_place("sell"):
+        # 【修復】原子性節流檢查 - 同時檢查並記錄，防止競爭條件
+        if not self._order_throttle.try_acquire("sell"):
             logger.debug("[Throttle] Ask order throttled, cooldown active")
             return
-
-        # 【關鍵】立即記錄下單時間，防止競爭條件
-        self._order_throttle.record_order("sell")
 
         # 設置下單中標記，防止重複下單
         self._placing_ask = True
