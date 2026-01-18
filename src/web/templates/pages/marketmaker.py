@@ -121,11 +121,12 @@ def get_marketmaker_page() -> str:
                         </div>
                         <!-- 倉位狀態 -->
                         <div style="display: flex; gap: 15px; font-size: 11px; color: #9ca3af; padding-top: 10px; border-top: 1px solid #2a3347;">
-                            <span>StandX: <span id="mmStandxPos" style="color: #e4e6eb;">0</span> BTC</span>
-                            <span>GRVT: <span id="mmGrvtPos" style="color: #e4e6eb;">0</span> BTC</span>
-                            <span>淨敞口: <span id="mmNetPos" style="color: #10b981;">0</span></span>
-                            <span>StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">0</span></span>
-                            <span>GRVT USDT: $<span id="mmGrvtUsdt" style="color: #e4e6eb;">0</span></span>
+                            <span>StandX: <span id="mmStandxPos" style="color: #e4e6eb;">-</span> BTC</span>
+                            <span>GRVT: <span id="mmGrvtPos" style="color: #e4e6eb;">-</span> BTC</span>
+                            <span>淨敞口: <span id="mmNetPos" style="color: #10b981;">-</span></span>
+                            <span>StandX 權益: $<span id="mmStandxEquity" style="color: #e4e6eb;">-</span></span>
+                            <span>GRVT USDT: $<span id="mmGrvtUsdt" style="color: #e4e6eb;">-</span></span>
+                            <span style="margin-left: auto;">同步: <span id="mmSyncTime" style="color: #6b7280;">未連接</span></span>
                         </div>
                     </div>
 
@@ -239,6 +240,27 @@ def get_marketmaker_page() -> str:
                                     暫停: <span id="mmVolatilityPauseCount">0</span>次
                                 </div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- 成交歷史 -->
+                    <div class="card">
+                        <div class="card-title">成交歷史 <span style="font-size: 10px; color: #9ca3af;">(最近 50 筆)</span></div>
+                        <div id="mmFillHistory" style="max-height: 250px; overflow-y: auto; font-size: 11px;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="color: #9ca3af; border-bottom: 1px solid #2a3347;">
+                                        <th style="padding: 6px 4px; text-align: left;">時間</th>
+                                        <th style="padding: 6px 4px; text-align: left;">方向</th>
+                                        <th style="padding: 6px 4px; text-align: right;">價格</th>
+                                        <th style="padding: 6px 4px; text-align: right;">數量</th>
+                                        <th style="padding: 6px 4px; text-align: right;">價值</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mmFillHistoryBody">
+                                    <tr><td colspan="5" style="color: #9ca3af; text-align: center; padding: 20px;">等待成交...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 

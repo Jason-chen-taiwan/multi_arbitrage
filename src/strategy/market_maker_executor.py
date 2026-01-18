@@ -1713,14 +1713,17 @@ class MarketMakerExecutor:
         ask = self.state.get_ask_order()
         order_side = None
         order_price = Decimal("0")
+        order_qty = Decimal("0")
         order_id = None
         if bid and bid.client_order_id == client_order_id:
             order_side = "buy"
             order_price = bid.price
+            order_qty = bid.size
             order_id = bid.order_id
         elif ask and ask.client_order_id == client_order_id:
             order_side = "sell"
             order_price = ask.price
+            order_qty = ask.size
             order_id = ask.order_id
 
         if self.config.dry_run:
@@ -1807,11 +1810,20 @@ class MarketMakerExecutor:
                     logger.warning(f"[Cancel->Fill] Order {client_order_id} was FILLED during cancel!")
                     trade_log.info(
                         f"FILL_ON_CANCEL | exchange={self.config.primary_exchange} | "
-                        f"side={order_side} | price={order_price} | "
+                        f"side={order_side} | price={order_price} | qty={order_qty} | "
                         f"client_order_id={client_order_id} | reason=cancel_returned_filled"
                     )
                     # 記錄成交統計（不觸發對沖，僅記錄）
                     self.state.record_fill()
+                    # 記錄成交事件（供前端顯示）
+                    if order_side and order_price and order_qty:
+                        self.state.record_fill_event(
+                            side=order_side,
+                            price=order_price,
+                            qty=order_qty,
+                            is_maker=True,  # 撤單時成交通常是 maker
+                            order_id=client_order_id,
+                        )
                 else:
                     logger.info(f"Order already gone: {client_order_id} (code={error_code})")
                     trade_log.info(f"CANCEL_GONE | exchange={self.config.primary_exchange} | client_order_id={client_order_id} | code={error_code}")
@@ -2455,6 +2467,15 @@ class MarketMakerExecutor:
 
         # 更新狀態
         self.state.record_fill()
+
+        # 記錄成交事件（含詳細資訊，供前端顯示）
+        self.state.record_fill_event(
+            side=fill.side,
+            price=fill.fill_price,
+            qty=fill.fill_qty,
+            is_maker=fill.is_maker,
+            order_id=fill.client_order_id or fill.order_id,
+        )
 
         # ==================== Rebate 追蹤 (rebate 模式) ====================
         if self.config.strategy_mode == "rebate":

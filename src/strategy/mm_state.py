@@ -291,6 +291,10 @@ class MMState:
         self._operation_history: List[OperationRecord] = []
         self._max_history_size = 50
 
+        # 成交歷史記錄 (最多保留 50 筆)
+        self._fill_history: List[Dict] = []
+        self._max_fill_history_size = 50
+
         # ==================== Rebate 追蹤 (GRVT rebate 模式) ====================
         self._maker_volume: Decimal = Decimal("0")       # Maker 成交額
         self._taker_volume: Decimal = Decimal("0")       # Taker 成交額
@@ -602,6 +606,46 @@ class MMState:
             self._total_fills += 1
             self._fill_count += 1
             self._realized_pnl += pnl
+
+    def record_fill_event(
+        self,
+        side: str,
+        price: Decimal,
+        qty: Decimal,
+        is_maker: Optional[bool] = None,
+        order_id: str = "",
+    ):
+        """
+        記錄成交事件（含詳細資訊）
+
+        Args:
+            side: "buy" 或 "sell"
+            price: 成交價格
+            qty: 成交數量
+            is_maker: 是否為 maker
+            order_id: 訂單 ID
+        """
+        with self._lock:
+            fill_record = {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "timestamp": time.time(),
+                "side": side,
+                "price": float(price),
+                "qty": float(qty),
+                "value": float(price * qty),
+                "is_maker": is_maker,
+                "order_id": order_id,
+            }
+            self._fill_history.append(fill_record)
+
+            # 保持最大長度
+            if len(self._fill_history) > self._max_fill_history_size:
+                self._fill_history = self._fill_history[-self._max_fill_history_size:]
+
+    def get_fill_history(self) -> List[Dict]:
+        """獲取成交歷史"""
+        with self._lock:
+            return list(self._fill_history)
 
     def record_hedge(self, success: bool):
         """記錄對沖"""

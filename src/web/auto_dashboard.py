@@ -201,43 +201,54 @@ async def broadcast_data():
                 if mm_executor:
                     data['mm_executor'] = serialize_for_json(mm_executor.to_dict())
 
-                # 做市商實時倉位
+                # 做市商實時倉位 (統一從 executor.state 讀取)
+                import time as time_module
                 positions = {
+                    'status': 'disconnected',
                     'standx': {'btc': 0, 'equity': 0},
                     'grvt': {'btc': 0, 'usdt': 0},
+                    'net_btc': 0,
+                    'is_hedged': True,
+                    'seconds_ago': None,
                 }
-                if 'STANDX' in adapters:
-                    try:
-                        standx = adapters['STANDX']
-                        standx_positions = await standx.get_positions('BTC-USD')
-                        for pos in standx_positions:
-                            if 'BTC' in pos.symbol:
-                                qty = float(pos.size)
-                                if pos.side == 'short':
-                                    qty = -qty
-                                positions['standx']['btc'] = qty
-                                logger.debug(f"StandX position: {pos.symbol} {pos.side} {pos.size} -> {qty}")
-                        balance = await standx.get_balance()
-                        positions['standx']['equity'] = float(balance.equity)
-                    except Exception as e:
-                        logger.warning(f"查詢 StandX 倉位失敗: {e}")
-                if 'GRVT' in adapters:
-                    try:
-                        grvt = adapters['GRVT']
-                        grvt_positions = await grvt.get_positions('BTC_USDT_Perp')
-                        for pos in grvt_positions:
-                            if 'BTC' in pos.symbol:
-                                qty = float(pos.size)
-                                if pos.side == 'short':
-                                    qty = -qty
-                                positions['grvt']['btc'] = qty
-                        balance = await grvt.get_balance()
-                        positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
-                    except Exception as e:
-                        logger.debug(f"查詢 GRVT 倉位失敗: {e}")
-                positions['net_btc'] = positions['standx']['btc'] + positions['grvt']['btc']
-                positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
+                if mm_executor:
+                    # 從 executor.state 讀取 (統一資料來源)
+                    state = mm_executor.state
+                    standx_pos = float(state.get_standx_position())
+                    hedge_pos = float(state.get_hedge_position())
+                    last_sync = state.get_last_position_sync()
+                    seconds_ago = round(time_module.time() - last_sync, 1) if last_sync > 0 else None
+
+                    positions = {
+                        'status': 'connected',
+                        'standx': {'btc': standx_pos, 'equity': 0},
+                        'grvt': {'btc': hedge_pos, 'usdt': 0},
+                        'net_btc': standx_pos + hedge_pos,
+                        'is_hedged': abs(standx_pos + hedge_pos) < 0.0001,
+                        'seconds_ago': seconds_ago,
+                    }
+
+                    # 餘額仍需從 adapter 查詢 (state 不追蹤餘額)
+                    if 'STANDX' in adapters:
+                        try:
+                            balance = await adapters['STANDX'].get_balance()
+                            positions['standx']['equity'] = float(balance.equity)
+                        except Exception as e:
+                            logger.debug(f"查詢 StandX 餘額失敗: {e}")
+                    if 'GRVT' in adapters:
+                        try:
+                            balance = await adapters['GRVT'].get_balance()
+                            positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
+                        except Exception as e:
+                            logger.debug(f"查詢 GRVT 餘額失敗: {e}")
+
                 data['mm_positions'] = positions
+
+                # 成交歷史 (從 executor.state 讀取)
+                if mm_executor:
+                    data['fill_history'] = mm_executor.state.get_fill_history()
+                else:
+                    data['fill_history'] = []
 
                 # 廣播
                 disconnected = []
@@ -647,18 +658,38 @@ async def root():
                 // 先更新不依賴市場數據的部分 (倉位、狀態)
                 // 這些應該總是更新，即使市場數據不可用
 
-                // 更新實時倉位 (從 WebSocket)
+                // 更新實時倉位 (從 WebSocket，統一資料來源)
                 if (data.mm_positions) {
                     const pos = data.mm_positions;
-                    document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
-                    document.getElementById('mmGrvtPos').textContent = (pos.grvt?.btc || 0).toFixed(4);
-                    document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
-                    document.getElementById('mmGrvtUsdt').textContent = (pos.grvt?.usdt || 0).toFixed(2);
+                    const isConnected = pos.status === 'connected';
 
-                    const netPos = pos.net_btc || 0;
-                    const netEl = document.getElementById('mmNetPos');
-                    netEl.textContent = netPos.toFixed(4);
-                    netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
+                    if (isConnected) {
+                        document.getElementById('mmStandxPos').textContent = (pos.standx?.btc || 0).toFixed(4);
+                        document.getElementById('mmGrvtPos').textContent = (pos.grvt?.btc || 0).toFixed(4);
+                        document.getElementById('mmStandxEquity').textContent = (pos.standx?.equity || 0).toFixed(2);
+                        document.getElementById('mmGrvtUsdt').textContent = (pos.grvt?.usdt || 0).toFixed(2);
+
+                        const netPos = pos.net_btc || 0;
+                        const netEl = document.getElementById('mmNetPos');
+                        netEl.textContent = netPos.toFixed(4);
+                        netEl.style.color = Math.abs(netPos) < 0.0001 ? '#10b981' : '#ef4444';
+
+                        // 顯示同步時間 (如果有)
+                        const syncEl = document.getElementById('mmSyncTime');
+                        if (syncEl && pos.seconds_ago !== null) {
+                            syncEl.textContent = pos.seconds_ago.toFixed(1) + 's ago';
+                            syncEl.style.color = pos.seconds_ago < 5 ? '#10b981' : '#f59e0b';
+                        }
+                    } else {
+                        // 未連接狀態
+                        document.getElementById('mmStandxPos').textContent = '-';
+                        document.getElementById('mmGrvtPos').textContent = '-';
+                        document.getElementById('mmStandxEquity').textContent = '-';
+                        document.getElementById('mmGrvtUsdt').textContent = '-';
+                        document.getElementById('mmNetPos').textContent = '-';
+                        const syncEl = document.getElementById('mmSyncTime');
+                        if (syncEl) syncEl.textContent = '未連接';
+                    }
                 }
 
                 // 更新 StandX MM UI 按鈕狀態
@@ -674,6 +705,24 @@ async def root():
                     } else {
                         badge.textContent = '停止';
                         badge.style.background = '#2a3347';
+                    }
+                }
+
+                // 更新成交歷史
+                if (data.fill_history && data.fill_history.length > 0) {
+                    const tbody = document.getElementById('mmFillHistoryBody');
+                    if (tbody) {
+                        tbody.innerHTML = data.fill_history.slice().reverse().map(fill => {
+                            const sideColor = fill.side === 'buy' ? '#10b981' : '#ef4444';
+                            const sideText = fill.side === 'buy' ? 'LONG' : 'SHORT';
+                            return `<tr style="border-bottom: 1px solid #1a1f2e;">
+                                <td style="padding: 6px 4px;">${fill.time}</td>
+                                <td style="padding: 6px 4px; color: ${sideColor}; font-weight: 600;">${sideText}</td>
+                                <td style="padding: 6px 4px; text-align: right;">${fill.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                <td style="padding: 6px 4px; text-align: right;">${fill.qty.toFixed(4)}</td>
+                                <td style="padding: 6px 4px; text-align: right;">$${fill.value.toFixed(2)}</td>
+                            </tr>`;
+                        }).join('');
                     }
                 }
 
