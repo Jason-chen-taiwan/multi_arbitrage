@@ -813,8 +813,9 @@ class MMState:
             self._last_uptime_check = now
             self._total_time_ms += delta_ms
 
-            # 如果沒有訂單，算作 out of range
-            if bid_price is None and ask_price is None:
+            # StandX Uptime Program 要求雙邊都有訂單才算 qualified
+            # 如果缺少任一邊訂單，算作 out of range
+            if bid_price is None or ask_price is None:
                 self._out_of_range_time_ms += delta_ms
                 return
 
@@ -854,6 +855,7 @@ class MMState:
             ) / total * 100
 
             return {
+                "uptime_pct": boosted_pct,  # StandX Uptime Program: boosted tier = qualified uptime
                 "boosted_pct": boosted_pct,
                 "standard_pct": standard_pct,
                 "basic_pct": basic_pct,
@@ -902,6 +904,7 @@ class MMState:
                 "basic_time_ms": self._basic_time_ms,
                 "out_of_range_time_ms": self._out_of_range_time_ms,
                 "total_time_ms": self._total_time_ms,
+                "uptime_pct": self._boosted_time_ms / total_time * 100,  # StandX Uptime = boosted tier
                 "boosted_pct": self._boosted_time_ms / total_time * 100,
                 "standard_pct": self._standard_time_ms / total_time * 100,
                 "basic_pct": self._basic_time_ms / total_time * 100,
@@ -967,6 +970,7 @@ class MMState:
                 "basic_time_ms": self._basic_time_ms,
                 "out_of_range_time_ms": self._out_of_range_time_ms,
                 "total_time_ms": self._total_time_ms,
+                "uptime_pct": self._boosted_time_ms / total_time * 100,  # StandX Uptime = boosted tier
                 "boosted_pct": self._boosted_time_ms / total_time * 100,
                 "standard_pct": self._standard_time_ms / total_time * 100,
                 "basic_pct": self._basic_time_ms / total_time * 100,

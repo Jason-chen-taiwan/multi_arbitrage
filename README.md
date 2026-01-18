@@ -11,39 +11,13 @@
 
 ## 快速開始
 
-### 1. 安裝
+### 1. 確認 Python 已安裝
 
 ```bash
-# 創建虛擬環境
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# 安裝依賴
-pip install -r requirements.txt
+python --version  # 需要 Python 3.10+
 ```
 
-### 2. 配置
-
-複製範例配置並填入你的 StandX API 憑證：
-
-```bash
-cp .env.example .env
-```
-
-編輯 `.env`：
-
-```env
-# StandX Token 模式（推薦）
-STANDX_API_TOKEN=your_api_token
-STANDX_ED25519_PRIVATE_KEY=your_ed25519_key
-
-# 或使用錢包模式
-# WALLET_PRIVATE_KEY=your_wallet_private_key
-```
-
-### 3. 啟動
-
-**一鍵啟動（推薦）：**
+### 2. 啟動系統
 
 ```bash
 # Linux / macOS
@@ -53,13 +27,14 @@ STANDX_ED25519_PRIVATE_KEY=your_ed25519_key
 start.bat
 ```
 
-**手動啟動：**
+腳本會自動處理虛擬環境創建和依賴安裝。
 
-```bash
-python -m uvicorn src.web.auto_dashboard:app --host 127.0.0.1 --port 8888
-```
+### 3. 配置 StandX
 
-訪問 http://localhost:8888
+1. 訪問 <http://localhost:8888>
+2. 進入「設定」頁面
+3. 選擇 StandX，填入 API Token 和 Ed25519 Private Key
+4. 點擊「保存並開始監控」
 
 ## Web Dashboard
 
