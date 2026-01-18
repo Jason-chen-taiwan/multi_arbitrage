@@ -172,56 +172,45 @@ def register_mm_routes(app, dependencies):
 
     @router.get("/positions")
     async def get_mm_positions():
-        """獲取做市商實時倉位"""
+        """
+        獲取做市商倉位（從 executor state 讀取，統一資料來源）
+
+        返回：
+        - 如果 executor 未運行：{"status": "disconnected"}
+        - 如果 executor 運行中：從 state 讀取的倉位數據 + 同步時間
+        """
+        import time
+
         try:
-            adapters = adapters_getter()
+            mm_executor = mm_executor_getter()
+
+            # Executor 未運行 → 返回未連接狀態
+            if not mm_executor:
+                return JSONResponse({
+                    'status': 'disconnected',
+                    'message': '做市商未啟動'
+                })
+
+            # 從 executor state 讀取倉位（統一資料來源）
+            state = mm_executor.state
+            standx_pos = float(state.get_standx_position())
+            hedge_pos = float(state.get_hedge_position())
+            last_sync = state.get_last_position_sync()
+            seconds_ago = round(time.time() - last_sync, 1) if last_sync > 0 else None
+
             positions = {
-                'standx': {'btc': 0, 'equity': 0},
-                'grvt': {'btc': 0, 'usdt': 0},
+                'status': 'connected',
+                'standx': {'btc': standx_pos},
+                'grvt': {'btc': hedge_pos},
+                'net_btc': standx_pos + hedge_pos,
+                'is_hedged': abs(standx_pos + hedge_pos) < 0.0001,
+                'last_sync': last_sync,
+                'seconds_ago': seconds_ago,
             }
-
-            # 查詢 StandX 倉位
-            if 'STANDX' in adapters:
-                try:
-                    standx = adapters['STANDX']
-                    standx_positions = await standx.get_positions('BTC-USD')
-                    for pos in standx_positions:
-                        if 'BTC' in pos.symbol:
-                            qty = float(pos.size)
-                            if pos.side == 'short':
-                                qty = -qty
-                            positions['standx']['btc'] = qty
-
-                    # 查詢餘額
-                    balance = await standx.get_balance()
-                    positions['standx']['equity'] = float(balance.equity)
-                except Exception as e:
-                    logger.warning(f"查詢 StandX 倉位失敗: {e}")
-
-            # 查詢 GRVT 倉位
-            if 'GRVT' in adapters:
-                try:
-                    grvt = adapters['GRVT']
-                    grvt_positions = await grvt.get_positions('BTC_USDT_Perp')
-                    for pos in grvt_positions:
-                        if 'BTC' in pos.symbol:
-                            qty = float(pos.size)
-                            if pos.side == 'short':
-                                qty = -qty
-                            positions['grvt']['btc'] = qty
-
-                    # 查詢餘額
-                    balance = await grvt.get_balance()
-                    positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
-                except Exception as e:
-                    logger.warning(f"查詢 GRVT 倉位失敗: {e}")
-
-            # 計算淨敞口
-            positions['net_btc'] = positions['standx']['btc'] + positions['grvt']['btc']
-            positions['is_hedged'] = abs(positions['net_btc']) < 0.0001
 
             return JSONResponse(serialize_for_json(positions))
         except Exception as e:
+            logger.error(f"獲取倉位失敗: {e}")
             return JSONResponse({'error': str(e)})
 
     @router.get("/config")

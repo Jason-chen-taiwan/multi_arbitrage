@@ -245,6 +245,7 @@ class MMState:
         # 倉位追蹤 (保留舊欄位作為 fallback)
         self._standx_position: Decimal = Decimal("0")
         self._hedge_position: Decimal = Decimal("0")  # GRVT 對沖倉位
+        self._last_position_sync: float = 0  # 上次倉位同步時間
 
         # 價格歷史 (用於波動率計算)
         self._price_history: List[Tuple[float, Decimal]] = []
@@ -454,9 +455,15 @@ class MMState:
             logger.info(f"StandX position: {self._standx_position} (delta: {delta})")
 
     def set_standx_position(self, position: Decimal):
-        """設置 StandX 倉位"""
+        """設置 StandX 倉位（同時記錄同步時間）"""
         with self._lock:
             self._standx_position = position
+            self._last_position_sync = time.time()
+
+    def get_last_position_sync(self) -> float:
+        """獲取上次倉位同步時間"""
+        with self._lock:
+            return self._last_position_sync
 
     def update_hedge_position(self, delta: Decimal):
         """更新對沖倉位 (GRVT)"""
