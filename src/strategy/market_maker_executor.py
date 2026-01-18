@@ -344,6 +344,10 @@ class MarketMakerExecutor:
         # 【新增】REST Gate 失敗計數器
         self._rest_gate_failures = 0
 
+        # 【新增】倉位同步節流（風控用）
+        self._last_position_sync: float = 0  # 上次同步時間
+        self._position_sync_interval: float = 2.0  # 同步間隔（秒）
+
     # ==================== 生命週期 ====================
 
     async def start(self):
@@ -1217,7 +1221,14 @@ class MarketMakerExecutor:
         has_bid_on_exchange = len(exchange_bids) > 0
         has_ask_on_exchange = len(exchange_asks) > 0
 
-        # 獲取當前倉位 (使用統一入口)
+        # ==================== 倉位同步（風控關鍵）====================
+        # 在 hard stop 檢查前同步倉位，確保風控準確
+        # 這是防止漏接成交導致風控失效的關鍵機制
+        # 節流：每 2 秒最多同步一次，避免 API 過載
+        now = time.time()
+        if now - self._last_position_sync >= self._position_sync_interval:
+            await self._sync_primary_position()
+            self._last_position_sync = now
         current_position = self._get_primary_position()
         max_pos = self.config.max_position_btc
         hard_stop = self.config.hard_stop_position_btc
