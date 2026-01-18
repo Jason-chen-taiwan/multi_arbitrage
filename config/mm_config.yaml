@@ -28,12 +28,12 @@ quote:
 # 倉位參數
 position:
   # 單邊訂單量 (BTC)
-  # $661 餘額，保守配置 (~$40 雙邊保證金，約 6%)
-  order_size_btc: 0.01
+  # $630 餘額，保守配置 (~$10 單邊保證金，約 1.5%)
+  order_size_btc: 0.001
 
   # 最大持倉量 (BTC)
-  # 設為訂單大小的 5 倍，留足對沖空間
-  max_position_btc: 0.1
+  # 設為訂單大小的 3 倍，降低風險
+  max_position_btc: 0.003
 
 # 波動率控制
 volatility:
@@ -64,6 +64,9 @@ execution:
 
 # 對沖參數 (GRVT)
 hedge:
+  # 是否啟用對沖（暫時禁用以簡化系統）
+  enabled: false
+
   # 對沖交易所
   exchange: "grvt"
 

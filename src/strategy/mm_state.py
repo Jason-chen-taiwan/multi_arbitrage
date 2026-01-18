@@ -18,6 +18,115 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# ==================== 事件去重器 ====================
+class EventDeduplicator:
+    """
+    WebSocket 事件去重器
+
+    用於過濾重複的成交事件，防止同一成交被處理多次
+    """
+
+    def __init__(self, ttl_sec: float = 60.0):
+        """
+        Args:
+            ttl_sec: 事件記錄過期時間（秒）
+        """
+        self._seen: Dict[str, float] = {}
+        self._ttl = ttl_sec
+        self._lock = Lock()
+
+    def is_duplicate(self, order_id: str, filled_qty: Decimal) -> bool:
+        """
+        檢查事件是否重複
+
+        Args:
+            order_id: 訂單 ID
+            filled_qty: 成交數量
+
+        Returns:
+            True 如果是重複事件
+        """
+        key = f"{order_id}:{filled_qty}"
+        now = time.time()
+
+        with self._lock:
+            # 清理過期記錄
+            cutoff = now - self._ttl
+            self._seen = {k: t for k, t in self._seen.items() if t > cutoff}
+
+            # 檢查是否已處理
+            if key in self._seen:
+                return True
+
+            # 標記為已處理
+            self._seen[key] = now
+            return False
+
+    def clear(self):
+        """清除所有記錄"""
+        with self._lock:
+            self._seen.clear()
+
+
+# ==================== 下單節流器 ====================
+class OrderThrottle:
+    """
+    下單節流器
+
+    防止在短時間內對同一方向重複下單
+    """
+
+    def __init__(self, cooldown_sec: float = 2.0):
+        """
+        Args:
+            cooldown_sec: 下單冷卻時間（秒）
+        """
+        self._last_order: Dict[str, float] = {}  # side -> timestamp
+        self._cooldown = cooldown_sec
+        self._lock = Lock()
+
+    def can_place(self, side: str) -> bool:
+        """
+        檢查是否可以下單
+
+        Args:
+            side: 訂單方向 ("buy" or "sell")
+
+        Returns:
+            True 如果可以下單
+        """
+        now = time.time()
+
+        with self._lock:
+            last = self._last_order.get(side, 0)
+            if now - last < self._cooldown:
+                return False
+            return True
+
+    def record_order(self, side: str):
+        """
+        記錄下單時間
+
+        Args:
+            side: 訂單方向 ("buy" or "sell")
+        """
+        with self._lock:
+            self._last_order[side] = time.time()
+
+    def reset(self, side: str = None):
+        """
+        重置節流器
+
+        Args:
+            side: 如果指定，只重置該方向；否則重置全部
+        """
+        with self._lock:
+            if side:
+                self._last_order.pop(side, None)
+            else:
+                self._last_order.clear()
+
+
 @dataclass
 class OrderInfo:
     """訂單信息"""

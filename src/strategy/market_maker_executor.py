@@ -25,7 +25,7 @@ from enum import Enum
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
-from .mm_state import MMState, OrderInfo, FillEvent
+from .mm_state import MMState, OrderInfo, FillEvent, EventDeduplicator, OrderThrottle
 from .hedge_engine import HedgeEngine, HedgeResult, HedgeStatus
 
 # WebSocket types (conditional import)
@@ -328,6 +328,15 @@ class MarketMakerExecutor:
 
         # 【新增】Skew 日誌去重（只在值變化時記錄）
         self._last_skew_log: Optional[tuple] = None  # (pos_ratio, bid_bps, ask_bps)
+
+        # 【新增】事件去重器 - 防止 WebSocket 重複成交事件
+        self._event_deduplicator = EventDeduplicator(ttl_sec=60.0)
+
+        # 【新增】下單節流器 - 防止快速重複下單
+        self._order_throttle = OrderThrottle(cooldown_sec=2.0)
+
+        # 【新增】REST Gate 失敗計數器
+        self._rest_gate_failures = 0
 
     # ==================== 生命週期 ====================
 
@@ -671,6 +680,24 @@ class MarketMakerExecutor:
                 f"[WebSocket Fill] GRVT: {side} {fill_qty} @ {fill_price} "
                 f"(maker={is_maker}, fee={fill_event.fee})"
             )
+
+        # ==================== 關鍵修復：qty=0 過濾 ====================
+        # qty=0 的事件是訂單狀態更新，不是實際成交，必須跳過
+        if fill_qty is None or fill_qty <= Decimal("0"):
+            logger.debug(
+                f"[WS Dedup] Skipping qty=0 event: order_id={order_id}, "
+                f"fill_qty={fill_qty}"
+            )
+            return
+
+        # ==================== 關鍵修復：事件去重 ====================
+        # 同一 order_id + fill_qty 的事件只處理一次
+        if self._event_deduplicator.is_duplicate(str(order_id), fill_qty):
+            logger.info(
+                f"[WS Dedup] Duplicate fill ignored: order_id={order_id}, "
+                f"fill_qty={fill_qty}"
+            )
+            return
 
         # Convert WebSocket fill event to internal FillEvent
         internal_fill = FillEvent(
@@ -1125,19 +1152,28 @@ class MarketMakerExecutor:
 
         except Exception as e:
             logger.error(f"[REST Gate] Failed to query open orders: {e}")
-            # REST 查詢失敗時，保守處理：不下單，避免重複
-            # 但如果本地認為沒有訂單，可以嘗試下單
-            rest_gate_ok = False
+            self._rest_gate_failures += 1
+
+            # ==================== 關鍵修復：REST 失敗時進入安全模式 ====================
+            # 不回退到本地 state，直接返回不下單
+            if self._rest_gate_failures >= 3:
+                logger.warning(
+                    f"[REST Gate] {self._rest_gate_failures} consecutive failures, "
+                    f"entering safe mode - skipping order placement"
+                )
+            trade_log.info(
+                f"REST_GATE_SAFE_MODE | exchange={self.config.primary_exchange} | "
+                f"failures={self._rest_gate_failures} | error={str(e)[:100]}"
+            )
+            return  # 直接返回，不下單
+
+        # REST 查詢成功，重置失敗計數
+        self._rest_gate_failures = 0
 
         # ==================== 用 REST 結果決定是否可下單 ====================
         # 關鍵：用交易所查詢結果，而不是本地 state
-        if rest_gate_ok:
-            has_bid_on_exchange = len(exchange_bids) > 0
-            has_ask_on_exchange = len(exchange_asks) > 0
-        else:
-            # REST 失敗時回退到本地 state（保守）
-            has_bid_on_exchange = self.state.has_bid_order()
-            has_ask_on_exchange = self.state.has_ask_order()
+        has_bid_on_exchange = len(exchange_bids) > 0
+        has_ask_on_exchange = len(exchange_asks) > 0
 
         # 獲取當前倉位 (使用統一入口)
         current_position = self._get_primary_position()
@@ -1264,8 +1300,8 @@ class MarketMakerExecutor:
             self.config.min_effective_max_pos_btc
         )
 
-        # 【診斷】打印 skew 計算輸入
-        logger.info(
+        # 【診斷】打印 skew 計算輸入（改為 debug 減少噪音）
+        logger.debug(
             f"[Skew Input] current_pos={current_pos}, max_pos={max_pos}, "
             f"effective_max_pos={effective_max_pos}, base_bps={base_bps}"
         )
@@ -1331,8 +1367,8 @@ class MarketMakerExecutor:
         # 如果啟用保本回補且有建倉記錄，回補方向直接用 entry price
         breakeven_applied = False
 
-        # 【診斷】打印保本回補狀態
-        logger.info(
+        # 【診斷】打印保本回補狀態（改為 debug 減少噪音）
+        logger.debug(
             f"[Breakeven Check] enabled={self.config.breakeven_reversion_enabled}, "
             f"has_entry={self.state.has_entry()}, "
             f"entry_price={self.state.get_entry_price()}, "
@@ -1477,6 +1513,14 @@ class MarketMakerExecutor:
             logger.info(f"[DRY RUN] Would place bid: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
 
+        # 【新增】節流檢查 - 防止快速重複下單
+        if not self._order_throttle.can_place("buy"):
+            logger.debug("[Throttle] Bid order throttled, cooldown active")
+            return
+
+        # 【關鍵】立即記錄下單時間，防止競爭條件
+        self._order_throttle.record_order("buy")
+
         # 設置下單中標記，防止重複下單
         self._placing_bid = True
         try:
@@ -1536,6 +1580,14 @@ class MarketMakerExecutor:
         if self.config.dry_run:
             logger.info(f"[DRY RUN] Would place ask: {self.config.order_size_btc} @ {price} (post_only={post_only})")
             return
+
+        # 【新增】節流檢查 - 防止快速重複下單
+        if not self._order_throttle.can_place("sell"):
+            logger.debug("[Throttle] Ask order throttled, cooldown active")
+            return
+
+        # 【關鍵】立即記錄下單時間，防止競爭條件
+        self._order_throttle.record_order("sell")
 
         # 設置下單中標記，防止重複下單
         self._placing_ask = True
