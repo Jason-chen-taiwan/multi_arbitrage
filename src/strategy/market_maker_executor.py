@@ -234,7 +234,9 @@ class MMConfig:
 
     # ==================== 波動率控制 ====================
     volatility_window_sec: int = 5       # 波動率窗口
-    volatility_threshold_bps: float = 5.0  # 超過則暫停（更保守）
+    volatility_threshold_bps: float = 30.0  # 超過則暫停 (pause threshold)
+    volatility_resume_threshold_bps: float = 15.0  # 低於此值才考慮恢復 (hysteresis)
+    volatility_stable_seconds: float = 3.0  # 需持續低於恢復閾值多少秒才真正恢復
     volatility_distance_multiplier: Decimal = Decimal("2")  # 高波動時距離倍數
 
     # 訂單參數
@@ -315,6 +317,9 @@ class MarketMakerExecutor:
         # 【新增】硬停追蹤
         self._hard_stop_time: Optional[float] = None   # 硬停觸發時間
         self._resume_ok_count: int = 0                 # 連續滿足恢復條件的次數
+
+        # 【新增】波動率恢復追蹤 (hysteresis + stable period)
+        self._volatility_stable_since: Optional[float] = None  # 波動率首次低於恢復閾值的時間
 
         # 【新增】Stale order reprice 追蹤
         self._last_reprice_time: Dict[str, float] = {}  # side -> last reprice timestamp
@@ -935,22 +940,58 @@ class MarketMakerExecutor:
         # 所以不再需要固定間隔同步，避免重複查詢浪費 rate limit
         # 舊代碼：if self._tick_count % 5 == 0: await self._sync_open_orders()
 
-        # 檢查波動率
+        # 檢查波動率 (使用 hysteresis + stable period)
         volatility = self.state.get_volatility_bps()
-        if volatility > self.config.volatility_threshold_bps:
+        pause_threshold = self.config.volatility_threshold_bps
+        resume_threshold = self.config.volatility_resume_threshold_bps
+        stable_seconds = self.config.volatility_stable_seconds
+
+        if volatility > pause_threshold:
+            # 超過暫停閾值 → 暫停
             if self._status != ExecutorStatus.PAUSED:
-                logger.warning(f"High volatility: {volatility:.1f} bps, pausing")
+                logger.warning(f"High volatility: {volatility:.1f} bps > {pause_threshold} bps, pausing")
                 self._status = ExecutorStatus.PAUSED
-                self.state.record_volatility_pause()  # 記錄波動率暫停
+                self.state.record_volatility_pause()
                 await self._cancel_all_orders(reason="high volatility")
                 if self._on_status_change:
                     await self._on_status_change(self._status)
+            # 重置穩定計時器
+            self._volatility_stable_since = None
             return
+
         elif self._status == ExecutorStatus.PAUSED:
-            logger.info(f"Volatility normalized: {volatility:.1f} bps, resuming")
-            self._status = ExecutorStatus.RUNNING
-            if self._on_status_change:
-                await self._on_status_change(self._status)
+            # 已暫停，檢查是否可以恢復
+            if volatility > resume_threshold:
+                # 仍高於恢復閾值，重置穩定計時器
+                self._volatility_stable_since = None
+                return
+            else:
+                # 低於恢復閾值，開始或繼續計算穩定期
+                now = time.time()
+                if self._volatility_stable_since is None:
+                    # 首次低於恢復閾值，開始計時
+                    self._volatility_stable_since = now
+                    logger.info(
+                        f"Volatility {volatility:.1f} bps < {resume_threshold} bps, "
+                        f"waiting {stable_seconds}s stable period..."
+                    )
+                    return
+
+                # 檢查是否已持續足夠時間
+                stable_duration = now - self._volatility_stable_since
+                if stable_duration >= stable_seconds:
+                    # 穩定期達標，恢復運行
+                    logger.info(
+                        f"Volatility stable for {stable_duration:.1f}s "
+                        f"({volatility:.1f} bps < {resume_threshold} bps), resuming"
+                    )
+                    self._status = ExecutorStatus.RUNNING
+                    self._volatility_stable_since = None
+                    if self._on_status_change:
+                        await self._on_status_change(self._status)
+                else:
+                    # 仍在等待穩定期
+                    return
 
         # 檢查是否需要撤單 (價格太近)
         # 只在 uptime 模式或 cancel_on_approach=True 時執行
@@ -2662,6 +2703,8 @@ class MarketMakerExecutor:
                 "order_size_btc": float(self.config.order_size_btc),
                 "max_position_btc": float(self.config.max_position_btc),
                 "volatility_threshold_bps": self.config.volatility_threshold_bps,
+                "volatility_resume_threshold_bps": self.config.volatility_resume_threshold_bps,
+                "volatility_stable_seconds": self.config.volatility_stable_seconds,
                 "dry_run": self.config.dry_run,
                 # 策略模式參數
                 "strategy_mode": self.config.strategy_mode,
