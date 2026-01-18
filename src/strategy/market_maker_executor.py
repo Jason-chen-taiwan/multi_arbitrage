@@ -1781,13 +1781,29 @@ class MarketMakerExecutor:
             error_code = getattr(e, 'code', None) or getattr(e, 'error_code', None)
             error_msg = str(e).lower()
 
+            # 檢測是否為 ALREADY_FILLED（訂單已成交）
+            fill_codes = ['ALREADY_FILLED']
+            fill_keywords = ['already filled', 'order filled', 'has been filled']
+            is_filled = error_code in fill_codes or any(kw in error_msg for kw in fill_keywords)
+
             # 這些情況視為正常（訂單已經不存在）
             ok_codes = ['ORDER_NOT_FOUND', 'ALREADY_FILLED', 'ALREADY_CANCELED']
             ok_keywords = ['not found', 'already', 'filled', 'canceled', 'cancelled', 'does not exist']
 
             if error_code in ok_codes or any(kw in error_msg for kw in ok_keywords):
-                logger.info(f"Order already gone: {client_order_id} (code={error_code})")
-                trade_log.info(f"CANCEL_GONE | exchange={self.config.primary_exchange} | client_order_id={client_order_id} | code={error_code}")
+                if is_filled:
+                    # ==================== 訂單已成交，記錄 FILL 事件 ====================
+                    logger.warning(f"[Cancel->Fill] Order {client_order_id} was FILLED during cancel!")
+                    trade_log.info(
+                        f"FILL_ON_CANCEL | exchange={self.config.primary_exchange} | "
+                        f"side={order_side} | price={order_price} | "
+                        f"client_order_id={client_order_id} | reason=cancel_returned_filled"
+                    )
+                    # 記錄成交統計（不觸發對沖，僅記錄）
+                    self.state.record_fill()
+                else:
+                    logger.info(f"Order already gone: {client_order_id} (code={error_code})")
+                    trade_log.info(f"CANCEL_GONE | exchange={self.config.primary_exchange} | client_order_id={client_order_id} | code={error_code}")
                 cancel_confirmed = True  # 訂單不存在，視為取消成功
             else:
                 logger.error(f"Failed to cancel order {client_order_id}: {e}")
