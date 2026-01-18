@@ -11,6 +11,12 @@
 
 ## 快速開始
 
+### 0. 註冊 StandX 帳號
+
+如果你還沒有 StandX 帳號，建議使用以下邀請連結註冊，雙方都可獲得額外 5% 積分加成：
+
+👉 <https://standx.com/referral?code=Jasoncrypto>
+
 ### 1. 確認 Python 已安裝
 
 ```bash
