@@ -999,6 +999,19 @@ async def root():
                 nameSelect.onchange();
             }
 
+            function updateStandxAuthFields() {
+                const mode = document.getElementById('standxAuthMode').value;
+                const tokenFields = document.getElementById('standxTokenFields');
+                const walletFields = document.getElementById('standxWalletFields');
+                if (mode === 'token') {
+                    tokenFields.style.display = 'block';
+                    walletFields.style.display = 'none';
+                } else {
+                    tokenFields.style.display = 'none';
+                    walletFields.style.display = 'block';
+                }
+            }
+
             async function saveConfig() {
                 const type = document.getElementById('exchangeType').value;
                 const name = document.getElementById('exchangeName').value;
@@ -1013,8 +1026,18 @@ async def root():
                     config.api_key = document.getElementById('grvtApiKey').value;
                     config.api_secret = document.getElementById('grvtApiSecret').value;
                     config.trading_account_id = document.getElementById('grvtTradingAccountId').value;
+                } else if (name === 'standx') {
+                    // StandX 支援 Token 模式和錢包模式
+                    const authMode = document.getElementById('standxAuthMode').value;
+                    if (authMode === 'token') {
+                        config.api_token = document.getElementById('standxApiToken').value;
+                        config.ed25519_private_key = document.getElementById('standxEd25519Key').value;
+                    } else {
+                        config.private_key = document.getElementById('privateKey').value;
+                        config.address = document.getElementById('walletAddress').value;
+                    }
                 } else {
-                    // StandX 使用 Private Key
+                    // 其他 DEX 使用 Private Key
                     config.private_key = document.getElementById('privateKey').value;
                     config.address = document.getElementById('walletAddress').value;
                 }
@@ -1041,7 +1064,7 @@ async def root():
 
                 const all = [];
                 for (const [k, v] of Object.entries(configs.dex || {})) {
-                    all.push({ name: k, display: v.name, type: 'dex', key: v.private_key_masked || v.api_key_masked });
+                    all.push({ name: k, display: v.name, type: 'dex', key: v.api_token_masked || v.private_key_masked || v.api_key_masked });
                 }
                 for (const [k, v] of Object.entries(configs.cex || {})) {
                     all.push({ name: k, display: v.name, type: 'cex', key: v.api_key_masked });

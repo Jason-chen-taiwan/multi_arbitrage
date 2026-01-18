@@ -54,20 +54,43 @@ def get_settings_page() -> str:
                                 <input type="password" id="passphrase" placeholder="OKX/Bitget 需要">
                             </div>
                         </div>
-                        <div id="dexFields" class="form-grid" style="margin-top: 15px; display: none;">
+                        <div id="dexFields" style="margin-top: 15px; display: none;">
                             <!-- StandX 字段 -->
                             <div id="standxFields">
-                                <div class="form-group">
-                                    <label>Private Key</label>
-                                    <input type="password" id="privateKey" placeholder="錢包私鑰">
+                                <div class="form-grid">
+                                    <div class="form-group" style="grid-column: 1 / -1;">
+                                        <label>認證模式</label>
+                                        <select id="standxAuthMode" onchange="updateStandxAuthFields()">
+                                            <option value="token">Token 模式 (推薦)</option>
+                                            <option value="wallet">錢包簽名模式</option>
+                                        </select>
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label>Wallet Address</label>
-                                    <input type="text" id="walletAddress" placeholder="錢包地址">
+                                <!-- Token 模式字段 -->
+                                <div id="standxTokenFields" class="form-grid">
+                                    <div class="form-group">
+                                        <label>API Token</label>
+                                        <input type="password" id="standxApiToken" placeholder="StandX API Token">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Ed25519 Private Key</label>
+                                        <input type="password" id="standxEd25519Key" placeholder="Ed25519 私鑰">
+                                    </div>
+                                </div>
+                                <!-- 錢包模式字段 -->
+                                <div id="standxWalletFields" class="form-grid" style="display: none;">
+                                    <div class="form-group">
+                                        <label>Private Key</label>
+                                        <input type="password" id="privateKey" placeholder="錢包私鑰">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Wallet Address</label>
+                                        <input type="text" id="walletAddress" placeholder="錢包地址">
+                                    </div>
                                 </div>
                             </div>
                             <!-- GRVT 字段 -->
-                            <div id="grvtFields" style="display: none;">
+                            <div id="grvtFields" class="form-grid" style="display: none;">
                                 <div class="form-group">
                                     <label>API Key</label>
                                     <input type="text" id="grvtApiKey" placeholder="GRVT API Key">
@@ -76,7 +99,7 @@ def get_settings_page() -> str:
                                     <label>API Secret</label>
                                     <input type="password" id="grvtApiSecret" placeholder="GRVT API Secret (Private Key)">
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group" style="grid-column: 1 / -1;">
                                     <label>Trading Account ID</label>
                                     <input type="text" id="grvtTradingAccountId" placeholder="子帳戶 ID (從 GRVT API 管理頁面獲取)">
                                 </div>
