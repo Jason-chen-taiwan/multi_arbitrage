@@ -1865,6 +1865,22 @@ class MarketMakerExecutor:
 
         self.state.clear_all_orders()
 
+        # 額外安全措施：撤銷交易所上該 symbol 的所有訂單
+        # 避免因狀態不同步導致遺漏訂單
+        if reason == "stop":
+            try:
+                open_orders = await self.primary.get_open_orders(self.config.symbol)
+                if open_orders:
+                    logger.warning(f"[Stop] Found {len(open_orders)} untracked orders, canceling...")
+                    for order in open_orders:
+                        try:
+                            await self.primary.cancel_order(order.order_id, self.config.symbol)
+                            logger.info(f"[Stop] Canceled untracked order {order.order_id}")
+                        except Exception as e:
+                            logger.warning(f"[Stop] Failed to cancel {order.order_id}: {e}")
+            except Exception as e:
+                logger.warning(f"[Stop] Failed to query open orders: {e}")
+
     async def _check_order_status(self):
         """
         改進的訂單狀態檢測
