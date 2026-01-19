@@ -510,58 +510,79 @@ function MarketMakerPage() {
           {orderbooks?.STANDX?.['BTC-USD'] ? (
             <>
               <div className="orderbook">
-                <div className="orderbook-side asks">
-                  <div className="orderbook-header">
-                    <span>{t.mm.price}</span>
-                    <span>{t.mm.size}</span>
-                    <span>{t.mm.volume}</span>
-                  </div>
-                  {(() => {
-                    const asks = orderbooks.STANDX['BTC-USD'].asks.slice(0, 5)
-                    // 計算累積量（從遠到近）
-                    const cumulative: number[] = []
-                    let total = 0
-                    for (const [, size] of asks) {
-                      total += size
-                      cumulative.push(total)
-                    }
-                    return asks.reverse().map(([price, size], idx) => (
-                      <div key={idx} className="orderbook-row ask">
-                        <span className="text-negative">${price.toFixed(2)}</span>
-                        <span>{size.toFixed(4)}</span>
-                        <span className="text-muted">{cumulative[asks.length - 1 - idx].toFixed(4)}</span>
+                {(() => {
+                  const asks = orderbooks.STANDX['BTC-USD'].asks.slice(0, 10)
+                  const bids = orderbooks.STANDX['BTC-USD'].bids.slice(0, 10)
+
+                  // 計算最大 size 用於正規化深度條寬度
+                  const allSizes = [...asks.map(a => a[1]), ...bids.map(b => b[1])]
+                  const maxSize = Math.max(...allSizes, 0.001)
+
+                  // Asks 累積量（從最遠到最近）
+                  const asksCumulative: number[] = []
+                  let askTotal = 0
+                  for (let i = asks.length - 1; i >= 0; i--) {
+                    askTotal += asks[i][1]
+                    asksCumulative[i] = askTotal
+                  }
+
+                  // Bids 累積量（從最近到最遠）
+                  const bidsCumulative: number[] = []
+                  let bidTotal = 0
+                  for (let i = 0; i < bids.length; i++) {
+                    bidTotal += bids[i][1]
+                    bidsCumulative[i] = bidTotal
+                  }
+
+                  return (
+                    <>
+                      <div className="orderbook-header">
+                        <span>{t.mm.price}</span>
+                        <span>{t.mm.size}</span>
+                        <span>{t.mm.volume}</span>
                       </div>
-                    ))
-                  })()}
-                </div>
-                <div className="orderbook-spread">
-                  {t.mm.spread}: {(
-                    orderbooks.STANDX['BTC-USD'].asks[0]?.[0] -
-                    orderbooks.STANDX['BTC-USD'].bids[0]?.[0]
-                  ).toFixed(2)} USD
-                </div>
-                <div className="orderbook-side bids">
-                  <div className="orderbook-header bids-header">
-                    <span>{t.mm.price}</span>
-                    <span>{t.mm.size}</span>
-                    <span>{t.mm.volume}</span>
-                  </div>
-                  {(() => {
-                    const bids = orderbooks.STANDX['BTC-USD'].bids.slice(0, 5)
-                    // 計算累積量（從近到遠）
-                    let total = 0
-                    return bids.map(([price, size], idx) => {
-                      total += size
-                      return (
-                        <div key={idx} className="orderbook-row bid">
-                          <span className="text-positive">${price.toFixed(2)}</span>
-                          <span>{size.toFixed(4)}</span>
-                          <span className="text-muted">{total.toFixed(4)}</span>
-                        </div>
-                      )
-                    })
-                  })()}
-                </div>
+
+                      {/* Asks (賣單) - 從高到低顯示 */}
+                      <div className="orderbook-side asks">
+                        {asks.slice().reverse().map(([price, size], idx) => {
+                          const originalIdx = asks.length - 1 - idx
+                          const depthPct = (size / maxSize) * 100
+                          return (
+                            <div key={idx} className="orderbook-row ask">
+                              <div className="depth-bar-bg ask" style={{ width: `${depthPct}%` }} />
+                              <span className="text-negative">{price.toFixed(2)}</span>
+                              <span>{size.toFixed(4)}</span>
+                              <span className="text-muted">{asksCumulative[originalIdx].toFixed(4)}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {/* Spread */}
+                      <div className="orderbook-spread">
+                        <span className="spread-price">{midPrice?.toFixed(2) || '--'}</span>
+                        <span className="spread-label">
+                          {t.mm.spread}: {(asks[0]?.[0] - bids[0]?.[0]).toFixed(2)} ({((asks[0]?.[0] - bids[0]?.[0]) / midPrice! * 10000).toFixed(1)} bps)
+                        </span>
+                      </div>
+
+                      {/* Bids (買單) - 從高到低顯示 */}
+                      <div className="orderbook-side bids">
+                        {bids.map(([price, size], idx) => {
+                          const depthPct = (size / maxSize) * 100
+                          return (
+                            <div key={idx} className="orderbook-row bid">
+                              <div className="depth-bar-bg bid" style={{ width: `${depthPct}%` }} />
+                              <span className="text-positive">{price.toFixed(2)}</span>
+                              <span>{size.toFixed(4)}</span>
+                              <span className="text-muted">{bidsCumulative[idx].toFixed(4)}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )
+                })()}
               </div>
 
               {/* Depth Analysis */}

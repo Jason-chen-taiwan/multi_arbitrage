@@ -278,48 +278,102 @@
 
 /* Order Book */
 .orderbook {
-  font-family: monospace;
-  font-size: var(--font-sm);
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .orderbook-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  padding: var(--spacing-xs) var(--spacing-sm);
+  grid-template-columns: 100px 80px 80px;
+  padding: 4px 8px;
   color: var(--text-secondary);
-  font-size: var(--font-xs);
+  font-size: 11px;
   text-transform: uppercase;
-  text-align: right;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
 }
 
 .orderbook-header span:first-child {
   text-align: left;
 }
 
-.orderbook-header.bids-header {
-  border-top: 1px solid var(--border-color);
-  padding-top: var(--spacing-sm);
-  margin-top: var(--spacing-xs);
+.orderbook-header span:nth-child(2),
+.orderbook-header span:nth-child(3) {
+  text-align: right;
+}
+
+.orderbook-side {
+  display: flex;
+  flex-direction: column;
 }
 
 .orderbook-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  padding: var(--spacing-xs) var(--spacing-sm);
-  text-align: right;
+  grid-template-columns: 100px 80px 80px;
+  padding: 2px 8px;
+  position: relative;
+  height: 24px;
+  align-items: center;
+}
+
+.orderbook-row span {
+  position: relative;
+  z-index: 1;
 }
 
 .orderbook-row span:first-child {
   text-align: left;
+  font-weight: 500;
+}
+
+.orderbook-row span:nth-child(2),
+.orderbook-row span:nth-child(3) {
+  text-align: right;
+}
+
+/* Depth bar background */
+.depth-bar-bg {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  opacity: 0.4;
+  transition: width 0.15s ease;
+}
+
+.depth-bar-bg.ask {
+  background: linear-gradient(to left, rgba(239, 68, 68, 0.6), rgba(239, 68, 68, 0.2));
+}
+
+.depth-bar-bg.bid {
+  background: linear-gradient(to left, rgba(34, 197, 94, 0.6), rgba(34, 197, 94, 0.2));
+}
+
+.orderbook-row.ask:hover,
+.orderbook-row.bid:hover {
+  background: var(--bg-secondary);
 }
 
 .orderbook-spread {
-  padding: var(--spacing-sm);
-  text-align: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
   background: var(--bg-secondary);
-  color: var(--text-secondary);
-  margin: var(--spacing-xs) 0;
+  margin: 4px 0;
   border-radius: var(--radius-sm);
+}
+
+.spread-price {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.spread-label {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* Exchange List */
