@@ -164,30 +164,42 @@ function MarketMakerPage() {
     }
   }
 
-  // Extract executor data safely
+  // Extract executor data safely (use backend field names)
+  // state.to_dict() has: volatility_bps, fill_count, pnl_usd at top level
+  // stats object contains: uptime_pct, boosted_pct, total_time_ms, bid_cancels, etc.
   const state = mmExecutor?.state as Record<string, unknown> | undefined
-  const totalPnl = (state?.total_pnl as number) || 0
-  const uptimePercentage = (state?.uptime_percentage as number) || 0
-  const effectivePoints = (state?.effective_points as number) || 0
+  const stats = state?.stats as Record<string, unknown> | undefined
+
+  // Top-level fields from state
+  const totalPnl = (state?.pnl_usd as number) || 0
   const fillCount = (state?.fill_count as number) || 0
-  const runningSeconds = (state?.running_seconds as number) || 0
   const volatilityBps = (state?.volatility_bps as number) || 0
-  const isPaused = (state?.is_paused as boolean) || false
-  const pauseCount = (state?.pause_count as number) || 0
 
-  // Tier distribution
-  const tier100Pct = (state?.tier_100_pct as number) || 0
-  const tier50Pct = (state?.tier_50_pct as number) || 0
-  const tier10Pct = (state?.tier_10_pct as number) || 0
-  const tierOverPct = (state?.tier_over_pct as number) || 0
+  // Stats object fields
+  const uptimePercentage = (stats?.uptime_pct as number) || 0
+  const effectivePoints = (stats?.effective_pts_pct as number) || 0
+  const totalTimeMs = (stats?.total_time_ms as number) || 0
+  const runningSeconds = totalTimeMs / 1000
+  const pauseCount = (stats?.volatility_pause_count as number) || 0
 
-  // Order stats
-  const buyCancels = (state?.buy_cancels as number) || 0
-  const buyQueues = (state?.buy_queues as number) || 0
-  const buyRebalances = (state?.buy_rebalances as number) || 0
-  const sellCancels = (state?.sell_cancels as number) || 0
-  const sellQueues = (state?.sell_queues as number) || 0
-  const sellRebalances = (state?.sell_rebalances as number) || 0
+  // Check if paused based on executor status
+  const executorStats = mmExecutor?.stats as Record<string, unknown> | undefined
+  const executorStatus = executorStats?.status as string | undefined
+  const isPaused = executorStatus === 'paused'
+
+  // Tier distribution (backend uses boosted/standard/basic/out_of_range naming)
+  const tier100Pct = (stats?.boosted_pct as number) || 0
+  const tier50Pct = (stats?.standard_pct as number) || 0
+  const tier10Pct = (stats?.basic_pct as number) || 0
+  const tierOverPct = (stats?.out_of_range_pct as number) || 0
+
+  // Order stats (backend uses bid/ask naming, in stats object)
+  const bidCancels = (stats?.bid_cancels as number) || 0
+  const bidQueueCancels = (stats?.bid_queue_cancels as number) || 0
+  const bidRebalances = (stats?.bid_rebalances as number) || 0
+  const askCancels = (stats?.ask_cancels as number) || 0
+  const askQueueCancels = (stats?.ask_queue_cancels as number) || 0
+  const askRebalances = (stats?.ask_rebalances as number) || 0
 
   // Current orders (bid/ask)
   const bidOrder = state?.bid_order as { price: number; qty: number; status: string } | null
@@ -490,59 +502,6 @@ function MarketMakerPage() {
         </div>
       </div>
 
-      {/* Current Orders */}
-      <div className="panel current-orders-panel">
-        <h3>{t.mm.currentOrders}</h3>
-        <div className="orders-grid">
-          {/* Bid Order */}
-          <div className="order-box bid">
-            <div className="order-label">{t.mm.bidOrder}</div>
-            {bidOrder ? (
-              <>
-                <div className="order-price text-positive">${bidOrder.price.toFixed(2)}</div>
-                <div className="order-details">
-                  <span className="order-qty">{bidOrder.qty} BTC</span>
-                  <span className="order-status">{bidOrder.status}</span>
-                </div>
-                {midPrice && (
-                  <div className={`order-distance ${(calcDistanceBps(bidOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
-                    {(calcDistanceBps(bidOrder.price) || 0) <= 30 ? '✓' : '⚠️'} {calcDistanceBps(bidOrder.price)?.toFixed(1)} bps
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="order-waiting">{t.mm.waitingToPlace}</div>
-            )}
-          </div>
-
-          {/* Ask Order */}
-          <div className="order-box ask">
-            <div className="order-label">{t.mm.askOrder}</div>
-            {askOrder ? (
-              <>
-                <div className="order-price text-negative">${askOrder.price.toFixed(2)}</div>
-                <div className="order-details">
-                  <span className="order-qty">{askOrder.qty} BTC</span>
-                  <span className="order-status">{askOrder.status}</span>
-                </div>
-                {midPrice && (
-                  <div className={`order-distance ${(calcDistanceBps(askOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
-                    {(calcDistanceBps(askOrder.price) || 0) <= 30 ? '✓' : '⚠️'} {calcDistanceBps(askOrder.price)?.toFixed(1)} bps
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="order-waiting">{t.mm.waitingToPlace}</div>
-            )}
-          </div>
-        </div>
-        {midPrice && (
-          <div className="mid-price-info">
-            {t.mm.midPrice}: ${midPrice.toFixed(2)} ({t.mm.maxDistance}: 30 bps)
-          </div>
-        )}
-      </div>
-
       {/* Main Content */}
       <div className="content-grid">
         {/* Order Book + Depth Analysis */}
@@ -638,6 +597,42 @@ function MarketMakerPage() {
         <div className="panel execution-stats-panel">
           <h3>{t.mm.executionStats}</h3>
 
+          {/* Current Orders - Compact Row */}
+          <div className="current-orders-compact">
+            <div className="order-compact bid">
+              <span className="order-side">{t.mm.bidOrder}:</span>
+              {bidOrder ? (
+                <>
+                  <span className="order-price text-positive">${bidOrder.price.toFixed(2)}</span>
+                  <span className="order-qty">{bidOrder.qty} BTC</span>
+                  {midPrice && (
+                    <span className={`order-bps ${(calcDistanceBps(bidOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
+                      {calcDistanceBps(bidOrder.price)?.toFixed(1)} bps
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="order-none">--</span>
+              )}
+            </div>
+            <div className="order-compact ask">
+              <span className="order-side">{t.mm.askOrder}:</span>
+              {askOrder ? (
+                <>
+                  <span className="order-price text-negative">${askOrder.price.toFixed(2)}</span>
+                  <span className="order-qty">{askOrder.qty} BTC</span>
+                  {midPrice && (
+                    <span className={`order-bps ${(calcDistanceBps(askOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
+                      {calcDistanceBps(askOrder.price)?.toFixed(1)} bps
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="order-none">--</span>
+              )}
+            </div>
+          </div>
+
           {/* Top Stats Grid - 2x2 */}
           <div className="stats-grid-2x2">
             <div className="stat-card">
@@ -680,12 +675,12 @@ function MarketMakerPage() {
           {/* Cancel/Queue/Rebalance Stats */}
           <div className="stats-grid-2">
             <div className="stat-card">
-              <div className="stat-value text-positive">{buyCancels}/{buyQueues}/{buyRebalances}</div>
-              <div className="stat-label">{t.mm.buyStats}</div>
+              <div className="stat-value text-positive">{bidCancels}/{bidQueueCancels}/{bidRebalances}</div>
+              <div className="stat-label">{t.mm.bidStats}</div>
             </div>
             <div className="stat-card">
-              <div className="stat-value text-negative">{sellCancels}/{sellQueues}/{sellRebalances}</div>
-              <div className="stat-label">{t.mm.sellStats}</div>
+              <div className="stat-value text-negative">{askCancels}/{askQueueCancels}/{askRebalances}</div>
+              <div className="stat-label">{t.mm.askStats}</div>
             </div>
           </div>
 
@@ -865,8 +860,8 @@ function MarketMakerPage() {
         <span>StandX: {mmPositions?.standx?.btc?.toFixed(4) || '0.0000'} BTC</span>
         <span>GRVT: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC</span>
         <span>{t.mm.netExposure}: {mmPositions?.net_btc?.toFixed(4) || '0.0000'}</span>
-        <span>StandX {t.mm.equity}: ${(state?.standx_equity as number)?.toFixed(2) || '0.00'}</span>
-        <span>GRVT USDT: ${(state?.grvt_equity as number)?.toFixed(2) || '0.00'}</span>
+        <span>StandX {t.mm.equity}: ${mmPositions?.standx?.equity?.toFixed(2) || '0.00'}</span>
+        <span>GRVT USDT: ${mmPositions?.grvt?.usdt?.toFixed(2) || '0.00'}</span>
         <span className="sync-status">
           {t.mm.sync}: {mmPositions?.seconds_ago ? `${mmPositions.seconds_ago.toFixed(1)}${t.common.syncAgo}` : 'N/A'}
         </span>

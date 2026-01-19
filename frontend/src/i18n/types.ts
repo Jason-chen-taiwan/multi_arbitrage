@@ -108,8 +108,8 @@ export interface Translations {
     tier50: string
     tier10: string
     tierOver: string
-    buyStats: string
-    sellStats: string
+    bidStats: string
+    askStats: string
     cancelQueueRebalance: string
     volatility: string
     normal: string
