@@ -6,8 +6,37 @@
 
 - **雙邊掛單**：自動在買賣兩側提供流動性
 - **Uptime Program 優化**：維持 10 bps 內價差，達成 70%+ 運行時間
-- **實時監控**：Web Dashboard 即時顯示倉位、PnL、訂單狀態
+- **實時監控**：React Dashboard 即時顯示倉位、PnL、訂單狀態
 - **智能風控**：庫存管理、最大倉位限制、智能波動率暫停（雙閾值 + 穩定期確認）
+- **自動對沖**：StandX 成交後自動在 GRVT 對沖，維持中性倉位
+
+## 系統架構
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    React Frontend (Vite)                     │
+│  - 即時 Dashboard 顯示                                        │
+│  - 策略參數配置介面                                           │
+│  - 多語言支援 (中/英)                                         │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ WebSocket + REST API
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    FastAPI Backend                           │
+│  - /api/* REST 端點                                          │
+│  - /ws WebSocket 即時數據                                     │
+│  - 生產模式下同時服務前端靜態檔案                               │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Trading Adapters & Strategy Engine              │
+│  - StandX / GRVT 交易所整合                                   │
+│  - 做市策略執行                                               │
+│  - 倉位管理與對沖                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 快速開始
 
@@ -17,43 +46,66 @@
 
 👉 <https://standx.com/referral?code=Jasoncrypto>
 
-### 1. 確認 Python 已安裝
+### 1. 環境需求
 
 ```bash
-python --version  # 需要 Python 3.10+
+python --version  # 需要 Python 3.8+
+node --version    # 需要 Node.js 18+
+npm --version     # 隨 Node.js 安裝
 ```
 
 ### 2. 啟動系統
 
 ```bash
-# Linux / macOS
-./start.sh
+# 生產模式（構建前端後由 FastAPI 服務）
+./scripts/start.sh
 
-# Windows
-start.bat
+# 開發模式（前後端分開運行，支援熱重載）
+./scripts/start.sh --dev
+
+# 強制重建前端後啟動
+./scripts/start.sh --rebuild
 ```
 
-腳本會自動處理虛擬環境創建和依賴安裝。
+腳本會自動處理：
+
+- Python 虛擬環境（如需要）
+- 前端依賴安裝 (`npm install`)
+- 前端構建（生產模式）
 
 ### 3. 配置 StandX
 
-1. 訪問 <http://localhost:8888>
-2. 進入「設定」頁面
+1. 訪問 <http://localhost:9999>
+2. 進入「Settings」頁面
 3. 選擇 StandX，填入 API Token 和 Ed25519 Private Key
-4. 點擊「保存並開始監控」
+4. 點擊「Save Configuration」
+
+### 4. 配置 GRVT（對沖用）
+
+如需自動對沖功能：
+
+1. 在 Settings 頁面添加 GRVT
+2. 填入 Private Key 和 Trading Account ID
+3. 系統會自動在 StandX 成交時於 GRVT 對沖
 
 ## Web Dashboard
 
+訪問 <http://localhost:9999> 進入 Dashboard。
+
 | 頁面 | 功能 |
 |------|------|
-| **StandX MM** | 做市商控制、實時狀態、訂單簿深度 |
-| **套利監控** | 跨交易所價格比較（未來功能） |
-| **設定** | 配置交易所 API 憑證 |
-| **參數比較** | 回測不同參數組合（未來功能） |
+| **Market Maker** | 做市商控制、實時狀態、訂單簿深度、成交歷史 |
+| **Arbitrage** | 跨交易所價格比較（未來功能） |
+| **Settings** | 配置交易所 API 憑證 |
+| **Comparison** | 參數組合比較（未來功能） |
+
+### API 文件
+
+啟動後訪問 <http://localhost:9999/docs> 可查看 Swagger API 文件。
 
 ## 做市策略參數
 
-在 Dashboard 的「策略配置」區塊可調整：
+在 Dashboard 的「Strategy Configuration」區塊可調整：
 
 ### 報價參數
 
@@ -78,13 +130,13 @@ start.bat
 | 參數 | 說明 | 建議值 |
 |------|------|--------|
 | 觀察窗口 | 計算波動率的時間窗口 | 2 秒 |
-| 暫停閾值 | 波動率超過此值暫停掛單 | 5 bps |
-| 恢復閾值 | 波動率低於此值才考慮恢復 | 4 bps |
+| 暫停閾值 | 波動率超過此值暫停掛單 | 4-5 bps |
+| 恢復閾值 | 波動率低於此值才考慮恢復 | 3-4 bps |
 
 **運作原理**：
 - 波動率 = (窗口內最高價 - 最低價) / 最新價 × 10000 (bps)
 - 當波動率 > 暫停閾值 → 撤銷訂單，暫停掛單
-- 當波動率 < 恢復閾值且持續 3 秒 → 恢復掛單
+- 當波動率 < 恢復閾值且持續穩定期 → 恢復掛單
 - 雙閾值設計避免在臨界點頻繁開關（hysteresis）
 
 ## Uptime Program
@@ -97,6 +149,51 @@ StandX 做市商獎勵計劃：
 
 系統會自動追蹤你的運行時間和 Maker Hours。
 
+## 開發指南
+
+### 目錄結構
+
+```text
+arbitrage/
+├── frontend/              # React 前端
+│   ├── src/
+│   │   ├── pages/        # 頁面組件
+│   │   ├── components/   # 共用組件
+│   │   ├── hooks/        # React Hooks
+│   │   └── i18n/         # 多語言翻譯
+│   └── vite.config.ts
+├── src/
+│   ├── web/              # FastAPI 後端
+│   │   ├── api/          # REST API 路由
+│   │   ├── schemas/      # Pydantic 模型
+│   │   └── auto_dashboard.py
+│   ├── adapters/         # 交易所適配器
+│   ├── strategy/         # 做市策略
+│   └── monitor/          # 價格監控
+├── config/
+│   └── mm_config.yaml    # 做市參數配置
+└── scripts/
+    └── start.sh          # 啟動腳本
+```
+
+### 開發模式
+
+```bash
+# 啟動開發伺服器（支援熱重載）
+./scripts/start.sh --dev
+
+# 後端: http://localhost:9999
+# 前端: http://localhost:3000 (代理 API 到 9999)
+```
+
+### 單獨構建前端
+
+```bash
+cd frontend
+npm install
+npm run build  # 輸出到 src/web/frontend_dist/
+```
+
 ## 未來支援
 
 以下功能已有基礎架構，未來將完善：
@@ -104,7 +201,7 @@ StandX 做市商獎勵計劃：
 - [ ] GRVT 交易所做市
 - [ ] 跨交易所套利執行
 - [ ] CEX 整合（Binance、OKX 等）
-- [ ] 自動對沖功能
+- [ ] 更多幣種支援
 
 ## 邀請碼說明
 
