@@ -1185,20 +1185,18 @@ async def root():
 
             // ===== 做市商控制 =====
             async function startMM() {
-                const orderSize = document.getElementById('mmOrderSize').value;
-                const orderDistance = document.getElementById('mmOrderDistance').value;
-
                 // 實盤模式確認
                 if (!confirm('⚠️ 確定啟動做市商？將使用真實資金進行交易！')) {
                     return;
                 }
 
+                // 啟動前先保存所有配置，確保後端讀取的是最新的用戶設定
+                await saveMMConfig();
+
                 const res = await fetch('/api/mm/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        order_size: parseFloat(orderSize),
-                        order_distance: parseInt(orderDistance),
                         dry_run: false  // 實盤模式
                     })
                 });

@@ -111,6 +111,9 @@ class StandXWebSocketClient:
         # 訂閱的符號
         self._subscribed_symbols: set = set()
 
+        # Orderbook 緩存 (symbol -> {"bids": [...], "asks": [...], "timestamp": float})
+        self._orderbook_cache: Dict[str, Dict[str, Any]] = {}
+
         # 統計
         self._message_count = 0
         self._last_heartbeat = time.time()
@@ -132,6 +135,34 @@ class StandXWebSocketClient:
     def on_fill(self, callback: FillCallback):
         """註冊成交回調 (訂單完全或部分成交)"""
         self._fill_callbacks.append(callback)
+
+    # ==================== Orderbook 緩存 ====================
+
+    def get_cached_orderbook(self, symbol: str, max_age_sec: float = 5.0) -> Optional[Dict[str, Any]]:
+        """
+        獲取緩存的 orderbook 數據
+
+        Args:
+            symbol: 交易對符號
+            max_age_sec: 最大緩存年齡（秒），超過則返回 None
+
+        Returns:
+            緩存的 orderbook 數據，格式：{"bids": [...], "asks": [...], "timestamp": float}
+            如果緩存不存在或過期則返回 None
+        """
+        cached = self._orderbook_cache.get(symbol)
+        if not cached:
+            return None
+
+        age = time.time() - cached.get("timestamp", 0)
+        if age > max_age_sec:
+            return None
+
+        return cached
+
+    def has_valid_orderbook(self, symbol: str, max_age_sec: float = 5.0) -> bool:
+        """檢查是否有有效的 orderbook 緩存"""
+        return self.get_cached_orderbook(symbol, max_age_sec) is not None
 
     # ==================== 連接管理 ====================
 
@@ -391,13 +422,21 @@ class StandXWebSocketClient:
             logger.error(f"[StandX WS] Message processing error: {e}")
 
     async def _handle_depth_book(self, message: Dict):
-        """處理深度數據"""
+        """處理深度數據並緩存 orderbook"""
         try:
             data = message.get("data", message)
             symbol = data.get("symbol", "")
 
             bids = data.get("bids", [])
             asks = data.get("asks", [])
+
+            # 緩存完整的 orderbook 數據
+            if symbol:
+                self._orderbook_cache[symbol] = {
+                    "bids": bids,
+                    "asks": asks,
+                    "timestamp": time.time(),
+                }
 
             if bids and asks:
                 best_bid = Decimal(str(bids[0][0])) if bids else Decimal("0")

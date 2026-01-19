@@ -1094,127 +1094,149 @@ class MarketMakerExecutor:
         # ==================== REST Gate: 下單前查交易所 ====================
         # 每次下單前都查詢交易所實際訂單，用交易所結果作為判斷依據
         # 這是防止重複訂單的核心機制
+        #
+        # WebSocket 模式優化：
+        # - 如果 WebSocket 連接正常，只在需要下單時才查詢（每 10 個 tick 或本地沒有訂單時）
+        # - 這樣可以大幅減少 REST API 調用，避免 429 錯誤
         exchange_bids = []
         exchange_asks = []
         rest_gate_ok = False
 
-        try:
-            open_orders = await self.primary.get_open_orders(self.config.symbol)
-            logger.debug(f"[REST Gate] Got {len(open_orders)} open orders from exchange")
+        # 決定是否需要 REST Gate 查詢
+        need_rest_gate = True
+        if self._use_websocket and self._ws_connected:
+            # WebSocket 模式：只在以下情況查詢
+            # 1. 本地沒有訂單（需要下單）
+            # 2. 每 10 個 tick 做一次同步（約 1 秒，tick_interval=100ms）
+            has_local_orders = self.state.has_bid_order() or self.state.has_ask_order()
+            if has_local_orders and self._tick_count % 10 != 0:
+                # 有訂單且不是同步週期，跳過 REST Gate
+                need_rest_gate = False
+                rest_gate_ok = True
+                # 使用本地 state
+                if self.state.has_bid_order():
+                    exchange_bids = [self.state.get_bid_order()]
+                if self.state.has_ask_order():
+                    exchange_asks = [self.state.get_ask_order()]
 
-            # 分類訂單
-            for order in open_orders:
-                if order.status not in ["open", "partially_filled", "new"]:
-                    continue
-                if order.side.lower() == "buy":
-                    exchange_bids.append(order)
-                else:
-                    exchange_asks.append(order)
+        if need_rest_gate:
+            try:
+                open_orders = await self.primary.get_open_orders(self.config.symbol)
+                logger.debug(f"[REST Gate] Got {len(open_orders)} open orders from exchange")
 
-            # ==================== 同步本地 state（REST 為準）====================
-            # 交易所沒有 bid 但本地有 → 清除本地
-            if not exchange_bids and self.state.has_bid_order():
-                logger.info("[REST Gate] Exchange has no bid, clearing local bid state")
-                self.state.clear_bid_order()
+                # 分類訂單
+                for order in open_orders:
+                    if order.status not in ["open", "partially_filled", "new"]:
+                        continue
+                    if order.side.lower() == "buy":
+                        exchange_bids.append(order)
+                    else:
+                        exchange_asks.append(order)
 
-            # 交易所沒有 ask 但本地有 → 清除本地
-            if not exchange_asks and self.state.has_ask_order():
-                logger.info("[REST Gate] Exchange has no ask, clearing local ask state")
-                self.state.clear_ask_order()
+                # ==================== 同步本地 state（REST 為準）====================
+                # 交易所沒有 bid 但本地有 → 清除本地
+                if not exchange_bids and self.state.has_bid_order():
+                    logger.info("[REST Gate] Exchange has no bid, clearing local bid state")
+                    self.state.clear_bid_order()
 
-            # 交易所有 bid 但本地沒有 → 取消孤兒訂單（避免重複下單）
-            if exchange_bids and not self.state.has_bid_order():
-                logger.warning(f"[REST Gate] Exchange has {len(exchange_bids)} orphan bids, cancelling")
-                for order in exchange_bids:
-                    try:
-                        await self.primary.cancel_order(
-                            symbol=self.config.symbol,
-                            order_id=order.order_id,
-                            client_order_id=getattr(order, 'client_order_id', None)
-                        )
-                        trade_log.info(
-                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
-                            f"order_id={order.order_id} | reason=orphan_order"
-                        )
-                    except Exception as e:
-                        logger.error(f"[REST Gate] Failed to cancel orphan bid: {e}")
-                exchange_bids = []  # 已取消，視為沒有
+                # 交易所沒有 ask 但本地有 → 清除本地
+                if not exchange_asks and self.state.has_ask_order():
+                    logger.info("[REST Gate] Exchange has no ask, clearing local ask state")
+                    self.state.clear_ask_order()
 
-            if exchange_asks and not self.state.has_ask_order():
-                logger.warning(f"[REST Gate] Exchange has {len(exchange_asks)} orphan asks, cancelling")
-                for order in exchange_asks:
-                    try:
-                        await self.primary.cancel_order(
-                            symbol=self.config.symbol,
-                            order_id=order.order_id,
-                            client_order_id=getattr(order, 'client_order_id', None)
-                        )
-                        trade_log.info(
-                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
-                            f"order_id={order.order_id} | reason=orphan_order"
-                        )
-                    except Exception as e:
-                        logger.error(f"[REST Gate] Failed to cancel orphan ask: {e}")
-                exchange_asks = []
+                # 交易所有 bid 但本地沒有 → 取消孤兒訂單（避免重複下單）
+                if exchange_bids and not self.state.has_bid_order():
+                    logger.warning(f"[REST Gate] Exchange has {len(exchange_bids)} orphan bids, cancelling")
+                    for order in exchange_bids:
+                        try:
+                            await self.primary.cancel_order(
+                                symbol=self.config.symbol,
+                                order_id=order.order_id,
+                                client_order_id=getattr(order, 'client_order_id', None)
+                            )
+                            trade_log.info(
+                                f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
+                                f"order_id={order.order_id} | reason=orphan_order"
+                            )
+                        except Exception as e:
+                            logger.error(f"[REST Gate] Failed to cancel orphan bid: {e}")
+                    exchange_bids = []  # 已取消，視為沒有
 
-            # 交易所有多個同方向訂單 → 取消多餘的
-            if len(exchange_bids) > 1:
-                logger.warning(f"[REST Gate] Multiple bids ({len(exchange_bids)}), cancelling extras")
-                sorted_bids = sorted(exchange_bids, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
-                for order in sorted_bids[1:]:
-                    try:
-                        await self.primary.cancel_order(
-                            symbol=self.config.symbol,
-                            order_id=order.order_id,
-                            client_order_id=getattr(order, 'client_order_id', None)
-                        )
-                        trade_log.info(
-                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
-                            f"order_id={order.order_id} | reason=duplicate"
-                        )
-                    except Exception as e:
-                        logger.error(f"[REST Gate] Failed to cancel duplicate bid: {e}")
-                exchange_bids = [sorted_bids[0]]  # 只保留最新的
+                if exchange_asks and not self.state.has_ask_order():
+                    logger.warning(f"[REST Gate] Exchange has {len(exchange_asks)} orphan asks, cancelling")
+                    for order in exchange_asks:
+                        try:
+                            await self.primary.cancel_order(
+                                symbol=self.config.symbol,
+                                order_id=order.order_id,
+                                client_order_id=getattr(order, 'client_order_id', None)
+                            )
+                            trade_log.info(
+                                f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
+                                f"order_id={order.order_id} | reason=orphan_order"
+                            )
+                        except Exception as e:
+                            logger.error(f"[REST Gate] Failed to cancel orphan ask: {e}")
+                    exchange_asks = []
 
-            if len(exchange_asks) > 1:
-                logger.warning(f"[REST Gate] Multiple asks ({len(exchange_asks)}), cancelling extras")
-                sorted_asks = sorted(exchange_asks, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
-                for order in sorted_asks[1:]:
-                    try:
-                        await self.primary.cancel_order(
-                            symbol=self.config.symbol,
-                            order_id=order.order_id,
-                            client_order_id=getattr(order, 'client_order_id', None)
-                        )
-                        trade_log.info(
-                            f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
-                            f"order_id={order.order_id} | reason=duplicate"
-                        )
-                    except Exception as e:
-                        logger.error(f"[REST Gate] Failed to cancel duplicate ask: {e}")
-                exchange_asks = [sorted_asks[0]]
+                # 交易所有多個同方向訂單 → 取消多餘的
+                if len(exchange_bids) > 1:
+                    logger.warning(f"[REST Gate] Multiple bids ({len(exchange_bids)}), cancelling extras")
+                    sorted_bids = sorted(exchange_bids, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                    for order in sorted_bids[1:]:
+                        try:
+                            await self.primary.cancel_order(
+                                symbol=self.config.symbol,
+                                order_id=order.order_id,
+                                client_order_id=getattr(order, 'client_order_id', None)
+                            )
+                            trade_log.info(
+                                f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=buy | "
+                                f"order_id={order.order_id} | reason=duplicate"
+                            )
+                        except Exception as e:
+                            logger.error(f"[REST Gate] Failed to cancel duplicate bid: {e}")
+                    exchange_bids = [sorted_bids[0]]  # 只保留最新的
 
-            rest_gate_ok = True
+                if len(exchange_asks) > 1:
+                    logger.warning(f"[REST Gate] Multiple asks ({len(exchange_asks)}), cancelling extras")
+                    sorted_asks = sorted(exchange_asks, key=lambda o: getattr(o, 'created_at', 0), reverse=True)
+                    for order in sorted_asks[1:]:
+                        try:
+                            await self.primary.cancel_order(
+                                symbol=self.config.symbol,
+                                order_id=order.order_id,
+                                client_order_id=getattr(order, 'client_order_id', None)
+                            )
+                            trade_log.info(
+                                f"REST_GATE_CANCEL | exchange={self.config.primary_exchange} | side=sell | "
+                                f"order_id={order.order_id} | reason=duplicate"
+                            )
+                        except Exception as e:
+                            logger.error(f"[REST Gate] Failed to cancel duplicate ask: {e}")
+                    exchange_asks = [sorted_asks[0]]
 
-        except Exception as e:
-            logger.error(f"[REST Gate] Failed to query open orders: {e}")
-            self._rest_gate_failures += 1
+                rest_gate_ok = True
 
-            # ==================== 關鍵修復：REST 失敗時進入安全模式 ====================
-            # 不回退到本地 state，直接返回不下單
-            if self._rest_gate_failures >= 3:
-                logger.warning(
-                    f"[REST Gate] {self._rest_gate_failures} consecutive failures, "
-                    f"entering safe mode - skipping order placement"
+            except Exception as e:
+                logger.error(f"[REST Gate] Failed to query open orders: {e}")
+                self._rest_gate_failures += 1
+
+                # ==================== 關鍵修復：REST 失敗時進入安全模式 ====================
+                # 不回退到本地 state，直接返回不下單
+                if self._rest_gate_failures >= 3:
+                    logger.warning(
+                        f"[REST Gate] {self._rest_gate_failures} consecutive failures, "
+                        f"entering safe mode - skipping order placement"
+                    )
+                trade_log.info(
+                    f"REST_GATE_SAFE_MODE | exchange={self.config.primary_exchange} | "
+                    f"failures={self._rest_gate_failures} | error={str(e)[:100]}"
                 )
-            trade_log.info(
-                f"REST_GATE_SAFE_MODE | exchange={self.config.primary_exchange} | "
-                f"failures={self._rest_gate_failures} | error={str(e)[:100]}"
-            )
-            return  # 直接返回，不下單
+                return  # 直接返回，不下單
 
-        # REST 查詢成功，重置失敗計數
-        self._rest_gate_failures = 0
+            # REST 查詢成功，重置失敗計數
+            self._rest_gate_failures = 0
 
         # ==================== 用 REST 結果決定是否可下單 ====================
         # 關鍵：用交易所查詢結果，而不是本地 state
@@ -1874,7 +1896,7 @@ class MarketMakerExecutor:
                     logger.warning(f"[Stop] Found {len(open_orders)} untracked orders, canceling...")
                     for order in open_orders:
                         try:
-                            await self.primary.cancel_order(order.order_id, self.config.symbol)
+                            await self.primary.cancel_order(self.config.symbol, order.order_id)
                             logger.info(f"[Stop] Canceled untracked order {order.order_id}")
                         except Exception as e:
                             logger.warning(f"[Stop] Failed to cancel {order.order_id}: {e}")

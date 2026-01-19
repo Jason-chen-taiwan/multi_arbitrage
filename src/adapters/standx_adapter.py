@@ -661,11 +661,30 @@ class StandXAdapter(BasePerpAdapter):
         depth: int = 20,
         limit: int = None,  # 兼容性參數
     ) -> Orderbook:
-        """查詢訂單簿"""
+        """
+        查詢訂單簿
+
+        優先使用 WebSocket 緩存的數據，減少 REST API 調用
+        """
         # 如果提供了 limit 參數，使用它而不是 depth
         if limit is not None:
             depth = limit
 
+        # 優先使用 WebSocket 緩存（如果可用且有效）
+        if self._ws_client and self._ws_client.is_connected:
+            cached = self._ws_client.get_cached_orderbook(symbol, max_age_sec=5.0)
+            if cached:
+                bids = cached.get("bids", [])
+                asks = cached.get("asks", [])
+                if bids and asks:
+                    return Orderbook(
+                        symbol=symbol,
+                        bids=[[Decimal(str(p)), Decimal(str(q))] for p, q in bids[:depth]],
+                        asks=[[Decimal(str(p)), Decimal(str(q))] for p, q in asks[:depth]],
+                        timestamp=datetime.fromtimestamp(cached.get("timestamp", time.time()))
+                    )
+
+        # Fallback 到 REST API
         try:
             result = await self._request(
                 'GET', '/api/query_depth_book',

@@ -69,6 +69,12 @@ def register_mm_routes(app, dependencies):
             rebalance_distance = int(quote_cfg.get('rebalance_distance_bps', 12))
             max_position = Decimal(str(position_cfg.get('max_position_btc', 0.01)))
 
+            # 硬停參數：根據 max_position 動態計算
+            # hard_stop = max_position * 0.7 (70% 時硬停)
+            # resume_position = max_position * 0.45 (45% 時恢復)
+            hard_stop_position = max_position * Decimal("0.7")
+            resume_position = max_position * Decimal("0.45")
+
             # 波動率參數
             volatility_window = int(volatility_cfg.get('window_sec', 2))
             volatility_threshold = float(volatility_cfg.get('threshold_bps', 5.0))
@@ -94,6 +100,9 @@ def register_mm_routes(app, dependencies):
                 cancel_distance_bps=cancel_distance,
                 rebalance_distance_bps=rebalance_distance,
                 max_position_btc=max_position,
+                # 硬停參數（根據 max_position 動態計算）
+                hard_stop_position_btc=hard_stop_position,
+                resume_position_btc=resume_position,
                 dry_run=dry_run,
                 # 波動率參數
                 volatility_window_sec=volatility_window,
@@ -102,6 +111,10 @@ def register_mm_routes(app, dependencies):
                 volatility_stable_seconds=volatility_stable,
             )
 
+            logger.info(
+                f"做市商配置: order_size={order_size}, max_pos={max_position}, "
+                f"hard_stop={hard_stop_position}, resume_pos={resume_position}"
+            )
             logger.info(
                 f"做市商配置: order_dist={order_distance}bps, cancel_dist={cancel_distance}bps, "
                 f"rebal_dist={rebalance_distance}bps, vol_window={volatility_window}s, "
