@@ -66,6 +66,7 @@ export const zh: Translations = {
     orderBook: '訂單簿',
     price: '價格',
     size: '數量',
+    volume: '累積量',
     spread: '價差',
     noOrderBookData: '無訂單簿數據',
 

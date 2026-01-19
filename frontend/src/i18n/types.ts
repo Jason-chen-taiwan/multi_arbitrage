@@ -76,6 +76,7 @@ export interface Translations {
     orderBook: string
     price: string
     size: string
+    volume: string
     spread: string
     noOrderBookData: string
 

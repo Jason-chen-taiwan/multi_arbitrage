@@ -66,6 +66,7 @@ export const en: Translations = {
     orderBook: 'Order Book',
     price: 'Price',
     size: 'Size',
+    volume: 'Volume',
     spread: 'Spread',
     noOrderBookData: 'No order book data',
 

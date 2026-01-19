@@ -514,13 +514,25 @@ function MarketMakerPage() {
                   <div className="orderbook-header">
                     <span>{t.mm.price}</span>
                     <span>{t.mm.size}</span>
+                    <span>{t.mm.volume}</span>
                   </div>
-                  {orderbooks.STANDX['BTC-USD'].asks.slice(0, 5).reverse().map(([price, size], idx) => (
-                    <div key={idx} className="orderbook-row ask">
-                      <span className="text-negative">${price.toFixed(2)}</span>
-                      <span>{size.toFixed(6)}</span>
-                    </div>
-                  ))}
+                  {(() => {
+                    const asks = orderbooks.STANDX['BTC-USD'].asks.slice(0, 5)
+                    // 計算累積量（從遠到近）
+                    const cumulative: number[] = []
+                    let total = 0
+                    for (const [, size] of asks) {
+                      total += size
+                      cumulative.push(total)
+                    }
+                    return asks.reverse().map(([price, size], idx) => (
+                      <div key={idx} className="orderbook-row ask">
+                        <span className="text-negative">${price.toFixed(2)}</span>
+                        <span>{size.toFixed(4)}</span>
+                        <span className="text-muted">{cumulative[asks.length - 1 - idx].toFixed(4)}</span>
+                      </div>
+                    ))
+                  })()}
                 </div>
                 <div className="orderbook-spread">
                   {t.mm.spread}: {(
@@ -529,12 +541,26 @@ function MarketMakerPage() {
                   ).toFixed(2)} USD
                 </div>
                 <div className="orderbook-side bids">
-                  {orderbooks.STANDX['BTC-USD'].bids.slice(0, 5).map(([price, size], idx) => (
-                    <div key={idx} className="orderbook-row bid">
-                      <span className="text-positive">${price.toFixed(2)}</span>
-                      <span>{size.toFixed(6)}</span>
-                    </div>
-                  ))}
+                  <div className="orderbook-header bids-header">
+                    <span>{t.mm.price}</span>
+                    <span>{t.mm.size}</span>
+                    <span>{t.mm.volume}</span>
+                  </div>
+                  {(() => {
+                    const bids = orderbooks.STANDX['BTC-USD'].bids.slice(0, 5)
+                    // 計算累積量（從近到遠）
+                    let total = 0
+                    return bids.map(([price, size], idx) => {
+                      total += size
+                      return (
+                        <div key={idx} className="orderbook-row bid">
+                          <span className="text-positive">${price.toFixed(2)}</span>
+                          <span>{size.toFixed(4)}</span>
+                          <span className="text-muted">{total.toFixed(4)}</span>
+                        </div>
+                      )
+                    })
+                  })()}
                 </div>
               </div>
 

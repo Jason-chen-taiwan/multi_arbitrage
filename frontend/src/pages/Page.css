@@ -283,18 +283,34 @@
 }
 
 .orderbook-header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
   padding: var(--spacing-xs) var(--spacing-sm);
   color: var(--text-secondary);
   font-size: var(--font-xs);
   text-transform: uppercase;
+  text-align: right;
+}
+
+.orderbook-header span:first-child {
+  text-align: left;
+}
+
+.orderbook-header.bids-header {
+  border-top: 1px solid var(--border-color);
+  padding-top: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
 }
 
 .orderbook-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
   padding: var(--spacing-xs) var(--spacing-sm);
+  text-align: right;
+}
+
+.orderbook-row span:first-child {
+  text-align: left;
 }
 
 .orderbook-spread {
