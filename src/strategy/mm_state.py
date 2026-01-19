@@ -529,10 +529,13 @@ class MMState:
         計算窗口內波動率 (basis points)
 
         波動率 = (max - min) / avg * 10000
+
+        注意：數據不足時返回 inf，視為高風險（暫停掛單）
         """
         with self._lock:
             if len(self._price_history) < 2:
-                return 0.0
+                # 數據不足 → 視為高波動（保守策略）
+                return float('inf')
 
             prices = [p for _, p in self._price_history]
             max_price = max(prices)
@@ -540,7 +543,7 @@ class MMState:
             avg_price = sum(prices) / len(prices)
 
             if avg_price == 0:
-                return 0.0
+                return float('inf')
 
             volatility = float((max_price - min_price) / avg_price * 10000)
             return volatility
