@@ -2210,7 +2210,8 @@ class MarketMakerExecutor:
 
             for pos in positions:
                 # 智能匹配：只要 base asset 相同就算匹配
-                pos_base = pos.symbol.upper().split("_")[0]
+                # 注意：symbol 格式可能是 "BTC-USD", "BTC_USD", 或 "BTC/USD"
+                pos_base = pos.symbol.upper().replace("-", "_").replace("/", "_").split("_")[0]
                 if pos_base == symbol_base:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
 
