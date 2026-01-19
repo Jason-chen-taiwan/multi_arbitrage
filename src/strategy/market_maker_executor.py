@@ -181,8 +181,8 @@ class MMConfig:
     # 是否在價格接近時取消訂單 (rebate 模式設為 False)
     cancel_on_approach: bool = True
 
-    # 強制 post_only (rebate 模式必須開啟，確保 maker)
-    post_only: bool = False
+    # 強制 post_only (預設開啟，確保 maker，避免意外成交)
+    post_only: bool = True
 
     # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
     min_spread_ticks: int = 2
@@ -194,9 +194,9 @@ class MMConfig:
     hedge_fee_bps: Decimal = Decimal("2")    # StandX hedge fee (備用)
 
     # ==================== 報價參數 (uptime 模式) ====================
-    order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
-    cancel_distance_bps: int = 3         # 價格靠近時撤單（防止成交）
-    rebalance_distance_bps: int = 12     # 價格遠離時撤單重掛 (超出 10 bps 後)
+    order_distance_bps: int = 12         # 掛單距離 mark price (保守模式，犧牲 uptime tier 換取安全)
+    cancel_distance_bps: int = 5         # 價格靠近時撤單（防止成交，~$46 緩衝）
+    rebalance_distance_bps: int = 18     # 價格遠離時撤單重掛
 
     # ==================== Inventory Skew 參數 ====================
     inventory_skew_enabled: bool = True
@@ -233,10 +233,10 @@ class MMConfig:
     breakeven_offset_bps: Decimal = Decimal("0")  # 回補價格偏移 (正=更保守, 負=更激進吃rebate)
 
     # ==================== 波動率控制 ====================
-    volatility_window_sec: int = 5       # 波動率窗口
-    volatility_threshold_bps: float = 30.0  # 超過則暫停 (pause threshold)
-    volatility_resume_threshold_bps: float = 15.0  # 低於此值才考慮恢復 (hysteresis)
-    volatility_stable_seconds: float = 3.0  # 需持續低於恢復閾值多少秒才真正恢復
+    volatility_window_sec: int = 2       # 波動率窗口（2 秒反應更快）
+    volatility_threshold_bps: float = 5.0  # 超過則暫停
+    volatility_resume_threshold_bps: float = 4.0  # 低於此值才考慮恢復 (hysteresis)
+    volatility_stable_seconds: float = 2.0  # 需持續低於恢復閾值多少秒才真正恢復
     volatility_distance_multiplier: Decimal = Decimal("2")  # 高波動時距離倍數
 
     # 訂單參數
@@ -1865,6 +1865,22 @@ class MarketMakerExecutor:
 
         self.state.clear_all_orders()
 
+        # 額外安全措施：撤銷交易所上該 symbol 的所有訂單
+        # 避免因狀態不同步導致遺漏訂單
+        if reason == "stop":
+            try:
+                open_orders = await self.primary.get_open_orders(self.config.symbol)
+                if open_orders:
+                    logger.warning(f"[Stop] Found {len(open_orders)} untracked orders, canceling...")
+                    for order in open_orders:
+                        try:
+                            await self.primary.cancel_order(order.order_id, self.config.symbol)
+                            logger.info(f"[Stop] Canceled untracked order {order.order_id}")
+                        except Exception as e:
+                            logger.warning(f"[Stop] Failed to cancel {order.order_id}: {e}")
+            except Exception as e:
+                logger.warning(f"[Stop] Failed to query open orders: {e}")
+
     async def _check_order_status(self):
         """
         改進的訂單狀態檢測
@@ -2340,8 +2356,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2361,8 +2377,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2398,8 +2414,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2418,8 +2434,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:

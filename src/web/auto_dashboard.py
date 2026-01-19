@@ -424,6 +424,7 @@ async def root():
                         volatility: {
                             window_sec: parseInt(document.getElementById('mmVolatilityWindow').value),
                             threshold_bps: parseFloat(document.getElementById('mmVolatilityThreshold').value),
+                            resume_threshold_bps: parseFloat(document.getElementById('mmVolatilityResumeThreshold').value),
                         },
                         execution: {
                             dry_run: false,  // 實盤模式
@@ -540,6 +541,7 @@ async def root():
                 if (mmConfig.volatility) {
                     document.getElementById('mmVolatilityWindow').value = mmConfig.volatility.window_sec;
                     document.getElementById('mmVolatilityThreshold').value = mmConfig.volatility.threshold_bps;
+                    document.getElementById('mmVolatilityResumeThreshold').value = mmConfig.volatility.resume_threshold_bps || 5;
                 }
 
                 // 更新策略說明
@@ -1911,7 +1913,89 @@ async def root():
             updateExchangeOptions();
             loadConfiguredExchanges();
             loadMMConfig();  // 加載 StandX 做市商配置
+
+            // ===== 邀請碼彈窗 =====
+            async function checkReferralStatus() {
+                try {
+                    const res = await fetch('/api/referral/status');
+                    const data = await res.json();
+
+                    if (data.needs_prompt) {
+                        // 顯示彈窗
+                        showReferralModal();
+                    }
+                } catch (e) {
+                    console.log('Referral check skipped:', e);
+                }
+            }
+
+            function showReferralModal() {
+                const modal = document.getElementById('referralModal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                }
+            }
+
+            function hideReferralModal() {
+                const modal = document.getElementById('referralModal');
+                if (modal) {
+                    modal.style.display = 'none';
+                }
+            }
+
+            async function applyReferralCode() {
+                const btn = document.getElementById('referralApplyBtn');
+                btn.disabled = true;
+                btn.textContent = '處理中...';
+
+                try {
+                    const res = await fetch('/api/referral/apply', { method: 'POST' });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        alert(data.message);
+                    } else {
+                        alert('應用失敗: ' + (data.error || '未知錯誤'));
+                    }
+                } catch (e) {
+                    alert('請求失敗: ' + e);
+                } finally {
+                    hideReferralModal();
+                }
+            }
+
+            async function skipReferral() {
+                try {
+                    await fetch('/api/referral/skip', { method: 'POST' });
+                } catch (e) {
+                    console.log('Skip failed:', e);
+                }
+                hideReferralModal();
+            }
+
+            // 延遲檢查邀請狀態（等待 StandX 連接）
+            setTimeout(checkReferralStatus, 3000);
         </script>
+
+        <!-- 邀請碼彈窗 -->
+        <div id="referralModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center;">
+            <div style="background: #1f2937; padding: 24px; border-radius: 12px; max-width: 420px; text-align: center; border: 1px solid #374151;">
+                <h3 style="color: #f9fafb; margin: 0 0 16px 0; font-size: 18px;">歡迎使用 StandX Market Maker</h3>
+                <p style="color: #9ca3af; margin: 0 0 20px 0; line-height: 1.6;">
+                    是否使用開發者的邀請碼？<br>
+                    <span style="color: #10b981; font-weight: bold;">雙方都可獲得 5% 積分加成</span>
+                </p>
+                <div style="background: #374151; padding: 12px; border-radius: 8px; margin-bottom: 20px;">
+                    <span style="color: #6b7280;">邀請碼：</span>
+                    <span style="color: #f9fafb; font-weight: bold; font-family: monospace;">Jasoncrypto</span>
+                </div>
+                <div style="display: flex; gap: 12px; justify-content: center;">
+                    <button id="referralApplyBtn" onclick="applyReferralCode()" style="background: #10b981; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-weight: bold;">使用邀請碼</button>
+                    <button onclick="skipReferral()" style="background: #4b5563; color: #d1d5db; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer;">不用了</button>
+                </div>
+                <p style="color: #6b7280; margin: 16px 0 0 0; font-size: 12px;">此提示只會出現一次</p>
+            </div>
+        </div>
     </body>
     </html>
     """

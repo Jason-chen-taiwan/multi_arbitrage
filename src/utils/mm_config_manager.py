@@ -35,10 +35,10 @@ class PositionConfig:
 @dataclass
 class VolatilityConfig:
     """波動率配置 (hysteresis + stable period)"""
-    window_sec: int = 5
-    threshold_bps: float = 30.0  # 暫停閾值
-    resume_threshold_bps: float = 15.0  # 恢復閾值 (低於此才考慮恢復)
-    stable_seconds: float = 3.0  # 需持續低於恢復閾值多少秒
+    window_sec: int = 2  # 2 秒窗口，反應更快
+    threshold_bps: float = 5.0  # 暫停閾值
+    resume_threshold_bps: float = 4.0  # 恢復閾值 (低於此才考慮恢復)
+    stable_seconds: float = 2.0  # 需持續低於恢復閾值多少秒
 
 
 @dataclass

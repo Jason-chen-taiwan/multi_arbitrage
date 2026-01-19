@@ -64,3 +64,6 @@ results/
 # Claude Code
 .claude/
 nul
+
+# Referral marker (tracks if user was asked about referral code)
+.referral_checked
