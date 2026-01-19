@@ -18,6 +18,15 @@ from fastapi.responses import JSONResponse
 from src.strategy.market_maker_executor import MarketMakerExecutor, MMConfig, ExecutorStatus
 from src.strategy.hedge_engine import HedgeEngine
 from src.utils.mm_config_manager import get_mm_config
+from src.web.schemas import (
+    MMStartRequest,
+    MMStatusResponse,
+    MMPositionResponse,
+    MMConfigResponse,
+    MMConfigUpdateRequest,
+    SuccessResponse,
+    ErrorResponse,
+)
 
 
 router = APIRouter(prefix="/api/mm", tags=["market_maker"])
@@ -38,9 +47,17 @@ def register_mm_routes(app, dependencies):
     serialize_for_json = dependencies['serialize_for_json']
     logger = dependencies['logger']
 
-    @router.post("/start")
-    async def start_market_maker(request: Request):
-        """啟動做市商"""
+    @router.post("/start", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def start_market_maker(request_data: MMStartRequest):
+        """
+        啟動做市商
+
+        啟動 StandX 做市商執行器。如果已有執行器運行，會先停止它。
+
+        - **dry_run**: 是否為模擬模式（不會實際下單）
+        - **order_size**: 訂單大小（BTC），使用配置預設值如未指定
+        - **order_distance**: 訂單距離（基點），使用配置預設值如未指定
+        """
         try:
             # 先停止現有的執行器（防止重複啟動導致多個執行器同時運行）
             existing_executor = mm_executor_getter()
@@ -52,8 +69,7 @@ def register_mm_routes(app, dependencies):
                     logger.warning(f"停止現有執行器時發生錯誤: {e}")
                 mm_executor_setter(None)
 
-            data = await request.json()
-            dry_run = data.get('dry_run', True)
+            dry_run = request_data.dry_run
 
             # 從保存的配置讀取參數
             config_manager = get_mm_config()
@@ -63,8 +79,8 @@ def register_mm_routes(app, dependencies):
             volatility_cfg = saved_config.get('volatility', {})
 
             # 使用保存的配置，如果沒有則使用默認值
-            order_size = Decimal(str(data.get('order_size', position_cfg.get('order_size_btc', 0.001))))
-            order_distance = int(data.get('order_distance', quote_cfg.get('order_distance_bps', 8)))
+            order_size = Decimal(str(request_data.order_size or position_cfg.get('order_size_btc', 0.001)))
+            order_distance = int(request_data.order_distance or quote_cfg.get('order_distance_bps', 8))
             cancel_distance = int(quote_cfg.get('cancel_distance_bps', 3))
             rebalance_distance = int(quote_cfg.get('rebalance_distance_bps', 12))
             max_position = Decimal(str(position_cfg.get('max_position_btc', 0.01)))
@@ -168,9 +184,13 @@ def register_mm_routes(app, dependencies):
             logger.error(f"啟動做市商失敗: {e}")
             return JSONResponse({'success': False, 'error': str(e)})
 
-    @router.post("/stop")
+    @router.post("/stop", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
     async def stop_market_maker():
-        """停止做市商"""
+        """
+        停止做市商
+
+        優雅地停止 StandX 做市商執行器，取消所有掛單。
+        """
         try:
             mm_executor = mm_executor_getter()
             if mm_executor:
@@ -187,9 +207,13 @@ def register_mm_routes(app, dependencies):
             logger.error(f"停止做市商失敗: {e}")
             return JSONResponse({'success': False, 'error': str(e)})
 
-    @router.get("/status")
+    @router.get("/status", response_model=MMStatusResponse)
     async def get_mm_status():
-        """獲取做市商狀態"""
+        """
+        獲取做市商狀態
+
+        返回做市商的當前運行狀態、配置參數和執行器詳細信息。
+        """
         try:
             result = mm_status.copy()
             mm_executor = mm_executor_getter()
@@ -199,14 +223,15 @@ def register_mm_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'error': str(e)})
 
-    @router.get("/positions")
+    @router.get("/positions", response_model=MMPositionResponse)
     async def get_mm_positions():
         """
-        獲取做市商倉位（從 executor state 讀取，統一資料來源）
+        獲取做市商倉位
 
-        返回：
-        - 如果 executor 未運行：{"status": "disconnected"}
-        - 如果 executor 運行中：從 state 讀取的倉位數據 + 同步時間
+        從 executor state 讀取，統一資料來源。
+
+        - 如果 executor 未運行：`status: "disconnected"`
+        - 如果 executor 運行中：返回 StandX 和 GRVT 的倉位數據
         """
         import time
 
@@ -242,9 +267,13 @@ def register_mm_routes(app, dependencies):
             logger.error(f"獲取倉位失敗: {e}")
             return JSONResponse({'error': str(e)})
 
-    @router.get("/config")
+    @router.get("/config", response_model=MMConfigResponse)
     async def get_mm_config_api():
-        """獲取做市商配置"""
+        """
+        獲取做市商配置
+
+        返回當前的做市商配置，包括報價、倉位、波動率和執行參數。
+        """
         try:
             config_manager = get_mm_config()
             return JSONResponse(config_manager.get_dict())
@@ -252,19 +281,27 @@ def register_mm_routes(app, dependencies):
             return JSONResponse({'error': str(e)}, status_code=500)
 
     @router.post("/config")
-    async def update_mm_config_api(request: Request):
-        """更新做市商配置"""
+    async def update_mm_config_api(request_data: MMConfigUpdateRequest):
+        """
+        更新做市商配置
+
+        更新做市商配置並保存到檔案。支持部分更新。
+        """
         try:
-            data = await request.json()
             config_manager = get_mm_config()
-            config_manager.update(data, save=True)
+            update_data = request_data.model_dump(exclude_none=True)
+            config_manager.update(update_data, save=True)
             return JSONResponse({'success': True, 'config': config_manager.get_dict()})
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.post("/config/reload")
+    @router.post("/config/reload", response_model=SuccessResponse)
     async def reload_mm_config_api():
-        """重新加載做市商配置"""
+        """
+        重新載入做市商配置
+
+        從檔案重新載入配置，覆蓋當前記憶體中的配置。
+        """
         try:
             config_manager = get_mm_config()
             config_manager.reload()

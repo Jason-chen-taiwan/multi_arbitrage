@@ -20,6 +20,13 @@ from src.utils.referral import (
     check_referral_status,
     apply_referral_code,
 )
+from src.web.schemas import (
+    ReferralInfoResponse,
+    ReferralStatusResponse,
+    ReferralApplyRequest,
+    ReferralApplyResponse,
+    SuccessResponse,
+)
 
 
 router = APIRouter(prefix="/api/referral", tags=["referral"])
@@ -36,22 +43,21 @@ def register_referral_routes(app, dependencies):
     adapters_getter = dependencies['adapters_getter']
     logger = dependencies.get('logger')
 
-    @router.get("/info")
+    @router.get("/info", response_model=ReferralInfoResponse)
     async def get_info():
-        """獲取邀請碼信息"""
+        """
+        獲取邀請碼信息
+
+        返回邀請碼和相關獎勵信息。
+        """
         return JSONResponse(get_referral_info())
 
-    @router.get("/status")
+    @router.get("/status", response_model=ReferralStatusResponse)
     async def get_status():
         """
         檢查用戶邀請狀態
 
-        Returns:
-            {
-                "needs_prompt": bool,  # 是否需要彈窗詢問
-                "already_referred": bool,  # 是否已被邀請
-                "refer_at": str or null  # 被邀請時間
-            }
+        返回用戶是否需要邀請碼提示，以及當前的邀請狀態。
         """
         # 如果已經處理過，不再詢問
         if is_referral_checked():
@@ -103,13 +109,12 @@ def register_referral_routes(app, dependencies):
                 "error": str(e)
             })
 
-    @router.post("/apply")
-    async def apply_code(request: Request):
+    @router.post("/apply", response_model=ReferralApplyResponse)
+    async def apply_code(request_data: ReferralApplyRequest = ReferralApplyRequest()):
         """
         應用邀請碼
 
-        Request body (optional):
-            {"code": "custom_code"}  # 默認使用 Jasoncrypto
+        使用指定的邀請碼（或默認碼）來獲得積分加成。
         """
         adapters = adapters_getter()
         standx = adapters.get('STANDX')
@@ -122,8 +127,7 @@ def register_referral_routes(app, dependencies):
 
         try:
             # 可選的自定義邀請碼
-            data = await request.json() if request.headers.get('content-type') == 'application/json' else {}
-            code = data.get('code', REFERRAL_CODE)
+            code = request_data.code or REFERRAL_CODE
 
             auth_headers = standx.auth.get_auth_headers()
             success = await apply_referral_code(standx.session, auth_headers, code)
@@ -149,9 +153,13 @@ def register_referral_routes(app, dependencies):
                 "error": str(e)
             })
 
-    @router.post("/skip")
+    @router.post("/skip", response_model=SuccessResponse)
     async def skip_referral():
-        """跳過邀請碼（不再詢問）"""
+        """
+        跳過邀請碼
+
+        標記已跳過邀請碼，之後不會再詢問。
+        """
         mark_referral_checked()
         return JSONResponse({
             "success": True,

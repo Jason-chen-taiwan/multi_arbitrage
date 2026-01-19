@@ -1740,12 +1740,12 @@ class MarketMakerExecutor:
         if bid and bid.client_order_id == client_order_id:
             order_side = "buy"
             order_price = bid.price
-            order_qty = bid.size
+            order_qty = bid.qty
             order_id = bid.order_id
         elif ask and ask.client_order_id == client_order_id:
             order_side = "sell"
             order_price = ask.price
-            order_qty = ask.size
+            order_qty = ask.qty
             order_id = ask.order_id
 
         if self.config.dry_run:
@@ -2248,7 +2248,7 @@ class MarketMakerExecutor:
 
             for pos in positions:
                 # 智能匹配：只要 base asset 相同就算匹配
-                # 注意：symbol 格式可能是 "BTC-USD", "BTC_USD", 或 "BTC/USD"
+                # 統一處理各種分隔符 (-, /, _)
                 pos_base = pos.symbol.upper().replace("-", "_").replace("/", "_").split("_")[0]
                 if pos_base == symbol_base:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
