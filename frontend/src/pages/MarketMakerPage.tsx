@@ -680,11 +680,11 @@ function MarketMakerPage() {
           </div>
 
           {/* Queue Position - below current orders */}
-          {orderbooks.STANDX?.['BTC-USD'] && (
+          {orderbooks?.STANDX?.['BTC-USD'] && (
             <div className="queue-position-inline">
               {(() => {
-                const bids = orderbooks.STANDX['BTC-USD'].bids
-                const asks = orderbooks.STANDX['BTC-USD'].asks
+                const bids = orderbooks.STANDX!['BTC-USD'].bids
+                const asks = orderbooks.STANDX!['BTC-USD'].asks
 
                 // 計算買單位置：我的 bid 在 bids 中排第幾檔
                 let bidQueuePos = '-'
