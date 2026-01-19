@@ -81,15 +81,19 @@ class ConfigManager:
 
     def save_config(self, exchange_name: str, exchange_type: str, config: dict, testnet: bool = False):
         """保存配置並立即啟動監控"""
+        # 統一轉換為小寫進行比對
+        exchange_name = exchange_name.lower()
         # 使用 quote_mode='never' 避免添加引號
         if exchange_type == 'dex':
             if exchange_name == 'standx':
                 # 支援兩種認證模式
                 auth_mode = config.get('auth_mode', 'token')
                 if auth_mode == 'token':
-                    # Token 模式
-                    set_key(self.env_file, 'STANDX_API_TOKEN', config.get('api_token', ''), quote_mode='never')
-                    set_key(self.env_file, 'STANDX_ED25519_PRIVATE_KEY', config.get('ed25519_private_key', ''), quote_mode='never')
+                    # Token 模式 (支援前端發送的 api_key/private_key 或舊格式 api_token/ed25519_private_key)
+                    api_token = config.get('api_key') or config.get('api_token', '')
+                    ed25519_key = config.get('private_key') or config.get('ed25519_private_key', '')
+                    set_key(self.env_file, 'STANDX_API_TOKEN', api_token, quote_mode='never')
+                    set_key(self.env_file, 'STANDX_ED25519_PRIVATE_KEY', ed25519_key, quote_mode='never')
                     # 清除舊的錢包模式配置
                     unset_key(self.env_file, 'WALLET_PRIVATE_KEY')
                     unset_key(self.env_file, 'WALLET_ADDRESS')
@@ -121,6 +125,8 @@ class ConfigManager:
 
     def delete_config(self, exchange_name: str, exchange_type: str):
         """刪除配置"""
+        # 統一轉換為小寫進行比對
+        exchange_name = exchange_name.lower()
         if exchange_type == 'dex':
             if exchange_name == 'standx':
                 # 刪除兩種模式的所有配置
