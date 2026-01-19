@@ -424,6 +424,7 @@ async def root():
                         volatility: {
                             window_sec: parseInt(document.getElementById('mmVolatilityWindow').value),
                             threshold_bps: parseFloat(document.getElementById('mmVolatilityThreshold').value),
+                            resume_threshold_bps: parseFloat(document.getElementById('mmVolatilityResumeThreshold').value),
                         },
                         execution: {
                             dry_run: false,  // 實盤模式
@@ -540,6 +541,7 @@ async def root():
                 if (mmConfig.volatility) {
                     document.getElementById('mmVolatilityWindow').value = mmConfig.volatility.window_sec;
                     document.getElementById('mmVolatilityThreshold').value = mmConfig.volatility.threshold_bps;
+                    document.getElementById('mmVolatilityResumeThreshold').value = mmConfig.volatility.resume_threshold_bps || 5;
                 }
 
                 // 更新策略說明

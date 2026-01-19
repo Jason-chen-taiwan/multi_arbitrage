@@ -102,9 +102,16 @@ def get_marketmaker_page() -> str:
                                         </div>
                                     </div>
                                     <div style="display: flex; align-items: center; justify-content: space-between;">
-                                        <label style="font-size: 11px; color: #9ca3af;">閾值</label>
+                                        <label style="font-size: 11px; color: #9ca3af;">暫停閾值</label>
                                         <div style="display: flex; align-items: center; gap: 4px;">
-                                            <input type="number" id="mmVolatilityThreshold" value="5" step="0.5" min="1" max="20" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <input type="number" id="mmVolatilityThreshold" value="10" step="0.5" min="1" max="50" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
+                                            <span style="font-size: 10px; color: #6b7280;">bps</span>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                                        <label style="font-size: 11px; color: #9ca3af;">恢復閾值</label>
+                                        <div style="display: flex; align-items: center; gap: 4px;">
+                                            <input type="number" id="mmVolatilityResumeThreshold" value="5" step="0.5" min="0.5" max="30" style="width: 50px; padding: 4px; background: #1a1f2e; border: 1px solid #2a3347; border-radius: 4px; color: #e4e6eb; font-size: 12px;">
                                             <span style="font-size: 10px; color: #6b7280;">bps</span>
                                         </div>
                                     </div>
