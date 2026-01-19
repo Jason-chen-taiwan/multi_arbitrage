@@ -171,6 +171,15 @@ function MarketMakerPage() {
   const state = mmExecutor?.state as Record<string, unknown> | undefined
   const stats = state?.stats as Record<string, unknown> | undefined
 
+  // Operation history from executor state
+  const operationHistory = (state?.operation_history as Array<{
+    time: string
+    action: string
+    side: string
+    order_price?: number
+    reason?: string
+  }>) || []
+
   // Top-level fields from state
   const totalPnl = (state?.pnl_usd as number) || 0
   const fillCount = (state?.fill_count as number) || 0
@@ -680,11 +689,11 @@ function MarketMakerPage() {
           </div>
 
           {/* Queue Position - below current orders */}
-          {orderbooks.STANDX?.['BTC-USD'] && (
+          {orderbooks?.STANDX?.['BTC-USD'] && (
             <div className="queue-position-inline">
               {(() => {
-                const bids = orderbooks.STANDX['BTC-USD'].bids
-                const asks = orderbooks.STANDX['BTC-USD'].asks
+                const bids = orderbooks.STANDX!['BTC-USD'].bids
+                const asks = orderbooks.STANDX!['BTC-USD'].asks
 
                 // 計算買單位置：我的 bid 在 bids 中排第幾檔
                 let bidQueuePos = '-'
@@ -949,6 +958,65 @@ function MarketMakerPage() {
               </table>
             ) : (
               <div className="text-muted">{t.mm.noFills}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Operation History */}
+        <div className="panel full-width">
+          <h3>{t.mm.operationHistory} ({operationHistory.length})</h3>
+          <div className="operation-history">
+            {operationHistory.length > 0 ? (
+              <table className="data-table operation-table">
+                <thead>
+                  <tr>
+                    <th>{t.mm.opTime}</th>
+                    <th>{t.mm.opAction}</th>
+                    <th>{t.mm.opOrderPrice}</th>
+                    <th>{t.mm.opReason}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {operationHistory.slice(0, 20).map((op, idx) => {
+                    const actionLabels: Record<string, string> = {
+                      place: t.mm.actionPlace,
+                      cancel: t.mm.actionCancel,
+                      rebalance: t.mm.actionRebalance,
+                      fill: t.mm.actionFill,
+                    }
+                    const actionColors: Record<string, string> = {
+                      place: 'text-positive',
+                      cancel: 'text-negative',
+                      rebalance: 'text-warning',
+                      fill: 'text-info',
+                    }
+                    const sideLabel = op.side === 'buy' ? t.mm.sideBuy : t.mm.sideSell
+                    const sideColor = op.side === 'buy' ? 'text-positive' : 'text-negative'
+                    const actionLabel = actionLabels[op.action] || op.action
+                    const actionColor = actionColors[op.action] || ''
+
+                    // Format time - extract HH:MM:SS
+                    let timeStr = op.time || ''
+                    if (timeStr.includes('T')) {
+                      timeStr = timeStr.split('T')[1]?.split('.')[0] || timeStr
+                    }
+
+                    return (
+                      <tr key={idx}>
+                        <td className="text-muted mono">{timeStr}</td>
+                        <td>
+                          <span className={sideColor}>{sideLabel}</span>
+                          <span className={actionColor}>{actionLabel}</span>
+                        </td>
+                        <td className="mono">${op.order_price?.toFixed(2) || '--'}</td>
+                        <td className="text-muted op-reason">{op.reason || ''}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-muted">{t.mm.noOperations}</div>
             )}
           </div>
         </div>

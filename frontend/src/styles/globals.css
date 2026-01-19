@@ -97,8 +97,16 @@ a:hover {
   color: var(--accent-yellow);
 }
 
+.text-info {
+  color: var(--accent-blue);
+}
+
 .text-muted {
   color: var(--text-secondary);
+}
+
+.mono {
+  font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
 }
 
 .text-center {

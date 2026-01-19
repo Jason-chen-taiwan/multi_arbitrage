@@ -135,6 +135,19 @@ export const en: Translations = {
     waitingToPlace: 'Waiting to place...',
     midPrice: 'Mid Price',
     maxDistance: 'Within mark ±',
+
+    operationHistory: 'Operation History',
+    noOperations: 'Waiting for operations...',
+    opTime: 'Time',
+    opAction: 'Action',
+    opOrderPrice: 'Order Price',
+    opReason: 'Reason',
+    actionPlace: 'Place',
+    actionCancel: 'Cancel',
+    actionRebalance: 'Rebalance',
+    actionFill: 'Fill',
+    sideBuy: 'Buy',
+    sideSell: 'Sell',
   },
 
   settings: {

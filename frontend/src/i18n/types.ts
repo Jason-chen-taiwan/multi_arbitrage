@@ -154,6 +154,20 @@ export interface Translations {
     configReloaded: string
     configSaveFailed: string
     configReloadFailed: string
+
+    // Operation History
+    operationHistory: string
+    noOperations: string
+    opTime: string
+    opAction: string
+    opOrderPrice: string
+    opReason: string
+    actionPlace: string
+    actionCancel: string
+    actionRebalance: string
+    actionFill: string
+    sideBuy: string
+    sideSell: string
   }
 
   // Settings Page

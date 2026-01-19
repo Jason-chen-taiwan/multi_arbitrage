@@ -135,6 +135,19 @@ export const zh: Translations = {
     configReloaded: '配置已重載',
     configSaveFailed: '保存配置失敗',
     configReloadFailed: '重載配置失敗',
+
+    operationHistory: '操作歷史',
+    noOperations: '等待訂單操作...',
+    opTime: '時間',
+    opAction: '操作',
+    opOrderPrice: '訂單價',
+    opReason: '原因',
+    actionPlace: '下單',
+    actionCancel: '撤單',
+    actionRebalance: '重掛',
+    actionFill: '成交',
+    sideBuy: '買',
+    sideSell: '賣',
   },
 
   settings: {

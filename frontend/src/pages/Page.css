@@ -276,6 +276,33 @@
   background: var(--bg-secondary);
 }
 
+/* Operation History */
+.operation-history {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.operation-table td {
+  font-size: 12px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.operation-table .op-reason {
+  font-size: 10px;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.operation-table td span {
+  margin-right: 4px;
+}
+
+.operation-table td span:last-child {
+  font-weight: 600;
+}
+
 /* Order Book */
 .orderbook {
   font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
