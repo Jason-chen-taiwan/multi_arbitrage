@@ -181,8 +181,8 @@ class MMConfig:
     # 是否在價格接近時取消訂單 (rebate 模式設為 False)
     cancel_on_approach: bool = True
 
-    # 強制 post_only (rebate 模式必須開啟，確保 maker)
-    post_only: bool = False
+    # 強制 post_only (預設開啟，確保 maker，避免意外成交)
+    post_only: bool = True
 
     # 最小 spread 保護 (tick 數，spread < 此值時只掛一邊)
     min_spread_ticks: int = 2
@@ -194,9 +194,9 @@ class MMConfig:
     hedge_fee_bps: Decimal = Decimal("2")    # StandX hedge fee (備用)
 
     # ==================== 報價參數 (uptime 模式) ====================
-    order_distance_bps: int = 8          # 掛單距離 mark price (< 10 bps 符合 uptime)
-    cancel_distance_bps: int = 3         # 價格靠近時撤單（防止成交）
-    rebalance_distance_bps: int = 12     # 價格遠離時撤單重掛 (超出 10 bps 後)
+    order_distance_bps: int = 12         # 掛單距離 mark price (保守模式，犧牲 uptime tier 換取安全)
+    cancel_distance_bps: int = 5         # 價格靠近時撤單（防止成交，~$46 緩衝）
+    rebalance_distance_bps: int = 18     # 價格遠離時撤單重掛
 
     # ==================== Inventory Skew 參數 ====================
     inventory_skew_enabled: bool = True
@@ -1128,8 +1128,8 @@ class MarketMakerExecutor:
                 for order in exchange_bids:
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                         trade_log.info(
@@ -1145,8 +1145,8 @@ class MarketMakerExecutor:
                 for order in exchange_asks:
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                         trade_log.info(
@@ -2339,8 +2339,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2360,8 +2360,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2397,8 +2397,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
@@ -2417,8 +2417,8 @@ class MarketMakerExecutor:
                     )
                     try:
                         await self.primary.cancel_order(
-                            order.order_id,
                             symbol=self.config.symbol,
+                            order_id=order.order_id,
                             client_order_id=getattr(order, 'client_order_id', None)
                         )
                     except Exception as e:
