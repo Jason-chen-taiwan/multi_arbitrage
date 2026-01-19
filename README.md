@@ -50,9 +50,9 @@
 
 ```bash
 python --version  # 需要 Python 3.8+
-node --version    # 需要 Node.js 18+
-npm --version     # 隨 Node.js 安裝
 ```
+
+> **Note**: 前端已預先構建，一般使用者**不需要安裝 Node.js**。
 
 ### 2. 啟動系統
 
@@ -62,19 +62,25 @@ npm --version     # 隨 Node.js 安裝
 
 # Windows
 start.bat
+```
 
+腳本會自動處理：
+
+- Python 虛擬環境建立與啟動
+- Python 依賴安裝
+- 前端已預構建，無需額外處理
+
+#### 開發者選項
+
+如需修改前端代碼，需安裝 Node.js 18+：
+
+```bash
 # 開發模式（前後端分開運行，支援熱重載）
 ./start.sh --dev
 
 # 強制重建前端後啟動
 ./start.sh --rebuild
 ```
-
-腳本會自動處理：
-
-- Python 虛擬環境（如需要）
-- 前端依賴安裝 (`npm install`)
-- 前端構建（生產模式）
 
 ### 3. 配置 StandX
 
