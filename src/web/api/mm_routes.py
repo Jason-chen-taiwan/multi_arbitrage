@@ -60,6 +60,7 @@ def register_mm_routes(app, dependencies):
             saved_config = config_manager.get_dict()
             quote_cfg = saved_config.get('quote', {})
             position_cfg = saved_config.get('position', {})
+            volatility_cfg = saved_config.get('volatility', {})
 
             # 使用保存的配置，如果沒有則使用默認值
             order_size = Decimal(str(data.get('order_size', position_cfg.get('order_size_btc', 0.001))))
@@ -67,6 +68,12 @@ def register_mm_routes(app, dependencies):
             cancel_distance = int(quote_cfg.get('cancel_distance_bps', 3))
             rebalance_distance = int(quote_cfg.get('rebalance_distance_bps', 12))
             max_position = Decimal(str(position_cfg.get('max_position_btc', 0.01)))
+
+            # 波動率參數
+            volatility_window = int(volatility_cfg.get('window_sec', 2))
+            volatility_threshold = float(volatility_cfg.get('threshold_bps', 5.0))
+            volatility_resume = float(volatility_cfg.get('resume_threshold_bps', 4.0))
+            volatility_stable = float(volatility_cfg.get('stable_seconds', 2.0))
 
             adapters = adapters_getter()
 
@@ -88,9 +95,18 @@ def register_mm_routes(app, dependencies):
                 rebalance_distance_bps=rebalance_distance,
                 max_position_btc=max_position,
                 dry_run=dry_run,
+                # 波動率參數
+                volatility_window_sec=volatility_window,
+                volatility_threshold_bps=volatility_threshold,
+                volatility_resume_threshold_bps=volatility_resume,
+                volatility_stable_seconds=volatility_stable,
             )
 
-            logger.info(f"做市商配置: order_dist={order_distance}bps, cancel_dist={cancel_distance}bps, rebal_dist={rebalance_distance}bps")
+            logger.info(
+                f"做市商配置: order_dist={order_distance}bps, cancel_dist={cancel_distance}bps, "
+                f"rebal_dist={rebalance_distance}bps, vol_window={volatility_window}s, "
+                f"vol_pause={volatility_threshold}bps, vol_resume={volatility_resume}bps"
+            )
 
             # 創建對沖引擎 (如果有 GRVT)
             hedge_engine = None

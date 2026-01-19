@@ -233,10 +233,10 @@ class MMConfig:
     breakeven_offset_bps: Decimal = Decimal("0")  # 回補價格偏移 (正=更保守, 負=更激進吃rebate)
 
     # ==================== 波動率控制 ====================
-    volatility_window_sec: int = 5       # 波動率窗口
-    volatility_threshold_bps: float = 10.0  # 超過則暫停 (更敏感，避免單向移動吃單)
-    volatility_resume_threshold_bps: float = 5.0  # 低於此值才考慮恢復 (hysteresis)
-    volatility_stable_seconds: float = 3.0  # 需持續低於恢復閾值多少秒才真正恢復
+    volatility_window_sec: int = 2       # 波動率窗口（2 秒反應更快）
+    volatility_threshold_bps: float = 5.0  # 超過則暫停
+    volatility_resume_threshold_bps: float = 4.0  # 低於此值才考慮恢復 (hysteresis)
+    volatility_stable_seconds: float = 2.0  # 需持續低於恢復閾值多少秒才真正恢復
     volatility_distance_multiplier: Decimal = Decimal("2")  # 高波動時距離倍數
 
     # 訂單參數
