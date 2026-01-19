@@ -60,6 +60,7 @@ function MarketMakerPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [config, setConfig] = useState<MMConfig>(defaultConfig)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [isConfigCollapsed, setIsConfigCollapsed] = useState(false)
 
   const mmStatus = lastMessage?.mm_status
   const mmExecutor = lastMessage?.mm_executor as Record<string, unknown> | undefined
@@ -289,9 +290,13 @@ function MarketMakerPage() {
         </div>
       )}
 
-      {/* Strategy Configuration */}
-      <div className="panel config-panel">
-        <h3>{t.mm.strategyConfig}</h3>
+      {/* Strategy Configuration - Collapsible */}
+      <div className={`panel config-panel ${isConfigCollapsed ? 'collapsed' : ''}`}>
+        <div className="panel-header-collapsible" onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}>
+          <h3>{t.mm.strategyConfig}</h3>
+          <span className={`collapse-icon ${isConfigCollapsed ? 'collapsed' : ''}`}>▼</span>
+        </div>
+        <div className={`config-content ${isConfigCollapsed ? 'hidden' : ''}`}>
         <div className="config-grid">
           {/* Quote Parameters */}
           <div className="config-section">
@@ -426,10 +431,13 @@ function MarketMakerPage() {
           </div>
 
           {/* Execution Control */}
-          <div className="config-section">
+          <div className="config-section execution-section">
             <h4>{t.mm.executionControl}</h4>
-            <div className="config-row">
-              <label>{config.execution.dry_run ? t.mm.dryRunMode : t.mm.liveTrading}</label>
+            <div className="execution-mode-toggle">
+              <div className={`mode-option ${config.execution.dry_run ? 'active' : ''}`}>
+                <span className="mode-icon">🧪</span>
+                <span className="mode-label">{t.mm.dryRunMode}</span>
+              </div>
               <label className="toggle-switch">
                 <input
                   type="checkbox"
@@ -438,6 +446,10 @@ function MarketMakerPage() {
                 />
                 <span className="toggle-slider"></span>
               </label>
+              <div className={`mode-option ${!config.execution.dry_run ? 'active live' : ''}`}>
+                <span className="mode-icon">💰</span>
+                <span className="mode-label">{t.mm.liveTrading}</span>
+              </div>
             </div>
             <div className="config-buttons">
               <button
@@ -456,6 +468,7 @@ function MarketMakerPage() {
               </button>
             </div>
           </div>
+        </div>
         </div>
       </div>
 
@@ -620,61 +633,6 @@ function MarketMakerPage() {
                 })()}
               </div>
 
-              {/* Queue Position */}
-              <div className="queue-position">
-                <h4 className="panel-title-accent">{t.mm.queuePosition}</h4>
-                <div className="queue-rows">
-                  {(() => {
-                    const bids = orderbooks.STANDX['BTC-USD'].bids
-                    const asks = orderbooks.STANDX['BTC-USD'].asks
-
-                    // 計算買單位置：我的 bid 在 bids 中排第幾檔
-                    let bidQueuePos = '-'
-                    if (bidOrder?.price) {
-                      const bidIdx = bids.findIndex(([price]) => price <= bidOrder.price)
-                      if (bidIdx === -1) {
-                        // 價格比所有 bids 都低
-                        bidQueuePos = `>${bids.length}`
-                      } else if (bids[bidIdx][0] === bidOrder.price) {
-                        bidQueuePos = String(bidIdx + 1)
-                      } else {
-                        bidQueuePos = String(bidIdx + 1)
-                      }
-                    }
-
-                    // 計算賣單位置：我的 ask 在 asks 中排第幾檔
-                    let askQueuePos = '-'
-                    if (askOrder?.price) {
-                      const askIdx = asks.findIndex(([price]) => price >= askOrder.price)
-                      if (askIdx === -1) {
-                        // 價格比所有 asks 都高
-                        askQueuePos = `>${asks.length}`
-                      } else if (asks[askIdx][0] === askOrder.price) {
-                        askQueuePos = String(askIdx + 1)
-                      } else {
-                        askQueuePos = String(askIdx + 1)
-                      }
-                    }
-
-                    return (
-                      <>
-                        <div className="queue-row">
-                          <span className="queue-label">{t.mm.buyOrderPosition}</span>
-                          <span className={`queue-value ${bidQueuePos !== '-' && parseInt(bidQueuePos) <= 3 ? 'text-warning' : ''}`}>
-                            {bidQueuePos !== '-' ? `第 ${bidQueuePos} 檔` : '--'}
-                          </span>
-                        </div>
-                        <div className="queue-row">
-                          <span className="queue-label">{t.mm.sellOrderPosition}</span>
-                          <span className={`queue-value ${askQueuePos !== '-' && parseInt(askQueuePos) <= 3 ? 'text-warning' : ''}`}>
-                            {askQueuePos !== '-' ? `第 ${askQueuePos} 檔` : '--'}
-                          </span>
-                        </div>
-                      </>
-                    )
-                  })()}
-                </div>
-              </div>
             </>
           ) : (
             <div className="text-muted">{t.mm.noOrderBookData}</div>
@@ -720,6 +678,59 @@ function MarketMakerPage() {
               )}
             </div>
           </div>
+
+          {/* Queue Position - below current orders */}
+          {orderbooks.STANDX?.['BTC-USD'] && (
+            <div className="queue-position-inline">
+              {(() => {
+                const bids = orderbooks.STANDX['BTC-USD'].bids
+                const asks = orderbooks.STANDX['BTC-USD'].asks
+
+                // 計算買單位置：我的 bid 在 bids 中排第幾檔
+                let bidQueuePos = '-'
+                if (bidOrder?.price) {
+                  const bidIdx = bids.findIndex(([price]) => price <= bidOrder.price)
+                  if (bidIdx === -1) {
+                    bidQueuePos = `>${bids.length}`
+                  } else if (bids[bidIdx][0] === bidOrder.price) {
+                    bidQueuePos = String(bidIdx + 1)
+                  } else {
+                    bidQueuePos = String(bidIdx + 1)
+                  }
+                }
+
+                // 計算賣單位置：我的 ask 在 asks 中排第幾檔
+                let askQueuePos = '-'
+                if (askOrder?.price) {
+                  const askIdx = asks.findIndex(([price]) => price >= askOrder.price)
+                  if (askIdx === -1) {
+                    askQueuePos = `>${asks.length}`
+                  } else if (asks[askIdx][0] === askOrder.price) {
+                    askQueuePos = String(askIdx + 1)
+                  } else {
+                    askQueuePos = String(askIdx + 1)
+                  }
+                }
+
+                return (
+                  <div className="queue-inline-row">
+                    <span className="queue-item">
+                      <span className="queue-label-sm">{t.mm.buyOrderPosition}:</span>
+                      <span className={`queue-value-sm ${bidQueuePos !== '-' && parseInt(bidQueuePos) <= 3 ? 'text-warning' : 'text-positive'}`}>
+                        {bidQueuePos !== '-' ? `第 ${bidQueuePos} 檔` : '--'}
+                      </span>
+                    </span>
+                    <span className="queue-item">
+                      <span className="queue-label-sm">{t.mm.sellOrderPosition}:</span>
+                      <span className={`queue-value-sm ${askQueuePos !== '-' && parseInt(askQueuePos) <= 3 ? 'text-warning' : 'text-negative'}`}>
+                        {askQueuePos !== '-' ? `第 ${askQueuePos} 檔` : '--'}
+                      </span>
+                    </span>
+                  </div>
+                )
+              })()}
+            </div>
+          )}
 
           {/* Top Stats Grid - 2x2 */}
           <div className="stats-grid-2x2">
