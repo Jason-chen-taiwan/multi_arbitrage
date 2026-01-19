@@ -43,6 +43,11 @@ from src.web.system_manager import SystemManager
 # 全局變量
 mm_executor: Optional[MarketMakerExecutor] = None
 connected_clients: List[WebSocket] = []
+
+# Orderbook 緩存 (避免 rate limiting)
+_orderbook_cache: Dict[str, dict] = {}  # {exchange_symbol: {'data': ..., 'timestamp': ...}}
+_orderbook_cache_ttl = 2.0  # 緩存 2 秒
+
 mm_status = {
     'running': False,
     'status': 'stopped',
@@ -573,7 +578,7 @@ async def root():
 
             // ===== WebSocket 連接 =====
             function connect() {
-                ws = new WebSocket('ws://localhost:8888/ws');
+                ws = new WebSocket('ws://localhost:9999/ws');
                 ws.onopen = () => {
                     document.getElementById('statusDot').classList.remove('offline');
                     document.getElementById('statusText').textContent = '已連接';
@@ -2016,4 +2021,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8888, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=9999, log_level="info")

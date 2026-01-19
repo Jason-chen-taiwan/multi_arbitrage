@@ -10,6 +10,14 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from src.web.schemas import (
+    AutoExecuteRequest,
+    LiveTradeRequest,
+    ReinitResponse,
+    SuccessResponse,
+    ErrorResponse,
+)
+
 
 router = APIRouter(tags=["control"])
 
@@ -30,9 +38,13 @@ def register_control_routes(app, dependencies):
     logger = dependencies['logger']
     system_manager_getter = dependencies.get('system_manager_getter')
 
-    @router.post("/api/system/reinit")
+    @router.post("/api/system/reinit", response_model=ReinitResponse)
     async def reinit_system_api():
-        """重新初始化系統 - 重新連接所有已配置的交易所"""
+        """
+        重新初始化系統
+
+        重新連接所有已配置的交易所，恢復監控和執行器。
+        """
         try:
             logger.info("🔄 重新初始化系統...")
 
@@ -104,33 +116,38 @@ def register_control_routes(app, dependencies):
             logger.error(f"重新初始化失敗: {e}")
             return JSONResponse({'success': False, 'error': str(e)})
 
-    @router.post("/api/control/auto-execute")
-    async def control_auto_execute(request: Request):
-        """控制自動執行"""
-        try:
-            data = await request.json()
-            enabled = data['enabled']
+    @router.post("/api/control/auto-execute", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def control_auto_execute(request_data: AutoExecuteRequest):
+        """
+        控制自動執行
 
+        啟用或禁用套利機會的自動執行。
+        """
+        try:
             executor = executor_getter()
             if executor:
-                executor.enable_auto_execute = enabled
-                system_status['auto_execute'] = enabled
+                executor.enable_auto_execute = request_data.enabled
+                system_status['auto_execute'] = request_data.enabled
 
             return JSONResponse({'success': True})
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)})
 
-    @router.post("/api/control/live-trade")
-    async def control_live_trade(request: Request):
-        """控制實際交易"""
-        try:
-            data = await request.json()
-            enabled = data['enabled']
+    @router.post("/api/control/live-trade", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def control_live_trade(request_data: LiveTradeRequest):
+        """
+        控制實際交易
 
+        啟用或禁用實際交易（關閉 dry-run 模式）。
+
+        - **enabled=True**: 啟用實際交易（關閉 dry-run）
+        - **enabled=False**: 禁用實際交易（啟用 dry-run）
+        """
+        try:
             executor = executor_getter()
             if executor:
-                executor.dry_run = not enabled
-                system_status['dry_run'] = not enabled
+                executor.dry_run = not request_data.enabled
+                system_status['dry_run'] = not request_data.enabled
 
             return JSONResponse({'success': True})
         except Exception as e:

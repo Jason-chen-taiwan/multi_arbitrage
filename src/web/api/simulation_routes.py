@@ -24,6 +24,18 @@ from src.simulation import (
     ResultLogger,
     ComparisonEngine,
 )
+from src.web.schemas import (
+    ParamSetResponse,
+    ParamSetCreateRequest,
+    ParamSetUpdateRequest,
+    SimulationStartRequest,
+    SimulationStartResponse,
+    SimulationStatusResponse,
+    SimulationRunListResponse,
+    ComparisonTableResponse,
+    SuccessResponse,
+    ErrorResponse,
+)
 
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
@@ -47,9 +59,13 @@ def register_simulation_routes(app, dependencies):
     adapters_getter = dependencies['adapters_getter']
     logger = dependencies['logger']
 
-    @router.get("/param-sets")
+    @router.get("/param-sets", response_model=ParamSetResponse)
     async def get_simulation_param_sets():
-        """獲取所有參數組"""
+        """
+        獲取所有參數組
+
+        返回所有已保存的模擬參數組列表。
+        """
         try:
             manager = get_param_set_manager()
             return JSONResponse(manager.to_dict())
@@ -57,12 +73,15 @@ def register_simulation_routes(app, dependencies):
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
     @router.post("/param-sets")
-    async def create_simulation_param_set(request: Request):
-        """創建新參數組"""
+    async def create_simulation_param_set(request_data: ParamSetCreateRequest):
+        """
+        創建新參數組
+
+        創建一個新的模擬參數組，包含自定義配置覆蓋。
+        """
         try:
-            data = await request.json()
             manager = get_param_set_manager()
-            param_set = manager.add_param_set(data, save=True)
+            param_set = manager.add_param_set(request_data.model_dump(exclude_none=True), save=True)
             return JSONResponse({
                 'success': True,
                 'param_set': {
@@ -75,11 +94,15 @@ def register_simulation_routes(app, dependencies):
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
     @router.put("/param-sets/{param_set_id}")
-    async def update_simulation_param_set(param_set_id: str, request: Request):
-        """更新參數組"""
+    async def update_simulation_param_set(param_set_id: str, request_data: ParamSetUpdateRequest):
+        """
+        更新參數組
+
+        更新指定 ID 的參數組配置。
+        """
         try:
-            data = await request.json()
             manager = get_param_set_manager()
+            data = request_data.model_dump(exclude_none=True)
 
             # Remove old and add new with same ID
             manager.remove_param_set(param_set_id, save=False)
@@ -97,9 +120,13 @@ def register_simulation_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.delete("/param-sets/{param_set_id}")
+    @router.delete("/param-sets/{param_set_id}", response_model=SuccessResponse, responses={404: {"model": ErrorResponse}})
     async def delete_simulation_param_set(param_set_id: str):
-        """刪除參數組"""
+        """
+        刪除參數組
+
+        從系統中刪除指定的參數組。
+        """
         try:
             manager = get_param_set_manager()
             success = manager.remove_param_set(param_set_id, save=True)
@@ -111,17 +138,20 @@ def register_simulation_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.post("/start")
-    async def start_simulation(request: Request):
-        """開始多參數模擬"""
+    @router.post("/start", response_model=SimulationStartResponse)
+    async def start_simulation(request_data: SimulationStartRequest):
+        """
+        開始多參數模擬
+
+        使用選定的參數組開始模擬運行，比較不同配置的性能。
+        """
         global _simulation_runner, _result_logger, _comparison_engine
 
         logger.info("=== /api/simulation/start called ===")
 
         try:
-            data = await request.json()
-            param_set_ids = data.get('param_set_ids', [])
-            duration_minutes = data.get('duration_minutes', 60)
+            param_set_ids = request_data.param_set_ids
+            duration_minutes = request_data.duration_minutes
             logger.info(f"Request data: param_set_ids={param_set_ids}, duration={duration_minutes}")
 
             if not param_set_ids:
@@ -169,9 +199,13 @@ def register_simulation_routes(app, dependencies):
             logger.error(f"Failed to start simulation: {e}")
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.post("/stop")
+    @router.post("/stop", response_model=SuccessResponse)
     async def stop_simulation():
-        """停止模擬"""
+        """
+        停止模擬
+
+        優雅地停止當前運行的模擬，保存結果。
+        """
         global _simulation_runner
 
         logger.info("Stop simulation API called")
@@ -219,9 +253,13 @@ def register_simulation_routes(app, dependencies):
                 _simulation_runner._market_feed = None
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.post("/force-stop")
+    @router.post("/force-stop", response_model=SuccessResponse)
     async def force_stop_simulation():
-        """強制停止模擬 - 不等待任何操作"""
+        """
+        強制停止模擬
+
+        立即停止模擬，不等待任何操作完成。
+        """
         global _simulation_runner
 
         logger.info("Force stop simulation API called")
@@ -249,9 +287,13 @@ def register_simulation_routes(app, dependencies):
             'message': '已強制停止模擬'
         })
 
-    @router.get("/status")
+    @router.get("/status", response_model=SimulationStatusResponse)
     async def get_simulation_status():
-        """獲取模擬狀態"""
+        """
+        獲取模擬狀態
+
+        返回當前模擬的運行狀態，包括進度和各參數組的實時數據。
+        """
         global _simulation_runner
 
         if _simulation_runner is None:
@@ -283,7 +325,11 @@ def register_simulation_routes(app, dependencies):
 
     @router.get("/comparison")
     async def get_live_simulation_comparison():
-        """獲取即時比較數據"""
+        """
+        獲取即時比較數據
+
+        返回當前運行中模擬的實時參數組比較表。
+        """
         global _simulation_runner
 
         if _simulation_runner is None or not _simulation_runner.is_running():
@@ -303,9 +349,13 @@ def register_simulation_routes(app, dependencies):
             logger.error(f"get_live_comparison error: {e}")
             return JSONResponse([])
 
-    @router.get("/runs")
+    @router.get("/runs", response_model=SimulationRunListResponse)
     async def list_simulation_runs():
-        """列出所有歷史運行"""
+        """
+        列出所有歷史運行
+
+        返回所有歷史模擬運行的列表。
+        """
         global _comparison_engine, _result_logger
 
         try:
@@ -322,7 +372,11 @@ def register_simulation_routes(app, dependencies):
 
     @router.get("/runs/{run_id}")
     async def get_simulation_run_details(run_id: str):
-        """獲取特定運行的詳細結果"""
+        """
+        獲取特定運行的詳細結果
+
+        返回指定運行 ID 的完整結果數據。
+        """
         global _comparison_engine, _result_logger
 
         try:
@@ -340,9 +394,15 @@ def register_simulation_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.get("/runs/{run_id}/comparison")
+    @router.get("/runs/{run_id}/comparison", response_model=ComparisonTableResponse)
     async def get_simulation_run_comparison(run_id: str, sort_by: str = "uptime_percentage"):
-        """獲取運行比較表"""
+        """
+        獲取運行比較表
+
+        返回指定運行的參數組比較表和推薦結果。
+
+        - **sort_by**: 排序欄位（uptime_percentage, total_pnl, fill_count）
+        """
         global _comparison_engine, _result_logger
 
         try:
@@ -367,9 +427,13 @@ def register_simulation_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-    @router.delete("/runs/{run_id}")
+    @router.delete("/runs/{run_id}", response_model=SuccessResponse, responses={404: {"model": ErrorResponse}})
     async def delete_simulation_run(run_id: str):
-        """刪除運行記錄"""
+        """
+        刪除運行記錄
+
+        從歷史記錄中刪除指定的運行結果。
+        """
         global _result_logger
 
         try:
