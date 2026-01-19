@@ -624,14 +624,55 @@ function MarketMakerPage() {
               <div className="queue-position">
                 <h4 className="panel-title-accent">{t.mm.queuePosition}</h4>
                 <div className="queue-rows">
-                  <div className="queue-row">
-                    <span className="queue-label">{t.mm.buyOrderPosition}</span>
-                    <span className="queue-value">第 {(state?.buy_queue_position as number) || 0} {t.mm.level}</span>
-                  </div>
-                  <div className="queue-row">
-                    <span className="queue-label">{t.mm.sellOrderPosition}</span>
-                    <span className="queue-value">第 {(state?.sell_queue_position as number) || 0} {t.mm.level}</span>
-                  </div>
+                  {(() => {
+                    const bids = orderbooks.STANDX['BTC-USD'].bids
+                    const asks = orderbooks.STANDX['BTC-USD'].asks
+
+                    // 計算買單位置：我的 bid 在 bids 中排第幾檔
+                    let bidQueuePos = '-'
+                    if (bidOrder?.price) {
+                      const bidIdx = bids.findIndex(([price]) => price <= bidOrder.price)
+                      if (bidIdx === -1) {
+                        // 價格比所有 bids 都低
+                        bidQueuePos = `>${bids.length}`
+                      } else if (bids[bidIdx][0] === bidOrder.price) {
+                        bidQueuePos = String(bidIdx + 1)
+                      } else {
+                        bidQueuePos = String(bidIdx + 1)
+                      }
+                    }
+
+                    // 計算賣單位置：我的 ask 在 asks 中排第幾檔
+                    let askQueuePos = '-'
+                    if (askOrder?.price) {
+                      const askIdx = asks.findIndex(([price]) => price >= askOrder.price)
+                      if (askIdx === -1) {
+                        // 價格比所有 asks 都高
+                        askQueuePos = `>${asks.length}`
+                      } else if (asks[askIdx][0] === askOrder.price) {
+                        askQueuePos = String(askIdx + 1)
+                      } else {
+                        askQueuePos = String(askIdx + 1)
+                      }
+                    }
+
+                    return (
+                      <>
+                        <div className="queue-row">
+                          <span className="queue-label">{t.mm.buyOrderPosition}</span>
+                          <span className={`queue-value ${bidQueuePos !== '-' && parseInt(bidQueuePos) <= 3 ? 'text-warning' : ''}`}>
+                            {bidQueuePos !== '-' ? `第 ${bidQueuePos} 檔` : '--'}
+                          </span>
+                        </div>
+                        <div className="queue-row">
+                          <span className="queue-label">{t.mm.sellOrderPosition}</span>
+                          <span className={`queue-value ${askQueuePos !== '-' && parseInt(askQueuePos) <= 3 ? 'text-warning' : ''}`}>
+                            {askQueuePos !== '-' ? `第 ${askQueuePos} 檔` : '--'}
+                          </span>
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
               </div>
             </>
