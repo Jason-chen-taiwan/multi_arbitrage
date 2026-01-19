@@ -57,14 +57,17 @@ npm --version     # 隨 Node.js 安裝
 ### 2. 啟動系統
 
 ```bash
-# 生產模式（構建前端後由 FastAPI 服務）
-./scripts/start.sh
+# Linux / macOS
+./start.sh
+
+# Windows
+start.bat
 
 # 開發模式（前後端分開運行，支援熱重載）
-./scripts/start.sh --dev
+./start.sh --dev
 
 # 強制重建前端後啟動
-./scripts/start.sh --rebuild
+./start.sh --rebuild
 ```
 
 腳本會自動處理：
@@ -172,15 +175,15 @@ arbitrage/
 │   └── monitor/          # 價格監控
 ├── config/
 │   └── mm_config.yaml    # 做市參數配置
-└── scripts/
-    └── start.sh          # 啟動腳本
+├── start.sh              # Linux/macOS 啟動腳本
+└── start.bat             # Windows 啟動腳本
 ```
 
 ### 開發模式
 
 ```bash
 # 啟動開發伺服器（支援熱重載）
-./scripts/start.sh --dev
+./start.sh --dev
 
 # 後端: http://localhost:9999
 # 前端: http://localhost:3000 (代理 API 到 9999)
