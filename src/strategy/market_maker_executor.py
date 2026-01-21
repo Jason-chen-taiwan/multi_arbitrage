@@ -352,6 +352,12 @@ class MarketMakerExecutor:
         self._hedge_enabled: bool = False      # 是否執行對沖（運行時可切換）
         self._instant_close_enabled: bool = False  # 是否即時平倉（成交後立即市價平倉）
 
+        # 【新增】淨敞口對沖節流控制
+        self._last_exposure_hedge: float = 0  # 上次淨敞口對沖時間
+        self._exposure_hedge_interval: float = 10.0  # 淨敞口對沖檢查間隔（秒）
+        self._exposure_hedge_threshold: Decimal = Decimal("0.0001")  # 淨敞口對沖閾值（BTC）
+        self._exposure_hedging: bool = False  # 是否正在執行淨敞口對沖
+
     # ==================== 生命週期 ====================
 
     async def start(self):
@@ -1254,7 +1260,38 @@ class MarketMakerExecutor:
         now = time.time()
         if now - self._last_position_sync >= self._position_sync_interval:
             await self._sync_primary_position()
+            # 同時同步對沖帳戶倉位（用於前端顯示）
+            if self.hedge_adapter:
+                await self._sync_hedge_position()
             self._last_position_sync = now
+
+            # ==================== 淨敞口對沖檢查 ====================
+            # 當對沖開關開啟時，檢查是否有淨敞口需要對沖
+            # 節流：每 10 秒最多檢查一次
+            # ==================== 淨敞口對沖檢查 ====================
+            time_since_last = now - self._last_exposure_hedge
+            should_check = (
+                self._hedge_enabled and
+                self.hedge_engine is not None and
+                not self._exposure_hedging and
+                time_since_last >= self._exposure_hedge_interval
+            )
+
+            # 每 30 秒記錄一次狀態（方便調試）
+            if int(now) % 30 == 0:
+                primary_pos = self.state.get_standx_position()
+                hedge_pos = self.state.get_hedge_position()
+                net = primary_pos + hedge_pos
+                logger.info(
+                    f"[ExposureHedge] Status: hedge_enabled={self._hedge_enabled}, "
+                    f"has_engine={self.hedge_engine is not None}, "
+                    f"net_exposure={net}, threshold={self._exposure_hedge_threshold}"
+                )
+
+            if should_check:
+                await self._check_and_hedge_exposure()
+                self._last_exposure_hedge = now
+
         current_position = self._get_primary_position()
         max_pos = self.config.max_position_btc
         hard_stop = self.config.hard_stop_position_btc
@@ -2290,14 +2327,14 @@ class MarketMakerExecutor:
         return await self._sync_primary_position()
 
     async def _sync_hedge_position(self) -> Decimal:
-        """從對沖交易所 (GRVT) 同步實際倉位"""
+        """從對沖交易所同步實際倉位"""
         if not self.hedge_adapter:
             return Decimal("0")
         try:
             # 自動匹配交易對
             hedge_symbol = self.config.hedge_symbol
-            if self.hedge_engine:
-                hedge_symbol = self.hedge_engine._match_hedge_symbol(
+            if self.hedge_engine and hasattr(self.hedge_engine, 'map_symbol'):
+                hedge_symbol = self.hedge_engine.map_symbol(
                     self.config.symbol
                 ) or hedge_symbol
 
@@ -2315,6 +2352,98 @@ class MarketMakerExecutor:
         except Exception as e:
             logger.error(f"Failed to sync hedge position: {e}")
             return self.state.get_hedge_position()
+
+    async def _check_and_hedge_exposure(self):
+        """
+        檢查並對沖淨敞口
+
+        當對沖開關開啟時，如果主帳戶和對沖帳戶的淨敞口超過閾值，
+        則執行對沖操作來消除敞口。
+
+        這個方法處理以下情況：
+        1. 手動在主帳戶下單後，需要在對沖帳戶執行反向對沖
+        2. 之前的對沖失敗，需要補償對沖
+        3. 倉位不平衡需要重新平衡
+        """
+        if not self.hedge_engine or not self._hedge_enabled:
+            return
+
+        try:
+            self._exposure_hedging = True
+
+            # 獲取當前倉位
+            primary_pos = self.state.get_standx_position()
+            hedge_pos = self.state.get_hedge_position()
+            net_exposure = primary_pos + hedge_pos
+
+            # 檢查是否超過閾值
+            if abs(net_exposure) <= self._exposure_hedge_threshold:
+                logger.debug(f"[ExposureHedge] Net exposure {net_exposure} within threshold, no action needed")
+                return
+
+            logger.info(
+                f"[ExposureHedge] Detected net exposure: {net_exposure} "
+                f"(primary={primary_pos}, hedge={hedge_pos})"
+            )
+
+            # 計算需要對沖的數量和方向
+            # 如果 net_exposure > 0，表示主帳戶多頭 > 對沖帳戶空頭，需要在對沖帳戶賣出
+            # 如果 net_exposure < 0，表示主帳戶空頭 > 對沖帳戶多頭，需要在對沖帳戶買入
+            hedge_qty = abs(net_exposure)
+            hedge_side = "sell" if net_exposure > 0 else "buy"
+
+            # 獲取當前市場價格（用於日誌記錄）
+            current_price = self._last_best_bid if hedge_side == "sell" else self._last_best_ask
+
+            logger.info(
+                f"[ExposureHedge] Executing hedge: {hedge_side} {hedge_qty} @ market "
+                f"(reference price: {current_price})"
+            )
+
+            # 使用 hedge_engine 執行對沖
+            # 模擬一個 fill event 來觸發對沖
+            # 注意：fill_side 是主帳戶的成交方向，對沖方向相反
+            # 所以這裡 fill_side 應該與 net_exposure 方向相反
+            fill_side = "sell" if net_exposure < 0 else "buy"
+
+            hedge_result = await self.hedge_engine.execute_hedge(
+                fill_id=f"exposure_hedge_{int(time.time())}",
+                fill_side=fill_side,
+                fill_qty=hedge_qty,
+                fill_price=current_price or Decimal("0"),
+                source_symbol=self.config.symbol,
+            )
+
+            if hedge_result.success:
+                logger.info(
+                    f"[ExposureHedge] Hedge successful: {hedge_side} {hedge_qty} "
+                    f"@ {hedge_result.execution_price}"
+                )
+                # 記錄對沖結果
+                self.state.record_hedge(True)
+
+                # 同步對沖倉位
+                await self._sync_hedge_position()
+
+                # 記錄操作歷史
+                self.state.record_operation(
+                    action="exposure_hedge",
+                    side=hedge_side,
+                    order_price=hedge_result.execution_price or current_price,
+                    best_bid=self._last_best_bid,
+                    best_ask=self._last_best_ask,
+                    reason=f"net_exposure={net_exposure}, qty={hedge_qty}",
+                )
+            else:
+                logger.error(
+                    f"[ExposureHedge] Hedge failed: {hedge_result.error_message}"
+                )
+                self.state.record_hedge(False)
+
+        except Exception as e:
+            logger.error(f"[ExposureHedge] Error during exposure hedge: {e}")
+        finally:
+            self._exposure_hedging = False
 
     async def _sync_open_orders(self) -> bool:
         """
@@ -2693,7 +2822,7 @@ class MarketMakerExecutor:
                     fill_side=fill.side,
                     fill_qty=fill.fill_qty,
                     fill_price=fill.fill_price,
-                    standx_symbol=self.config.symbol,
+                    source_symbol=self.config.symbol,
                 )
 
                 # 記錄對沖結果

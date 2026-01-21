@@ -47,7 +47,7 @@ const defaultConfig: MMConfig = {
   },
   position: {
     order_size_btc: 0.01,
-    max_position_btc: 0.1,
+    max_position_btc: 0.05,
   },
   volatility: {
     window_sec: 2,
@@ -82,14 +82,18 @@ function MarketMakerPage() {
     loadConfig()
   }, [])
 
-  // Sync runtime controls from executor state
+  // Sync runtime controls from mm_status (WebSocket provides this directly)
   useEffect(() => {
-    const runtimeControls = mmExecutor?.runtime_controls as { hedge_enabled?: boolean; instant_close_enabled?: boolean } | undefined
-    if (runtimeControls) {
-      setRuntimeHedgeEnabled(runtimeControls.hedge_enabled ?? false)
-      setRuntimeInstantCloseEnabled(runtimeControls.instant_close_enabled ?? false)
+    if (mmStatus) {
+      // 從 WebSocket 推送的 mm_status 同步運行時控制狀態
+      if (typeof mmStatus.hedge_enabled === 'boolean') {
+        setRuntimeHedgeEnabled(mmStatus.hedge_enabled)
+      }
+      if (typeof mmStatus.instant_close_enabled === 'boolean') {
+        setRuntimeInstantCloseEnabled(mmStatus.instant_close_enabled)
+      }
     }
-  }, [mmExecutor])
+  }, [mmStatus])
 
   // Toggle hedge enabled
   const handleToggleHedge = useCallback(async () => {
@@ -522,7 +526,7 @@ function MarketMakerPage() {
           <span className="control-hint">
             {hedgeTarget === 'none'
               ? '未配置對沖帳戶'
-              : `${hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'} - ${!mmStatus?.running ? '啟動後可用' : (runtimeHedgeEnabled ? '已啟用' : '已停用')}`
+              : `StandX 對沖帳戶 - ${!mmStatus?.running ? '啟動後可用' : (runtimeHedgeEnabled ? '已啟用' : '已停用')}`
             }
           </span>
         </div>
@@ -588,8 +592,7 @@ function MarketMakerPage() {
             {runtimeHedgeEnabled && hedgeTarget !== 'none' ? '已啟用' : '未啟用'}
           </div>
           <div className="card-subtitle">
-            {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' :
-             hedgeTarget === 'grvt' ? 'GRVT' : '不對沖'}
+            {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : '不對沖'}
           </div>
         </div>
       </div>
@@ -975,9 +978,7 @@ function MarketMakerPage() {
               </span>
             </div>
             <div className="metric-row">
-              <span className="metric-label">
-                {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'} BTC
-              </span>
+              <span className="metric-label">StandX 對沖帳戶 BTC</span>
               <span className="metric-value">
                 {mmPositions?.grvt?.btc?.toFixed(6) || '0.000000'}
               </span>
@@ -1006,8 +1007,13 @@ function MarketMakerPage() {
             <div className="positions-grid">
               <div className="metric-row">
                 <span className="metric-label">對沖目標</span>
-                <span className="metric-value">
-                  {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'}
+                <span className="metric-value">StandX 對沖帳戶</span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">淨敞口</span>
+                <span className={`metric-value ${Math.abs(mmPositions?.net_btc || 0) < 0.0001 ? 'text-positive' : 'text-warning'}`}>
+                  {(mmPositions?.net_btc || 0).toFixed(6)} BTC
+                  {Math.abs(mmPositions?.net_btc || 0) < 0.0001 ? ' (已對沖)' : ' (待對沖)'}
                 </span>
               </div>
               <div className="metric-row">
@@ -1098,12 +1104,16 @@ function MarketMakerPage() {
                       cancel: t.mm.actionCancel,
                       rebalance: t.mm.actionRebalance,
                       fill: t.mm.actionFill,
+                      exposure_hedge: '敞口對沖',
+                      instant_close: '即時平倉',
                     }
                     const actionColors: Record<string, string> = {
                       place: 'text-positive',
                       cancel: 'text-negative',
                       rebalance: 'text-warning',
                       fill: 'text-info',
+                      exposure_hedge: 'text-info',
+                      instant_close: 'text-warning',
                     }
                     const sideLabel = op.side === 'buy' ? t.mm.sideBuy : t.mm.sideSell
                     const sideColor = op.side === 'buy' ? 'text-positive' : 'text-negative'
@@ -1140,11 +1150,9 @@ function MarketMakerPage() {
       {/* Footer Status Bar */}
       <div className="status-bar">
         <span>StandX: {mmPositions?.standx?.btc?.toFixed(4) || '0.0000'} BTC</span>
-        <span>
-          {hedgeTarget === 'standx_hedge' ? '對沖帳戶' : 'GRVT'}: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC
-        </span>
+        <span>對沖帳戶: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC</span>
         <span>{t.mm.netExposure}: {mmPositions?.net_btc?.toFixed(4) || '0.0000'}</span>
-        <span>對沖: {hedgeConfigured ? (hedgeTarget === 'standx_hedge' ? 'StandX' : 'GRVT') : '關閉'}</span>
+        <span>對沖: {hedgeConfigured ? 'StandX' : '關閉'}</span>
         <span className="sync-status">
           {t.mm.sync}: {mmPositions?.seconds_ago ? `${mmPositions.seconds_ago.toFixed(1)}${t.common.syncAgo}` : 'N/A'}
         </span>

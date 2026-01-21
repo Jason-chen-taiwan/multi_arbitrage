@@ -43,6 +43,8 @@ export interface WebSocketData {
     hedge_target: string
     order_size_btc: number
     order_distance_bps: number
+    hedge_enabled?: boolean
+    instant_close_enabled?: boolean
   }
   mm_executor?: Record<string, unknown>
   mm_positions?: {

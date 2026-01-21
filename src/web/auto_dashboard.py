@@ -21,6 +21,9 @@ from dotenv import load_dotenv, set_key, unset_key
 import logging
 import uvicorn
 
+# 載入 .env 文件（必須在讀取環境變數之前）
+load_dotenv()
+
 # Import modules
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -208,6 +211,13 @@ async def broadcast_data():
                 data['mm_status'] = mm_status.copy()
                 if mm_executor:
                     data['mm_executor'] = serialize_for_json(mm_executor.to_dict())
+                    # 添加運行時控制狀態到 mm_status
+                    data['mm_status']['hedge_enabled'] = mm_executor.is_hedge_enabled()
+                    data['mm_status']['instant_close_enabled'] = mm_executor.is_instant_close_enabled()
+                else:
+                    # 未啟動時預設為 False
+                    data['mm_status']['hedge_enabled'] = False
+                    data['mm_status']['instant_close_enabled'] = False
 
                 # 做市商實時倉位 (統一從 executor.state 讀取)
                 import time as time_module
@@ -397,7 +407,13 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        pass  # 正常斷開
+    except Exception as e:
+        logger.debug(f"WebSocket error: {e}")
+    finally:
+        # 安全移除：可能已經在 broadcast_data 中被移除
+        if websocket in connected_clients:
+            connected_clients.remove(websocket)
 
 
 if __name__ == "__main__":

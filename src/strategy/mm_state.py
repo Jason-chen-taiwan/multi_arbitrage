@@ -1038,6 +1038,19 @@ class MMState:
         # 獲取操作歷史 (需要在鎖外調用以避免死鎖)
         operation_history = [r.to_dict() for r in self._operation_history]
 
+        # 對沖統計（供前端顯示）
+        hedge_stats = {
+            "total_attempts": self._total_hedges,
+            "total_success": self._successful_hedges,
+            "total_failed": self._total_hedges - self._successful_hedges,
+            "total_fallback": 0,  # 如果有追蹤 fallback，可以添加
+            "success_rate": (
+                self._successful_hedges / self._total_hedges
+                if self._total_hedges > 0 else 0
+            ),
+            "avg_latency_ms": None,  # 如果有追蹤延遲，可以添加
+        }
+
         return {
             "bid_order": {
                 "client_order_id": bid_order.client_order_id,
@@ -1059,5 +1072,6 @@ class MMState:
             "fill_count": self._fill_count,
             "pnl_usd": float(self._realized_pnl),
             "stats": stats,
+            "hedge_stats": hedge_stats,
             "operation_history": operation_history,
         }

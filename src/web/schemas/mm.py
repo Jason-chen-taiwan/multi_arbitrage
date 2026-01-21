@@ -31,8 +31,8 @@ class QuoteConfig(BaseModel):
 
 class PositionConfig(BaseModel):
     """Position-related configuration."""
-    order_size_btc: float = Field(default=0.001, description="Order size in BTC")
-    max_position_btc: float = Field(default=0.01, description="Maximum position in BTC")
+    order_size_btc: float = Field(default=0.01, description="Order size in BTC")
+    max_position_btc: float = Field(default=0.05, description="Maximum position in BTC")
 
 
 class VolatilityConfig(BaseModel):

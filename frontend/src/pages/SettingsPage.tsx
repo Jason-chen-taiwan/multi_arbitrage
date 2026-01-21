@@ -448,14 +448,12 @@ function SettingsPage() {
               <label>對沖目標</label>
               <select
                 value={hedgeTarget}
-                onChange={(e) => setHedgeTarget(e.target.value as 'grvt' | 'standx_hedge' | 'none')}
+                onChange={(e) => setHedgeTarget(e.target.value as 'standx_hedge' | 'none')}
               >
-                <option value="grvt">GRVT (DEX)</option>
                 <option value="standx_hedge">StandX 對沖帳戶</option>
                 <option value="none">不對沖</option>
               </select>
               <small className="form-hint">
-                {hedgeTarget === 'grvt' && '使用 GRVT 交易所對沖（需先配置 GRVT）'}
                 {hedgeTarget === 'standx_hedge' && '使用另一個 StandX 帳戶對沖'}
                 {hedgeTarget === 'none' && '做市商成交後不執行對沖操作'}
               </small>

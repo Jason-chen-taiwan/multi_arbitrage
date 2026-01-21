@@ -28,8 +28,8 @@ class QuoteConfig:
 @dataclass
 class PositionConfig:
     """倉位配置"""
-    order_size_btc: float = 0.001
-    max_position_btc: float = 0.01
+    order_size_btc: float = 0.01
+    max_position_btc: float = 0.05
 
 
 @dataclass
