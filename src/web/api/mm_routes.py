@@ -506,17 +506,13 @@ def register_mm_routes(app, dependencies):
         當任一帳戶 margin_ratio > 80% 或 liq_distance_pct < 5% 時自動平倉雙邊倉位。
         """
         try:
-            from src.web.auto_dashboard import (
-                _liquidation_protection_enabled,
-                _liquidation_protection_triggered,
-            )
-            import src.web.auto_dashboard as dashboard_module
+            from src.web.auto_dashboard import liquidation_state
 
             data = await request.json()
             enabled = data.get('enabled', False)
 
-            # 使用模組級別設置
-            dashboard_module._liquidation_protection_enabled = enabled
+            # 直接修改 dict，避免模組重導入問題
+            liquidation_state['enabled'] = enabled
 
             logger.info(f"[LiquidationProtection] 開關設置為: {enabled}")
 
@@ -532,16 +528,12 @@ def register_mm_routes(app, dependencies):
     async def get_liquidation_protection():
         """獲取爆倉保護狀態"""
         try:
-            from src.web.auto_dashboard import (
-                _liquidation_protection_enabled,
-                _liquidation_protection_triggered,
-                _last_liquidation_trigger_time,
-            )
+            from src.web.auto_dashboard import liquidation_state
 
             return JSONResponse({
-                'enabled': _liquidation_protection_enabled,
-                'triggered': _liquidation_protection_triggered,
-                'last_trigger_time': _last_liquidation_trigger_time,
+                'enabled': liquidation_state['enabled'],
+                'triggered': liquidation_state['triggered'],
+                'last_trigger_time': liquidation_state['last_trigger_time'],
             })
         except Exception as e:
             return JSONResponse({'error': str(e)}, status_code=500)
