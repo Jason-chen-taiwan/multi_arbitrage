@@ -67,6 +67,12 @@ export const mmApi = {
   // Close all positions with market orders
   closeAllPositions: (account: 'main' | 'hedge' | 'both') =>
     apiClient.post('/mm/close-positions', { account }),
+  // Runtime controls
+  getRuntimeControls: () => apiClient.get('/mm/runtime/controls'),
+  setHedgeEnabled: (enabled: boolean) =>
+    apiClient.post('/mm/runtime/hedge', { enabled }),
+  setInstantCloseEnabled: (enabled: boolean) =>
+    apiClient.post('/mm/runtime/instant-close', { enabled }),
 }
 
 // Simulation endpoints

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import type { WebSocketData } from '../hooks/useWebSocket'
 import { mmApi } from '../api/client'
@@ -65,6 +65,12 @@ function MarketMakerPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [isConfigCollapsed, setIsConfigCollapsed] = useState(false)
 
+  // Runtime controls state (預設皆為 OFF)
+  const [runtimeHedgeEnabled, setRuntimeHedgeEnabled] = useState(false)
+  const [runtimeInstantCloseEnabled, setRuntimeInstantCloseEnabled] = useState(false)
+  const [isTogglingHedge, setIsTogglingHedge] = useState(false)
+  const [isTogglingInstantClose, setIsTogglingInstantClose] = useState(false)
+
   const mmStatus = lastMessage?.mm_status
   const mmExecutor = lastMessage?.mm_executor as Record<string, unknown> | undefined
   const mmPositions = lastMessage?.mm_positions
@@ -75,6 +81,51 @@ function MarketMakerPage() {
   useEffect(() => {
     loadConfig()
   }, [])
+
+  // Sync runtime controls from executor state
+  useEffect(() => {
+    const runtimeControls = mmExecutor?.runtime_controls as { hedge_enabled?: boolean; instant_close_enabled?: boolean } | undefined
+    if (runtimeControls) {
+      setRuntimeHedgeEnabled(runtimeControls.hedge_enabled ?? false)
+      setRuntimeInstantCloseEnabled(runtimeControls.instant_close_enabled ?? false)
+    }
+  }, [mmExecutor])
+
+  // Toggle hedge enabled
+  const handleToggleHedge = useCallback(async () => {
+    if (!mmStatus?.running) return
+    setIsTogglingHedge(true)
+    try {
+      const newValue = !runtimeHedgeEnabled
+      await mmApi.setHedgeEnabled(newValue)
+      setRuntimeHedgeEnabled(newValue)
+      setMessage({ type: 'success', text: `對沖已${newValue ? '開啟' : '關閉'}` })
+      setTimeout(() => setMessage(null), 2000)
+    } catch (error) {
+      console.error('Failed to toggle hedge:', error)
+      setMessage({ type: 'error', text: '切換對沖失敗' })
+    } finally {
+      setIsTogglingHedge(false)
+    }
+  }, [runtimeHedgeEnabled, mmStatus?.running])
+
+  // Toggle instant close enabled
+  const handleToggleInstantClose = useCallback(async () => {
+    if (!mmStatus?.running) return
+    setIsTogglingInstantClose(true)
+    try {
+      const newValue = !runtimeInstantCloseEnabled
+      await mmApi.setInstantCloseEnabled(newValue)
+      setRuntimeInstantCloseEnabled(newValue)
+      setMessage({ type: 'success', text: `即時平倉已${newValue ? '開啟' : '關閉'}` })
+      setTimeout(() => setMessage(null), 2000)
+    } catch (error) {
+      console.error('Failed to toggle instant close:', error)
+      setMessage({ type: 'error', text: '切換即時平倉失敗' })
+    } finally {
+      setIsTogglingInstantClose(false)
+    }
+  }, [runtimeInstantCloseEnabled, mmStatus?.running])
 
 
   const loadConfig = async () => {
@@ -259,7 +310,7 @@ function MarketMakerPage() {
   // Extract hedge stats from executor
   const hedgeStats = (state?.hedge_stats as HedgeStats) || null
   const hedgeTarget = mmStatus?.hedge_target as string || 'none'
-  const hedgeEnabled = hedgeTarget !== 'none'
+  const hedgeConfigured = hedgeTarget !== 'none'
 
   return (
     <div className="page">
@@ -456,6 +507,41 @@ function MarketMakerPage() {
         </div>
       </div>
 
+      {/* Runtime Controls - 運行時控制 */}
+      <div className="runtime-controls-bar">
+        <div className="runtime-control">
+          <span className="control-label">對沖開關</span>
+          <button
+            className={`toggle-btn ${runtimeHedgeEnabled && mmStatus?.running ? 'active' : ''}`}
+            onClick={handleToggleHedge}
+            disabled={!mmStatus?.running || isTogglingHedge || hedgeTarget === 'none'}
+            title={!mmStatus?.running ? '請先啟動做市商' : (hedgeTarget === 'none' ? '未配置對沖帳戶' : (runtimeHedgeEnabled ? '點擊關閉對沖' : '點擊開啟對沖'))}
+          >
+            {isTogglingHedge ? '...' : (runtimeHedgeEnabled ? 'ON' : 'OFF')}
+          </button>
+          <span className="control-hint">
+            {hedgeTarget === 'none'
+              ? '未配置對沖帳戶'
+              : `${hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'} - ${!mmStatus?.running ? '啟動後可用' : (runtimeHedgeEnabled ? '已啟用' : '已停用')}`
+            }
+          </span>
+        </div>
+        <div className="runtime-control">
+          <span className="control-label">即時平倉</span>
+          <button
+            className={`toggle-btn ${runtimeInstantCloseEnabled && mmStatus?.running ? 'active warning' : ''}`}
+            onClick={handleToggleInstantClose}
+            disabled={!mmStatus?.running || isTogglingInstantClose}
+            title={!mmStatus?.running ? '請先啟動做市商' : (runtimeInstantCloseEnabled ? '點擊關閉即時平倉' : '點擊開啟即時平倉')}
+          >
+            {isTogglingInstantClose ? '...' : (runtimeInstantCloseEnabled ? 'ON' : 'OFF')}
+          </button>
+          <span className="control-hint">
+            {!mmStatus?.running ? '啟動後可用' : (runtimeInstantCloseEnabled ? '成交後立即市價平倉' : '正常模式')}
+          </span>
+        </div>
+      </div>
+
       {/* Summary Cards */}
       <div className="summary-cards">
         <div className="card">
@@ -498,8 +584,8 @@ function MarketMakerPage() {
 
         <div className="card">
           <div className="card-title">對沖狀態</div>
-          <div className={`card-value ${hedgeEnabled ? 'text-positive' : 'text-muted'}`}>
-            {hedgeEnabled ? '已啟用' : '未啟用'}
+          <div className={`card-value ${runtimeHedgeEnabled && hedgeTarget !== 'none' ? 'text-positive' : 'text-muted'}`}>
+            {runtimeHedgeEnabled && hedgeTarget !== 'none' ? '已啟用' : '未啟用'}
           </div>
           <div className="card-subtitle">
             {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' :
@@ -914,7 +1000,7 @@ function MarketMakerPage() {
         </div>
 
         {/* Hedge Stats */}
-        {hedgeEnabled && (
+        {hedgeConfigured && (
           <div className="panel full-width">
             <h3>對沖統計</h3>
             <div className="positions-grid">
@@ -1058,7 +1144,7 @@ function MarketMakerPage() {
           {hedgeTarget === 'standx_hedge' ? '對沖帳戶' : 'GRVT'}: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC
         </span>
         <span>{t.mm.netExposure}: {mmPositions?.net_btc?.toFixed(4) || '0.0000'}</span>
-        <span>對沖: {hedgeEnabled ? (hedgeTarget === 'standx_hedge' ? 'StandX' : 'GRVT') : '關閉'}</span>
+        <span>對沖: {hedgeConfigured ? (hedgeTarget === 'standx_hedge' ? 'StandX' : 'GRVT') : '關閉'}</span>
         <span className="sync-status">
           {t.mm.sync}: {mmPositions?.seconds_ago ? `${mmPositions.seconds_ago.toFixed(1)}${t.common.syncAgo}` : 'N/A'}
         </span>

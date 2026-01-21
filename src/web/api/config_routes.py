@@ -42,6 +42,7 @@ def register_config_routes(app, dependencies):
     adapters_getter = dependencies['adapters_getter']
     system_manager_getter = dependencies.get('system_manager_getter')
     logger = dependencies.get('logger')
+    mm_status = dependencies.get('mm_status')  # 用於更新對沖目標狀態
 
     @router.get("/list", response_model=ExchangeListResponse)
     async def list_configs():
@@ -220,9 +221,16 @@ def register_config_routes(app, dependencies):
             data = await request.json()
             config_manager.save_hedge_config(data)
 
+            # 【重要】更新 mm_status，讓 WebSocket 即時推送新的 hedge_target
+            hedge_target = data.get('hedge_target', 'none')
+            if mm_status is not None:
+                mm_status['hedge_target'] = hedge_target
+                if logger:
+                    logger.info(f"mm_status['hedge_target'] 已更新為: {hedge_target}")
+
             # 如果系統已運行，需要重新連接以載入新的對沖帳戶
             if logger:
-                logger.info(f"對沖配置已更新: hedge_target={data.get('hedge_target')}")
+                logger.info(f"對沖配置已更新: hedge_target={hedge_target}")
 
             return JSONResponse({
                 'success': True,

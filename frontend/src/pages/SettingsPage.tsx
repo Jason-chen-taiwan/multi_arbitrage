@@ -506,11 +506,12 @@ function SettingsPage() {
           </form>
         </div>
 
-        {/* Instant Close Position */}
+        {/* Emergency Close Position */}
         <div className="panel">
-          <h3>即時平倉</h3>
+          <h3>緊急平倉</h3>
           <p className="form-hint" style={{ marginBottom: 'var(--spacing-md)' }}>
-            使用市價單立即平掉所有倉位。此操作不可逆，請謹慎使用。
+            手動使用市價單平掉指定帳戶的倉位。此操作不可逆，請謹慎使用。<br/>
+            <small>（自動即時平倉功能請在做市商頁面開啟）</small>
           </p>
           <div className="button-group">
             <button

@@ -336,6 +336,81 @@ def register_mm_routes(app, dependencies):
         except Exception as e:
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+    @router.post("/runtime/hedge", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def set_hedge_enabled(request: Request):
+        """
+        運行時切換對沖開關
+
+        Body:
+        - enabled: bool - 是否啟用對沖
+        """
+        try:
+            data = await request.json()
+            enabled = data.get('enabled', True)
+
+            mm_executor = mm_executor_getter()
+            if not mm_executor:
+                return JSONResponse({'success': False, 'error': '做市商未啟動'})
+
+            mm_executor.set_hedge_enabled(enabled)
+            logger.info(f"對沖開關已設置為: {enabled}")
+            return JSONResponse({
+                'success': True,
+                'hedge_enabled': enabled
+            })
+        except Exception as e:
+            logger.error(f"設置對沖開關失敗: {e}")
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+    @router.post("/runtime/instant-close", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def set_instant_close_enabled(request: Request):
+        """
+        運行時切換即時平倉開關
+
+        Body:
+        - enabled: bool - 是否啟用即時平倉（成交後立即市價平倉）
+        """
+        try:
+            data = await request.json()
+            enabled = data.get('enabled', False)
+
+            mm_executor = mm_executor_getter()
+            if not mm_executor:
+                return JSONResponse({'success': False, 'error': '做市商未啟動'})
+
+            mm_executor.set_instant_close_enabled(enabled)
+            logger.info(f"即時平倉開關已設置為: {enabled}")
+            return JSONResponse({
+                'success': True,
+                'instant_close_enabled': enabled
+            })
+        except Exception as e:
+            logger.error(f"設置即時平倉開關失敗: {e}")
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+    @router.get("/runtime/controls")
+    async def get_runtime_controls():
+        """
+        獲取運行時控制開關狀態
+        """
+        try:
+            mm_executor = mm_executor_getter()
+            if not mm_executor:
+                return JSONResponse({
+                    'running': False,
+                    'hedge_enabled': False,
+                    'instant_close_enabled': False
+                })
+
+            return JSONResponse({
+                'running': True,
+                'hedge_enabled': mm_executor.is_hedge_enabled(),
+                'instant_close_enabled': mm_executor.is_instant_close_enabled()
+            })
+        except Exception as e:
+            logger.error(f"獲取運行時控制失敗: {e}")
+            return JSONResponse({'error': str(e)}, status_code=500)
+
     @router.post("/close-positions", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
     async def close_all_positions(request: Request):
         """

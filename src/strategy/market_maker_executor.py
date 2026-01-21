@@ -348,6 +348,10 @@ class MarketMakerExecutor:
         self._last_position_sync: float = 0  # 上次同步時間
         self._position_sync_interval: float = 2.0  # 同步間隔（秒）
 
+        # 【新增】運行時控制開關（預設皆為 OFF）
+        self._hedge_enabled: bool = False      # 是否執行對沖（運行時可切換）
+        self._instant_close_enabled: bool = False  # 是否即時平倉（成交後立即市價平倉）
+
     # ==================== 生命週期 ====================
 
     async def start(self):
@@ -2640,9 +2644,37 @@ class MarketMakerExecutor:
             other_side = "ask" if fill.side == "buy" else "bid"
             logger.info(f"[NoHedge] Keeping {other_side} for reversion (policy=none)")
 
-        # 【保險絲 3】只有在有 hedge_engine 時才進入 HEDGING 狀態
+        # 【運行時控制】即時平倉模式 - 成交後立即市價平倉
+        if self._instant_close_enabled:
+            logger.info(f"[InstantClose] Enabled - closing fill immediately: {fill.side} {fill.fill_qty}")
+            close_side = "sell" if fill.side == "buy" else "buy"
+            try:
+                order = await self.primary.place_order(
+                    symbol=self.config.symbol,
+                    side=close_side,
+                    order_type="market",
+                    quantity=fill.fill_qty,
+                )
+                logger.info(f"[InstantClose] Market order placed: {close_side} {fill.fill_qty}, order_id={getattr(order, 'order_id', 'N/A')}")
+
+                # 記錄操作歷史
+                self.state.record_operation(
+                    action="instant_close",
+                    side=close_side,
+                    order_price=fill.fill_price,
+                    best_bid=self._last_best_bid,
+                    best_ask=self._last_best_ask,
+                    reason=f"qty={fill.fill_qty}",
+                )
+            except Exception as e:
+                logger.error(f"[InstantClose] Failed to close position: {e}")
+
+            # 即時平倉模式下跳過對沖邏輯
+            return
+
+        # 【保險絲 3】只有在有 hedge_engine 且運行時開關開啟時才進入 HEDGING 狀態
         # 避免監控誤判系統在對沖
-        should_hedge = self.hedge_engine is not None
+        should_hedge = self.hedge_engine is not None and self._hedge_enabled
 
         if should_hedge:
             self._status = ExecutorStatus.HEDGING
@@ -2716,7 +2748,10 @@ class MarketMakerExecutor:
                     f"latency: {hedge_result.latency_ms:.0f}ms"
                 )
             else:
-                logger.warning(f"No hedge engine, position unhedged")
+                if self.hedge_engine is not None and not self._hedge_enabled:
+                    logger.info(f"[RuntimeControl] Hedge disabled at runtime, position unhedged")
+                else:
+                    logger.warning(f"No hedge engine, position unhedged")
 
         except Exception as e:
             logger.error(f"Error during fill processing: {e}", exc_info=True)
@@ -2780,6 +2815,28 @@ class MarketMakerExecutor:
 
         return stats
 
+    # ==================== 運行時控制開關 ====================
+
+    def set_hedge_enabled(self, enabled: bool):
+        """運行時切換對沖開關"""
+        old_value = self._hedge_enabled
+        self._hedge_enabled = enabled
+        logger.info(f"[RuntimeControl] Hedge enabled: {old_value} -> {enabled}")
+
+    def is_hedge_enabled(self) -> bool:
+        """獲取對沖開關狀態"""
+        return self._hedge_enabled
+
+    def set_instant_close_enabled(self, enabled: bool):
+        """運行時切換即時平倉開關"""
+        old_value = self._instant_close_enabled
+        self._instant_close_enabled = enabled
+        logger.info(f"[RuntimeControl] Instant close enabled: {old_value} -> {enabled}")
+
+    def is_instant_close_enabled(self) -> bool:
+        """獲取即時平倉開關狀態"""
+        return self._instant_close_enabled
+
     def to_dict(self) -> dict:
         """序列化"""
         return {
@@ -2811,4 +2868,9 @@ class MarketMakerExecutor:
             },
             "state": self.state.to_dict(),
             "stats": self.get_stats(),
+            # 運行時控制開關狀態
+            "runtime_controls": {
+                "hedge_enabled": self._hedge_enabled,
+                "instant_close_enabled": self._instant_close_enabled,
+            },
         }

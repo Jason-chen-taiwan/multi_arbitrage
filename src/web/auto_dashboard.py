@@ -51,9 +51,12 @@ _orderbook_cache_ttl = 2.0  # 緩存 2 秒
 mm_status = {
     'running': False,
     'status': 'stopped',
-    'dry_run': False,  # 實盤模式
+    'hedge_target': os.getenv('HEDGE_TARGET', 'none'),  # 從環境變數讀取對沖目標
     'order_size_btc': 0.001,
     'order_distance_bps': 9,  # 默認值與 mm_config.yaml 同步
+    'cancel_distance_bps': 3,
+    'rebalance_distance_bps': 12,
+    'max_position_btc': 0.01,
 }
 
 # Simulation comparison globals
