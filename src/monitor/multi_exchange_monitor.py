@@ -142,13 +142,20 @@ class MultiExchangeMonitor:
 
         print("✅ Monitor stopped")
 
-    async def _monitor_exchange(self, exchange_name: str, adapter: BasePerpAdapter):
+    async def _monitor_exchange(self, exchange_name: str, adapter: BasePerpAdapter = None):
         """監控單個交易所"""
         while self._running:
             try:
+                # 每次迭代都從 self.adapters 獲取最新的 adapter
+                # 這樣在 reconnect 後可以自動使用新的 adapter
+                current_adapter = self.adapters.get(exchange_name)
+                if not current_adapter:
+                    await asyncio.sleep(self.update_interval)
+                    continue
+
                 # 並行獲取所有交易對的訂單簿
                 tasks = [
-                    adapter.get_orderbook(symbol, limit=10)
+                    current_adapter.get_orderbook(symbol, limit=10)
                     for symbol in self.symbols
                 ]
                 orderbooks = await asyncio.gather(*tasks, return_exceptions=True)

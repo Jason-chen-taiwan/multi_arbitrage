@@ -190,9 +190,25 @@ class StandXAdapter(BasePerpAdapter):
     async def disconnect(self) -> bool:
         """斷開連接"""
         try:
+            # 先停止 WebSocket
+            if self._ws_client:
+                await self.stop_websocket()
+
             if self.session:
+                # 取得 connector 引用
+                connector = self.session.connector
+
+                # 關閉 session
                 await self.session.close()
                 self.session = None
+
+                # 確保 connector 也被關閉
+                if connector and not connector.closed:
+                    await connector.close()
+
+                # 給一點時間讓資源釋放
+                await asyncio.sleep(0.1)
+
             return True
         except Exception as e:
             print(f"❌ Failed to disconnect from StandX: {e}")

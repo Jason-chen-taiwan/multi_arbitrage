@@ -429,6 +429,9 @@ class SystemManager:
         """
         重新連接所有已配置的交易所
 
+        策略：先創建新的 adapters，確認成功後再斷開舊的
+        這樣可以避免 aiohttp session 資源清理不完整的問題
+
         Returns:
             {
                 "success": bool,
@@ -441,20 +444,17 @@ class SystemManager:
         logger.info("🔄 正在重新連接所有交易所...")
         results = {}
 
-        # 先斷開所有現有連接
-        for name, adapter in list(self.adapters.items()):
-            try:
-                if hasattr(adapter, 'disconnect'):
-                    await adapter.disconnect()
-                    logger.info(f"  ✅ {name} 已斷開")
-            except Exception as e:
-                logger.warning(f"  ⚠️ 斷開 {name} 時出錯: {e}")
+        # 保存舊的 adapters 引用
+        old_adapters = dict(self.adapters)
 
-        # 清空 adapters
-        self.adapters.clear()
+        # 創建新的 adapters dict
+        new_adapters = {}
 
         # 重新加載配置
         configs = self.config_manager.get_all_configs()
+
+        # === 第一步：創建新的 adapters（不斷開舊的）===
+        logger.info("  📦 創建新的連接...")
 
         # 重新連接 DEX
         for exchange_name, config in configs['dex'].items():
@@ -499,9 +499,9 @@ class SystemManager:
                         logger.error(f"  ❌ {name_upper} 重新連接失敗")
                         continue
 
-                self.adapters[name_upper] = adapter
+                new_adapters[name_upper] = adapter
                 results[name_upper] = {"success": True, "error": None}
-                logger.info(f"  ✅ {name_upper} 重新連接成功")
+                logger.info(f"  ✅ {name_upper} 新連接已建立")
 
             except Exception as e:
                 results[name_upper] = {"success": False, "error": str(e)}
@@ -524,9 +524,9 @@ class SystemManager:
                     if hasattr(hedge_adapter, 'connect'):
                         connected = await hedge_adapter.connect()
                         if connected:
-                            self.adapters['STANDX_HEDGE'] = hedge_adapter
+                            new_adapters['STANDX_HEDGE'] = hedge_adapter
                             results['STANDX_HEDGE'] = {"success": True, "error": None}
-                            logger.info("  ✅ STANDX_HEDGE 重新連接成功")
+                            logger.info("  ✅ STANDX_HEDGE 新連接已建立")
                         else:
                             results['STANDX_HEDGE'] = {"success": False, "error": "連接失敗"}
                             logger.error("  ❌ STANDX_HEDGE 重新連接失敗")
@@ -559,17 +559,31 @@ class SystemManager:
                         logger.error(f"  ❌ {name_upper} 重新連接失敗")
                         continue
 
-                self.adapters[name_upper] = adapter
+                new_adapters[name_upper] = adapter
                 results[name_upper] = {"success": True, "error": None}
-                logger.info(f"  ✅ {name_upper} 重新連接成功")
+                logger.info(f"  ✅ {name_upper} 新連接已建立")
 
             except Exception as e:
                 results[name_upper] = {"success": False, "error": str(e)}
                 logger.error(f"  ❌ {name_upper} 重新連接異常: {e}")
 
+        # === 第二步：先替換 adapters（讓其他程式碼立即使用新的）===
+        logger.info("  🔄 切換到新連接...")
+        self.adapters = new_adapters
+
         # 更新 monitor 的 adapters
         if self.monitor:
             self.monitor.adapters = self.adapters
+
+        # === 第三步：斷開舊的連接（已不再被引用）===
+        logger.info("  🔌 斷開舊連接...")
+        for name, adapter in old_adapters.items():
+            try:
+                if hasattr(adapter, 'disconnect'):
+                    await adapter.disconnect()
+                    logger.info(f"  ✅ {name} 舊連接已斷開")
+            except Exception as e:
+                logger.warning(f"  ⚠️ 斷開 {name} 舊連接時出錯: {e}")
 
         # 執行健康檢查
         await self._perform_health_checks()
