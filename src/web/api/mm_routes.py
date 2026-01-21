@@ -506,12 +506,15 @@ def register_mm_routes(app, dependencies):
         當任一帳戶 margin_ratio > 80% 或 liq_distance_pct < 5% 時自動平倉雙邊倉位。
         """
         try:
-            from src.web.auto_dashboard import liquidation_state
+            from src.web.auto_dashboard import liquidation_state, config_manager
 
             data = await request.json()
             enabled = data.get('enabled', False)
 
-            # 直接修改 dict，避免模組重導入問題
+            # 保存到 .env 文件
+            config_manager.set_liquidation_protection(enabled)
+
+            # 同時更新運行時狀態
             liquidation_state['enabled'] = enabled
 
             logger.info(f"[LiquidationProtection] 開關設置為: {enabled}")

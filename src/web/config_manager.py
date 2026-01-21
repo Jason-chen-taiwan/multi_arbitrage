@@ -222,6 +222,17 @@ class ConfigManager:
 
         load_dotenv(self.env_file, override=True)
 
+    def get_liquidation_protection(self) -> bool:
+        """獲取爆倉保護開關狀態"""
+        load_dotenv(self.env_file, override=True)
+        return os.getenv('LIQUIDATION_PROTECTION_ENABLED', 'false').lower() == 'true'
+
+    def set_liquidation_protection(self, enabled: bool):
+        """設置爆倉保護開關狀態"""
+        set_key(self.env_file, 'LIQUIDATION_PROTECTION_ENABLED',
+                'true' if enabled else 'false', quote_mode='never')
+        load_dotenv(self.env_file, override=True)
+
     def delete_config(self, exchange_name: str, exchange_type: str):
         """刪除配置"""
         # 統一轉換為小寫進行比對

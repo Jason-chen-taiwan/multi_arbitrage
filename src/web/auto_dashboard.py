@@ -57,8 +57,9 @@ _risk_data_cache: Dict[str, dict] = {}  # {account_name: {'data': ..., 'timestam
 _risk_data_cache_ttl = 5.0  # 緩存 5 秒，降低 API 請求頻率
 
 # 爆倉保護狀態 (使用 dict 來避免模組重導入問題)
+# 從環境變數讀取初始狀態
 liquidation_state = {
-    'enabled': False,  # 爆倉保護開關（預設關閉）
+    'enabled': os.getenv('LIQUIDATION_PROTECTION_ENABLED', 'false').lower() == 'true',
     'triggered': False,  # 是否已觸發過（避免重複觸發）
     'last_trigger_time': 0.0,  # 上次觸發時間（冷卻期用）
     'cooldown_sec': 60.0,  # 觸發冷卻期（60秒內不重複觸發）
