@@ -1,5 +1,7 @@
 # StandX Market Maker
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/Jason-chen-taiwan/multi_arbitrage)
+
 專為 **StandX Uptime Program** 優化的自動化做市商系統。
 
 ## 功能特點
