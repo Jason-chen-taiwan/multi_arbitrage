@@ -498,4 +498,52 @@ def register_mm_routes(app, dependencies):
             logger.error(f"平倉失敗: {e}")
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+    @router.post("/liquidation-protection")
+    async def set_liquidation_protection(request: Request):
+        """
+        設置爆倉保護開關
+
+        當任一帳戶 margin_ratio > 80% 或 liq_distance_pct < 5% 時自動平倉雙邊倉位。
+        """
+        try:
+            from src.web.auto_dashboard import (
+                _liquidation_protection_enabled,
+                _liquidation_protection_triggered,
+            )
+            import src.web.auto_dashboard as dashboard_module
+
+            data = await request.json()
+            enabled = data.get('enabled', False)
+
+            # 使用模組級別設置
+            dashboard_module._liquidation_protection_enabled = enabled
+
+            logger.info(f"[LiquidationProtection] 開關設置為: {enabled}")
+
+            return JSONResponse({
+                'success': True,
+                'enabled': enabled,
+            })
+        except Exception as e:
+            logger.error(f"設置爆倉保護失敗: {e}")
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+    @router.get("/liquidation-protection")
+    async def get_liquidation_protection():
+        """獲取爆倉保護狀態"""
+        try:
+            from src.web.auto_dashboard import (
+                _liquidation_protection_enabled,
+                _liquidation_protection_triggered,
+                _last_liquidation_trigger_time,
+            )
+
+            return JSONResponse({
+                'enabled': _liquidation_protection_enabled,
+                'triggered': _liquidation_protection_triggered,
+                'last_trigger_time': _last_liquidation_trigger_time,
+            })
+        except Exception as e:
+            return JSONResponse({'error': str(e)}, status_code=500)
+
     app.include_router(router)

@@ -45,6 +45,7 @@ export interface WebSocketData {
     order_distance_bps: number
     hedge_enabled?: boolean
     instant_close_enabled?: boolean
+    liquidation_protection_enabled?: boolean
   }
   mm_executor?: Record<string, unknown>
   mm_positions?: {

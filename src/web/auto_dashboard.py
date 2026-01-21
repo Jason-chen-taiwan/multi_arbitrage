@@ -56,6 +56,20 @@ _orderbook_cache_ttl = 2.0  # 緩存 2 秒
 _risk_data_cache: Dict[str, dict] = {}  # {account_name: {'data': ..., 'timestamp': ...}}
 _risk_data_cache_ttl = 5.0  # 緩存 5 秒，降低 API 請求頻率
 
+# 爆倉保護狀態
+_liquidation_protection_enabled: bool = False  # 爆倉保護開關（預設關閉）
+_liquidation_protection_triggered: bool = False  # 是否已觸發過（避免重複觸發）
+_last_liquidation_trigger_time: float = 0  # 上次觸發時間（冷卻期用）
+_liquidation_cooldown_sec: float = 60.0  # 觸發冷卻期（60秒內不重複觸發）
+
+def _set_liquidation_triggered(value: bool):
+    global _liquidation_protection_triggered
+    _liquidation_protection_triggered = value
+
+def _set_liquidation_trigger_time(value: float):
+    global _last_liquidation_trigger_time
+    _last_liquidation_trigger_time = value
+
 mm_status = {
     'running': False,
     'status': 'stopped',
@@ -224,6 +238,9 @@ async def broadcast_data():
                     data['mm_status']['hedge_enabled'] = False
                     data['mm_status']['instant_close_enabled'] = False
 
+                # 添加爆倉保護狀態
+                data['mm_status']['liquidation_protection_enabled'] = _liquidation_protection_enabled
+
                 # 做市商實時倉位 (統一從 executor.state 讀取)
                 import time as time_module
                 positions = {
@@ -382,6 +399,40 @@ async def broadcast_data():
                     standx_pnl = positions.get('standx', {}).get('pnl', 0) or 0
                     hedge_pnl = positions.get('hedge', {}).get('pnl', 0) or 0
                     positions['total_pnl'] = standx_pnl + hedge_pnl
+
+                    # 【爆倉保護】檢測是否需要緊急平倉
+                    standx_risk = positions.get('standx', {}).get('risk_level', 'safe')
+                    hedge_risk = positions.get('hedge', {}).get('risk_level', 'safe')
+
+                    if _liquidation_protection_enabled and mm_executor and mm_executor._running:
+                        now = time.time()
+                        # 檢查是否任一帳戶處於危險狀態
+                        if (standx_risk == 'danger' or hedge_risk == 'danger'):
+                            # 檢查冷卻期
+                            if now - _last_liquidation_trigger_time > _liquidation_cooldown_sec:
+                                logger.warning(f"[LiquidationProtection] 檢測到爆倉風險! standx={standx_risk}, hedge={hedge_risk}")
+                                # 觸發緊急平倉
+                                reason_parts = []
+                                if standx_risk == 'danger':
+                                    standx_data = positions.get('standx', {})
+                                    reason_parts.append(f"主帳戶: margin={standx_data.get('margin_ratio', 0)*100:.1f}%, liq_dist={standx_data.get('liq_distance_pct', 'N/A')}")
+                                if hedge_risk == 'danger':
+                                    hedge_data = positions.get('hedge', {})
+                                    reason_parts.append(f"對沖帳戶: margin={hedge_data.get('margin_ratio', 0)*100:.1f}%, liq_dist={hedge_data.get('liq_distance_pct', 'N/A')}")
+
+                                reason = "; ".join(reason_parts)
+                                try:
+                                    result = await mm_executor.emergency_close_all(reason=reason)
+                                    logger.warning(f"[LiquidationProtection] 緊急平倉結果: {result}")
+                                    _set_liquidation_trigger_time(now)
+                                    _set_liquidation_triggered(True)
+                                except Exception as e:
+                                    logger.error(f"[LiquidationProtection] 緊急平倉失敗: {e}")
+                        else:
+                            # 風險解除，重置觸發標記
+                            if _liquidation_protection_triggered:
+                                logger.info("[LiquidationProtection] 風險已解除，重置觸發狀態")
+                                _set_liquidation_triggered(False)
 
                 data['mm_positions'] = positions
 

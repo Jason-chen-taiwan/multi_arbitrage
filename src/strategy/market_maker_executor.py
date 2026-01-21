@@ -2966,6 +2966,106 @@ class MarketMakerExecutor:
         """獲取即時平倉開關狀態"""
         return self._instant_close_enabled
 
+    # ==================== 爆倉風險自動平倉 ====================
+
+    async def emergency_close_all(self, reason: str = "risk_danger") -> dict:
+        """
+        緊急平倉：關閉主帳戶和對沖帳戶的所有倉位
+
+        觸發條件：
+        - margin_ratio > 80%
+        - liq_distance_pct < 5%
+
+        Returns:
+            dict: 平倉結果
+        """
+        results = {
+            'primary': {'success': False, 'error': None},
+            'hedge': {'success': False, 'error': None},
+        }
+
+        logger.warning(f"[EmergencyClose] 觸發緊急平倉! 原因: {reason}")
+
+        # 1. 平倉主帳戶
+        try:
+            positions = await self.primary.get_positions(self.config.symbol)
+            if positions:
+                for pos in positions:
+                    if pos.size > 0:
+                        close_side = "sell" if pos.side == "long" else "buy"
+                        logger.warning(f"[EmergencyClose] 主帳戶平倉: {close_side} {pos.size}")
+                        await self.primary.place_order(
+                            symbol=self.config.symbol,
+                            side=close_side,
+                            order_type="market",
+                            quantity=pos.size,
+                        )
+                        # 記錄操作歷史
+                        self.state.record_operation(
+                            action="emergency_close",
+                            side=close_side,
+                            order_price=float(pos.mark_price) if pos.mark_price else 0,
+                            best_bid=self._last_best_bid,
+                            best_ask=self._last_best_ask,
+                            reason=f"primary: {reason}",
+                        )
+                results['primary']['success'] = True
+                logger.info("[EmergencyClose] 主帳戶平倉完成")
+            else:
+                results['primary']['success'] = True
+                results['primary']['error'] = "no_position"
+        except Exception as e:
+            logger.error(f"[EmergencyClose] 主帳戶平倉失敗: {e}")
+            results['primary']['error'] = str(e)
+
+        # 2. 平倉對沖帳戶
+        if self.hedge_engine and hasattr(self.hedge_engine, 'hedge_adapter'):
+            try:
+                hedge_adapter = self.hedge_engine.hedge_adapter
+                hedge_symbol = self.config.hedge_symbol or self.config.symbol
+                positions = await hedge_adapter.get_positions(hedge_symbol)
+                if positions:
+                    for pos in positions:
+                        if pos.size > 0:
+                            close_side = "sell" if pos.side == "long" else "buy"
+                            logger.warning(f"[EmergencyClose] 對沖帳戶平倉: {close_side} {pos.size}")
+                            await hedge_adapter.place_order(
+                                symbol=hedge_symbol,
+                                side=close_side,
+                                order_type="market",
+                                quantity=pos.size,
+                            )
+                            # 記錄操作歷史
+                            self.state.record_operation(
+                                action="emergency_close",
+                                side=close_side,
+                                order_price=float(pos.mark_price) if pos.mark_price else 0,
+                                best_bid=self._last_best_bid,
+                                best_ask=self._last_best_ask,
+                                reason=f"hedge: {reason}",
+                            )
+                    results['hedge']['success'] = True
+                    logger.info("[EmergencyClose] 對沖帳戶平倉完成")
+                else:
+                    results['hedge']['success'] = True
+                    results['hedge']['error'] = "no_position"
+            except Exception as e:
+                logger.error(f"[EmergencyClose] 對沖帳戶平倉失敗: {e}")
+                results['hedge']['error'] = str(e)
+        else:
+            results['hedge']['error'] = "no_hedge_engine"
+
+        # 3. 暫停做市
+        if self._running:
+            logger.warning("[EmergencyClose] 暫停做市以避免進一步風險")
+            # 撤銷所有掛單
+            try:
+                await self._cancel_all_orders()
+            except Exception as e:
+                logger.error(f"[EmergencyClose] 撤單失敗: {e}")
+
+        return results
+
     def to_dict(self) -> dict:
         """序列化"""
         return {

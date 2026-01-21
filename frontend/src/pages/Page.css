@@ -1555,6 +1555,17 @@
   border-color: var(--accent-orange);
 }
 
+.toggle-btn.active.danger {
+  background: var(--negative-color);
+  border-color: var(--negative-color);
+  animation: pulse-danger 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-danger {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 .control-hint {
   font-size: var(--font-sm);
   color: var(--text-secondary);

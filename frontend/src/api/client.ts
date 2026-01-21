@@ -73,6 +73,10 @@ export const mmApi = {
     apiClient.post('/mm/runtime/hedge', { enabled }),
   setInstantCloseEnabled: (enabled: boolean) =>
     apiClient.post('/mm/runtime/instant-close', { enabled }),
+  // Liquidation protection
+  getLiquidationProtection: () => apiClient.get('/mm/liquidation-protection'),
+  setLiquidationProtection: (enabled: boolean) =>
+    apiClient.post('/mm/liquidation-protection', { enabled }),
 }
 
 // Simulation endpoints

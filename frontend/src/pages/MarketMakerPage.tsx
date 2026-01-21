@@ -68,8 +68,10 @@ function MarketMakerPage() {
   // Runtime controls state (預設皆為 OFF)
   const [runtimeHedgeEnabled, setRuntimeHedgeEnabled] = useState(false)
   const [runtimeInstantCloseEnabled, setRuntimeInstantCloseEnabled] = useState(false)
+  const [runtimeLiquidationProtection, setRuntimeLiquidationProtection] = useState(false)
   const [isTogglingHedge, setIsTogglingHedge] = useState(false)
   const [isTogglingInstantClose, setIsTogglingInstantClose] = useState(false)
+  const [isTogglingLiquidationProtection, setIsTogglingLiquidationProtection] = useState(false)
 
   const mmStatus = lastMessage?.mm_status
   const mmExecutor = lastMessage?.mm_executor as Record<string, unknown> | undefined
@@ -91,6 +93,9 @@ function MarketMakerPage() {
       }
       if (typeof mmStatus.instant_close_enabled === 'boolean') {
         setRuntimeInstantCloseEnabled(mmStatus.instant_close_enabled)
+      }
+      if (typeof mmStatus.liquidation_protection_enabled === 'boolean') {
+        setRuntimeLiquidationProtection(mmStatus.liquidation_protection_enabled)
       }
     }
   }, [mmStatus])
@@ -131,6 +136,22 @@ function MarketMakerPage() {
     }
   }, [runtimeInstantCloseEnabled, mmStatus?.running])
 
+  // Toggle liquidation protection enabled
+  const handleToggleLiquidationProtection = useCallback(async () => {
+    setIsTogglingLiquidationProtection(true)
+    try {
+      const newValue = !runtimeLiquidationProtection
+      await mmApi.setLiquidationProtection(newValue)
+      setRuntimeLiquidationProtection(newValue)
+      setMessage({ type: 'success', text: `爆倉保護已${newValue ? '開啟' : '關閉'}` })
+      setTimeout(() => setMessage(null), 2000)
+    } catch (error) {
+      console.error('Failed to toggle liquidation protection:', error)
+      setMessage({ type: 'error', text: '切換爆倉保護失敗' })
+    } finally {
+      setIsTogglingLiquidationProtection(false)
+    }
+  }, [runtimeLiquidationProtection])
 
   const loadConfig = async () => {
     try {
@@ -542,6 +563,20 @@ function MarketMakerPage() {
           </button>
           <span className="control-hint">
             {!mmStatus?.running ? '啟動後可用' : (runtimeInstantCloseEnabled ? '成交後立即市價平倉' : '正常模式')}
+          </span>
+        </div>
+        <div className="runtime-control">
+          <span className="control-label">爆倉保護</span>
+          <button
+            className={`toggle-btn ${runtimeLiquidationProtection ? 'active danger' : ''}`}
+            onClick={handleToggleLiquidationProtection}
+            disabled={isTogglingLiquidationProtection}
+            title={runtimeLiquidationProtection ? '點擊關閉爆倉保護' : '點擊開啟爆倉保護'}
+          >
+            {isTogglingLiquidationProtection ? '...' : (runtimeLiquidationProtection ? 'ON' : 'OFF')}
+          </button>
+          <span className="control-hint">
+            {runtimeLiquidationProtection ? 'margin>80% 或 清算距離<5% 時自動雙邊平倉' : '關閉中'}
           </span>
         </div>
       </div>
