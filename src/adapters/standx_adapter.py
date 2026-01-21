@@ -286,12 +286,12 @@ class StandXAdapter(BasePerpAdapter):
 
         用於驗證代理是否生效。如果配置了代理，應該返回代理服務器的 IP。
         """
-        if not self._session:
+        if not self.session:
             return None
 
         try:
             # 使用 httpbin 獲取外部 IP
-            async with self._session.get(
+            async with self.session.get(
                 'https://httpbin.org/ip',
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
