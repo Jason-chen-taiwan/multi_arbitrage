@@ -193,6 +193,21 @@ def register_mm_routes(app, dependencies):
             # 啟動
             await mm_executor.start()
 
+            # 從 config 讀取對沖和即時平倉開關的初始狀態
+            from src.web.auto_dashboard import config_manager as cfg_mgr
+            hedge_enabled = cfg_mgr.get_hedge_enabled()
+            instant_close_enabled = cfg_mgr.get_instant_close_enabled()
+
+            # 互斥檢查：如果兩個都開啟，只保留對沖
+            if hedge_enabled and instant_close_enabled:
+                logger.warning("對沖和即時平倉不能同時開啟，關閉即時平倉")
+                instant_close_enabled = False
+                cfg_mgr.set_instant_close_enabled(False)
+
+            mm_executor.set_hedge_enabled(hedge_enabled)
+            mm_executor.set_instant_close_enabled(instant_close_enabled)
+            logger.info(f"從 config 載入: hedge_enabled={hedge_enabled}, instant_close_enabled={instant_close_enabled}")
+
             # 更新全局狀態
             mm_executor_setter(mm_executor)
             mm_status['running'] = True
@@ -343,20 +358,38 @@ def register_mm_routes(app, dependencies):
 
         Body:
         - enabled: bool - 是否啟用對沖
+
+        注意：對沖和即時平倉互斥，開啟對沖會自動關閉即時平倉
         """
         try:
+            from src.web.auto_dashboard import config_manager
+
             data = await request.json()
             enabled = data.get('enabled', True)
 
-            mm_executor = mm_executor_getter()
-            if not mm_executor:
-                return JSONResponse({'success': False, 'error': '做市商未啟動'})
+            # 保存到 config
+            config_manager.set_hedge_enabled(enabled)
 
-            mm_executor.set_hedge_enabled(enabled)
-            logger.info(f"對沖開關已設置為: {enabled}")
+            # 互斥：開啟對沖時關閉即時平倉
+            instant_close_enabled = False
+            if enabled:
+                config_manager.set_instant_close_enabled(False)
+                instant_close_enabled = False
+            else:
+                instant_close_enabled = config_manager.get_instant_close_enabled()
+
+            # 更新 executor 狀態（如果有運行）
+            mm_executor = mm_executor_getter()
+            if mm_executor:
+                mm_executor.set_hedge_enabled(enabled)
+                if enabled:
+                    mm_executor.set_instant_close_enabled(False)
+
+            logger.info(f"對沖開關已設置為: {enabled}" + (" (即時平倉已自動關閉)" if enabled else ""))
             return JSONResponse({
                 'success': True,
-                'hedge_enabled': enabled
+                'hedge_enabled': enabled,
+                'instant_close_enabled': instant_close_enabled,
             })
         except Exception as e:
             logger.error(f"設置對沖開關失敗: {e}")
@@ -369,20 +402,38 @@ def register_mm_routes(app, dependencies):
 
         Body:
         - enabled: bool - 是否啟用即時平倉（成交後立即市價平倉）
+
+        注意：對沖和即時平倉互斥，開啟即時平倉會自動關閉對沖
         """
         try:
+            from src.web.auto_dashboard import config_manager
+
             data = await request.json()
             enabled = data.get('enabled', False)
 
-            mm_executor = mm_executor_getter()
-            if not mm_executor:
-                return JSONResponse({'success': False, 'error': '做市商未啟動'})
+            # 保存到 config
+            config_manager.set_instant_close_enabled(enabled)
 
-            mm_executor.set_instant_close_enabled(enabled)
-            logger.info(f"即時平倉開關已設置為: {enabled}")
+            # 互斥：開啟即時平倉時關閉對沖
+            hedge_enabled = False
+            if enabled:
+                config_manager.set_hedge_enabled(False)
+                hedge_enabled = False
+            else:
+                hedge_enabled = config_manager.get_hedge_enabled()
+
+            # 更新 executor 狀態（如果有運行）
+            mm_executor = mm_executor_getter()
+            if mm_executor:
+                mm_executor.set_instant_close_enabled(enabled)
+                if enabled:
+                    mm_executor.set_hedge_enabled(False)
+
+            logger.info(f"即時平倉開關已設置為: {enabled}" + (" (對沖已自動關閉)" if enabled else ""))
             return JSONResponse({
                 'success': True,
-                'instant_close_enabled': enabled
+                'instant_close_enabled': enabled,
+                'hedge_enabled': hedge_enabled,
             })
         except Exception as e:
             logger.error(f"設置即時平倉開關失敗: {e}")
@@ -506,16 +557,13 @@ def register_mm_routes(app, dependencies):
         當任一帳戶 margin_ratio > 80% 或 liq_distance_pct < 5% 時自動平倉雙邊倉位。
         """
         try:
-            from src.web.auto_dashboard import liquidation_state, config_manager
+            from src.web.auto_dashboard import config_manager
 
             data = await request.json()
             enabled = data.get('enabled', False)
 
             # 保存到 .env 文件
             config_manager.set_liquidation_protection(enabled)
-
-            # 同時更新運行時狀態
-            liquidation_state['enabled'] = enabled
 
             logger.info(f"[LiquidationProtection] 開關設置為: {enabled}")
 
@@ -531,10 +579,10 @@ def register_mm_routes(app, dependencies):
     async def get_liquidation_protection():
         """獲取爆倉保護狀態"""
         try:
-            from src.web.auto_dashboard import liquidation_state
+            from src.web.auto_dashboard import config_manager, liquidation_state
 
             return JSONResponse({
-                'enabled': liquidation_state['enabled'],
+                'enabled': config_manager.get_liquidation_protection(),
                 'triggered': liquidation_state['triggered'],
                 'last_trigger_time': liquidation_state['last_trigger_time'],
             })

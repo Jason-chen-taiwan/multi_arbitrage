@@ -100,15 +100,19 @@ function MarketMakerPage() {
     }
   }, [mmStatus])
 
-  // Toggle hedge enabled
+  // Toggle hedge enabled (與即時平倉互斥)
   const handleToggleHedge = useCallback(async () => {
     if (!mmStatus?.running) return
     setIsTogglingHedge(true)
     try {
       const newValue = !runtimeHedgeEnabled
-      await mmApi.setHedgeEnabled(newValue)
-      setRuntimeHedgeEnabled(newValue)
-      setMessage({ type: 'success', text: `對沖已${newValue ? '開啟' : '關閉'}` })
+      const response = await mmApi.setHedgeEnabled(newValue)
+      // 從 API 回應中獲取狀態（包含互斥處理結果）
+      const data = response.data as { hedge_enabled: boolean; instant_close_enabled: boolean }
+      setRuntimeHedgeEnabled(data.hedge_enabled)
+      setRuntimeInstantCloseEnabled(data.instant_close_enabled)
+      const msg = newValue ? '對沖已開啟（即時平倉已自動關閉）' : '對沖已關閉'
+      setMessage({ type: 'success', text: msg })
       setTimeout(() => setMessage(null), 2000)
     } catch (error) {
       console.error('Failed to toggle hedge:', error)
@@ -118,15 +122,19 @@ function MarketMakerPage() {
     }
   }, [runtimeHedgeEnabled, mmStatus?.running])
 
-  // Toggle instant close enabled
+  // Toggle instant close enabled (與對沖互斥)
   const handleToggleInstantClose = useCallback(async () => {
     if (!mmStatus?.running) return
     setIsTogglingInstantClose(true)
     try {
       const newValue = !runtimeInstantCloseEnabled
-      await mmApi.setInstantCloseEnabled(newValue)
-      setRuntimeInstantCloseEnabled(newValue)
-      setMessage({ type: 'success', text: `即時平倉已${newValue ? '開啟' : '關閉'}` })
+      const response = await mmApi.setInstantCloseEnabled(newValue)
+      // 從 API 回應中獲取狀態（包含互斥處理結果）
+      const data = response.data as { hedge_enabled: boolean; instant_close_enabled: boolean }
+      setRuntimeInstantCloseEnabled(data.instant_close_enabled)
+      setRuntimeHedgeEnabled(data.hedge_enabled)
+      const msg = newValue ? '即時平倉已開啟（對沖已自動關閉）' : '即時平倉已關閉'
+      setMessage({ type: 'success', text: msg })
       setTimeout(() => setMessage(null), 2000)
     } catch (error) {
       console.error('Failed to toggle instant close:', error)

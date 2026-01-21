@@ -233,6 +233,28 @@ class ConfigManager:
                 'true' if enabled else 'false', quote_mode='never')
         load_dotenv(self.env_file, override=True)
 
+    def get_hedge_enabled(self) -> bool:
+        """獲取對沖開關狀態"""
+        load_dotenv(self.env_file, override=True)
+        return os.getenv('HEDGE_ENABLED', 'false').lower() == 'true'
+
+    def set_hedge_enabled(self, enabled: bool):
+        """設置對沖開關狀態"""
+        set_key(self.env_file, 'HEDGE_ENABLED',
+                'true' if enabled else 'false', quote_mode='never')
+        load_dotenv(self.env_file, override=True)
+
+    def get_instant_close_enabled(self) -> bool:
+        """獲取即時平倉開關狀態"""
+        load_dotenv(self.env_file, override=True)
+        return os.getenv('INSTANT_CLOSE_ENABLED', 'false').lower() == 'true'
+
+    def set_instant_close_enabled(self, enabled: bool):
+        """設置即時平倉開關狀態"""
+        set_key(self.env_file, 'INSTANT_CLOSE_ENABLED',
+                'true' if enabled else 'false', quote_mode='never')
+        load_dotenv(self.env_file, override=True)
+
     def delete_config(self, exchange_name: str, exchange_type: str):
         """刪除配置"""
         # 統一轉換為小寫進行比對

@@ -1558,12 +1558,22 @@
 .toggle-btn.active.danger {
   background: var(--negative-color);
   border-color: var(--negative-color);
-  animation: pulse-danger 1.5s ease-in-out infinite;
+  color: #fff;
+  animation: blink-danger 0.8s ease-in-out infinite;
+  box-shadow: 0 0 8px var(--negative-color);
 }
 
-@keyframes pulse-danger {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+@keyframes blink-danger {
+  0%, 100% {
+    opacity: 1;
+    background: var(--negative-color);
+    box-shadow: 0 0 8px var(--negative-color);
+  }
+  50% {
+    opacity: 1;
+    background: #ff6b6b;
+    box-shadow: 0 0 16px var(--negative-color);
+  }
 }
 
 .control-hint {

@@ -233,8 +233,8 @@ async def broadcast_data():
                     data['mm_status']['hedge_enabled'] = False
                     data['mm_status']['instant_close_enabled'] = False
 
-                # 添加爆倉保護狀態
-                data['mm_status']['liquidation_protection_enabled'] = liquidation_state['enabled']
+                # 添加爆倉保護狀態 (直接從 config 讀取，避免模組重導入問題)
+                data['mm_status']['liquidation_protection_enabled'] = config_manager.get_liquidation_protection()
 
                 # 做市商實時倉位 (統一從 executor.state 讀取)
                 import time as time_module
@@ -399,7 +399,9 @@ async def broadcast_data():
                     standx_risk = positions.get('standx', {}).get('risk_level', 'safe')
                     hedge_risk = positions.get('hedge', {}).get('risk_level', 'safe')
 
-                    if liquidation_state['enabled'] and mm_executor and mm_executor._running:
+                    # 從 config 讀取爆倉保護開關狀態
+                    liq_protection_enabled = config_manager.get_liquidation_protection()
+                    if liq_protection_enabled and mm_executor and mm_executor._running:
                         now = time.time()
                         # 檢查是否任一帳戶處於危險狀態
                         if (standx_risk == 'danger' or hedge_risk == 'danger'):
