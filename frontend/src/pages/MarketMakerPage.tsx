@@ -69,6 +69,8 @@ function MarketMakerPage() {
   const [runtimeHedgeEnabled, setRuntimeHedgeEnabled] = useState(false)
   const [runtimeInstantCloseEnabled, setRuntimeInstantCloseEnabled] = useState(false)
   const [runtimeLiquidationProtection, setRuntimeLiquidationProtection] = useState(false)
+  const [liqMarginThreshold, setLiqMarginThreshold] = useState(80)  // 預設 80%
+  const [liqDistanceThreshold, setLiqDistanceThreshold] = useState(5)  // 預設 5%
   const [isTogglingHedge, setIsTogglingHedge] = useState(false)
   const [isTogglingInstantClose, setIsTogglingInstantClose] = useState(false)
   const [isTogglingLiquidationProtection, setIsTogglingLiquidationProtection] = useState(false)
@@ -149,7 +151,7 @@ function MarketMakerPage() {
     setIsTogglingLiquidationProtection(true)
     try {
       const newValue = !runtimeLiquidationProtection
-      await mmApi.setLiquidationProtection(newValue)
+      await mmApi.setLiquidationProtection({ enabled: newValue })
       setRuntimeLiquidationProtection(newValue)
       setMessage({ type: 'success', text: `爆倉保護已${newValue ? '開啟' : '關閉'}` })
       setTimeout(() => setMessage(null), 2000)
@@ -160,6 +162,21 @@ function MarketMakerPage() {
       setIsTogglingLiquidationProtection(false)
     }
   }, [runtimeLiquidationProtection])
+
+  // Save liquidation protection thresholds
+  const handleSaveLiquidationThresholds = useCallback(async () => {
+    try {
+      await mmApi.setLiquidationProtection({
+        margin_ratio_threshold: liqMarginThreshold,
+        liq_distance_threshold: liqDistanceThreshold,
+      })
+      setMessage({ type: 'success', text: '爆倉保護閾值已儲存' })
+      setTimeout(() => setMessage(null), 2000)
+    } catch (error) {
+      console.error('Failed to save liquidation thresholds:', error)
+      setMessage({ type: 'error', text: '儲存閾值失敗' })
+    }
+  }, [liqMarginThreshold, liqDistanceThreshold])
 
   const loadConfig = async () => {
     try {
@@ -183,6 +200,14 @@ function MarketMakerPage() {
             stable_seconds: response.data.volatility?.stable_seconds ?? defaultConfig.volatility.stable_seconds,
           },
         })
+      }
+
+      // 載入爆倉保護配置
+      const liqResponse = await mmApi.getLiquidationProtection()
+      if (liqResponse.data) {
+        setRuntimeLiquidationProtection(liqResponse.data.enabled ?? false)
+        setLiqMarginThreshold(liqResponse.data.margin_ratio_threshold ?? 80)
+        setLiqDistanceThreshold(liqResponse.data.liq_distance_threshold ?? 5)
       }
     } catch (error) {
       console.error('Failed to load config:', error)
@@ -573,19 +598,54 @@ function MarketMakerPage() {
             {!mmStatus?.running ? '啟動後可用' : (runtimeInstantCloseEnabled ? '成交後立即市價平倉' : '正常模式')}
           </span>
         </div>
-        <div className="runtime-control">
-          <span className="control-label">爆倉保護</span>
-          <button
-            className={`toggle-btn ${runtimeLiquidationProtection ? 'active danger' : ''}`}
-            onClick={handleToggleLiquidationProtection}
-            disabled={isTogglingLiquidationProtection}
-            title={runtimeLiquidationProtection ? '點擊關閉爆倉保護' : '點擊開啟爆倉保護'}
-          >
-            {isTogglingLiquidationProtection ? '...' : (runtimeLiquidationProtection ? 'ON' : 'OFF')}
-          </button>
-          <span className="control-hint">
-            {runtimeLiquidationProtection ? 'margin>80% 或 清算距離<5% 時自動雙邊平倉' : '關閉中'}
-          </span>
+        <div className={`liquidation-protection-box ${runtimeLiquidationProtection ? 'active' : ''}`}>
+          <div className="liq-header">
+            <span className="liq-title">🛡️ 爆倉保護</span>
+            <button
+              className={`toggle-btn ${runtimeLiquidationProtection ? 'active danger' : ''}`}
+              onClick={handleToggleLiquidationProtection}
+              disabled={isTogglingLiquidationProtection}
+              title={runtimeLiquidationProtection ? '點擊關閉爆倉保護' : '點擊開啟爆倉保護'}
+            >
+              {isTogglingLiquidationProtection ? '...' : (runtimeLiquidationProtection ? 'ON' : 'OFF')}
+            </button>
+          </div>
+          <div className="liq-thresholds">
+            <div className="liq-threshold-item">
+              <span className="liq-threshold-label">Margin 閾值</span>
+              <div className="liq-threshold-input">
+                <input
+                  type="number"
+                  value={liqMarginThreshold}
+                  onChange={(e) => setLiqMarginThreshold(Number(e.target.value))}
+                  min={50}
+                  max={100}
+                />
+                <span className="liq-unit">%</span>
+              </div>
+            </div>
+            <div className="liq-threshold-item">
+              <span className="liq-threshold-label">清算距離</span>
+              <div className="liq-threshold-input">
+                <input
+                  type="number"
+                  value={liqDistanceThreshold}
+                  onChange={(e) => setLiqDistanceThreshold(Number(e.target.value))}
+                  min={1}
+                  max={20}
+                />
+                <span className="liq-unit">%</span>
+              </div>
+            </div>
+            <button className="liq-save-btn" onClick={handleSaveLiquidationThresholds}>
+              儲存
+            </button>
+          </div>
+          {runtimeLiquidationProtection && (
+            <div className="liq-status">
+              ⚡ 當 Margin &gt; {liqMarginThreshold}% 或 清算距離 &lt; {liqDistanceThreshold}% 時自動平倉
+            </div>
+          )}
         </div>
       </div>
 

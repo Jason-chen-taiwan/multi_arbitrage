@@ -255,6 +255,28 @@ class ConfigManager:
                 'true' if enabled else 'false', quote_mode='never')
         load_dotenv(self.env_file, override=True)
 
+    def get_liquidation_protection_config(self) -> dict:
+        """獲取爆倉保護配置（包含閾值）"""
+        load_dotenv(self.env_file, override=True)
+        return {
+            'enabled': os.getenv('LIQUIDATION_PROTECTION_ENABLED', 'false').lower() == 'true',
+            'margin_ratio_threshold': float(os.getenv('LIQ_MARGIN_RATIO_THRESHOLD', '80')),  # 百分比
+            'liq_distance_threshold': float(os.getenv('LIQ_DISTANCE_THRESHOLD', '5')),  # 百分比
+        }
+
+    def set_liquidation_protection_config(self, enabled: bool = None, margin_ratio: float = None, liq_distance: float = None):
+        """設置爆倉保護配置"""
+        if enabled is not None:
+            set_key(self.env_file, 'LIQUIDATION_PROTECTION_ENABLED',
+                    'true' if enabled else 'false', quote_mode='never')
+        if margin_ratio is not None:
+            set_key(self.env_file, 'LIQ_MARGIN_RATIO_THRESHOLD',
+                    str(margin_ratio), quote_mode='never')
+        if liq_distance is not None:
+            set_key(self.env_file, 'LIQ_DISTANCE_THRESHOLD',
+                    str(liq_distance), quote_mode='never')
+        load_dotenv(self.env_file, override=True)
+
     def delete_config(self, exchange_name: str, exchange_type: str):
         """刪除配置"""
         # 統一轉換為小寫進行比對

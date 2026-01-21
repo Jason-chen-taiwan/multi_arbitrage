@@ -1588,3 +1588,115 @@
     align-items: flex-start;
   }
 }
+
+/* Liquidation Protection Box */
+.liquidation-protection-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-color);
+  transition: all 0.3s ease;
+  min-width: 280px;
+}
+
+.liquidation-protection-box.active {
+  border-color: var(--negative-color);
+  background: rgba(255, 82, 82, 0.08);
+  box-shadow: 0 0 12px rgba(255, 82, 82, 0.2);
+}
+
+.liq-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.liq-title {
+  font-weight: 700;
+  font-size: var(--font-md);
+  color: var(--text-primary);
+}
+
+.liq-thresholds {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.liq-threshold-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.liq-threshold-label {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.liq-threshold-input {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.liq-threshold-input input {
+  width: 55px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+.liq-threshold-input input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.liq-unit {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.liq-save-btn {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.liq-save-btn:hover {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: white;
+}
+
+.liq-status {
+  font-size: var(--font-xs);
+  color: var(--negative-color);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: rgba(255, 82, 82, 0.1);
+  border-radius: var(--radius-sm);
+  animation: pulse-status 2s ease-in-out infinite;
+}
+
+@keyframes pulse-status {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}

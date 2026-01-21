@@ -552,24 +552,37 @@ def register_mm_routes(app, dependencies):
     @router.post("/liquidation-protection")
     async def set_liquidation_protection(request: Request):
         """
-        設置爆倉保護開關
+        設置爆倉保護配置
 
-        當任一帳戶 margin_ratio > 80% 或 liq_distance_pct < 5% 時自動平倉雙邊倉位。
+        Body:
+        - enabled: bool - 是否啟用爆倉保護
+        - margin_ratio_threshold: float - margin ratio 閾值（百分比，預設 80）
+        - liq_distance_threshold: float - 清算距離閾值（百分比，預設 5）
+
+        觸發條件：當任一帳戶超過閾值時，自動平倉該帳戶倉位。
         """
         try:
             from src.web.auto_dashboard import config_manager
 
             data = await request.json()
-            enabled = data.get('enabled', False)
+            enabled = data.get('enabled')
+            margin_ratio = data.get('margin_ratio_threshold')
+            liq_distance = data.get('liq_distance_threshold')
 
             # 保存到 .env 文件
-            config_manager.set_liquidation_protection(enabled)
+            config_manager.set_liquidation_protection_config(
+                enabled=enabled,
+                margin_ratio=margin_ratio,
+                liq_distance=liq_distance,
+            )
 
-            logger.info(f"[LiquidationProtection] 開關設置為: {enabled}")
+            # 取得更新後的完整配置
+            new_config = config_manager.get_liquidation_protection_config()
+            logger.info(f"[LiquidationProtection] 配置已更新: {new_config}")
 
             return JSONResponse({
                 'success': True,
-                'enabled': enabled,
+                **new_config,
             })
         except Exception as e:
             logger.error(f"設置爆倉保護失敗: {e}")
@@ -577,12 +590,13 @@ def register_mm_routes(app, dependencies):
 
     @router.get("/liquidation-protection")
     async def get_liquidation_protection():
-        """獲取爆倉保護狀態"""
+        """獲取爆倉保護配置和狀態"""
         try:
             from src.web.auto_dashboard import config_manager, liquidation_state
 
+            config = config_manager.get_liquidation_protection_config()
             return JSONResponse({
-                'enabled': config_manager.get_liquidation_protection(),
+                **config,
                 'triggered': liquidation_state['triggered'],
                 'last_trigger_time': liquidation_state['last_trigger_time'],
             })

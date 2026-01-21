@@ -75,8 +75,11 @@ export const mmApi = {
     apiClient.post('/mm/runtime/instant-close', { enabled }),
   // Liquidation protection
   getLiquidationProtection: () => apiClient.get('/mm/liquidation-protection'),
-  setLiquidationProtection: (enabled: boolean) =>
-    apiClient.post('/mm/liquidation-protection', { enabled }),
+  setLiquidationProtection: (config: {
+    enabled?: boolean
+    margin_ratio_threshold?: number
+    liq_distance_threshold?: number
+  }) => apiClient.post('/mm/liquidation-protection', config),
 }
 
 // Simulation endpoints

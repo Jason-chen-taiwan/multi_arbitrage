@@ -263,6 +263,13 @@ async def broadcast_data():
                         'seconds_ago': seconds_ago,
                     }
 
+                    # 讀取爆倉保護閾值配置
+                    liq_config = config_manager.get_liquidation_protection_config()
+                    danger_margin_ratio = liq_config['margin_ratio_threshold'] / 100  # 轉為小數
+                    danger_liq_distance = liq_config['liq_distance_threshold']  # 百分比
+                    warning_margin_ratio = danger_margin_ratio * 0.625  # 預設 50% (80% * 0.625)
+                    warning_liq_distance = danger_liq_distance * 2  # 預設 10% (5% * 2)
+
                     # 餘額、PnL 和風險數據從 adapter 查詢（帶緩存避免 rate limiting）
                     if 'STANDX' in adapters:
                         now = time.time()
@@ -294,11 +301,11 @@ async def broadcast_data():
                                         liq_price = float(pos.liquidation_price)
                                         liq_distance_pct = abs(float(pos.mark_price) - liq_price) / float(pos.mark_price) * 100
 
-                                # 風險等級判斷
+                                # 風險等級判斷（使用可配置閾值）
                                 risk_level = 'safe'
-                                if margin_ratio > 0.8 or (liq_distance_pct is not None and liq_distance_pct < 5):
+                                if margin_ratio > danger_margin_ratio or (liq_distance_pct is not None and liq_distance_pct < danger_liq_distance):
                                     risk_level = 'danger'
-                                elif margin_ratio > 0.5 or (liq_distance_pct is not None and liq_distance_pct < 10):
+                                elif margin_ratio > warning_margin_ratio or (liq_distance_pct is not None and liq_distance_pct < warning_liq_distance):
                                     risk_level = 'warning'
 
                                 standx_data = {
@@ -353,11 +360,11 @@ async def broadcast_data():
                                         liq_price = float(pos.liquidation_price)
                                         liq_distance_pct = abs(float(pos.mark_price) - liq_price) / float(pos.mark_price) * 100
 
-                                # 風險等級判斷
+                                # 風險等級判斷（使用可配置閾值）
                                 risk_level = 'safe'
-                                if margin_ratio > 0.8 or (liq_distance_pct is not None and liq_distance_pct < 5):
+                                if margin_ratio > danger_margin_ratio or (liq_distance_pct is not None and liq_distance_pct < danger_liq_distance):
                                     risk_level = 'danger'
-                                elif margin_ratio > 0.5 or (liq_distance_pct is not None and liq_distance_pct < 10):
+                                elif margin_ratio > warning_margin_ratio or (liq_distance_pct is not None and liq_distance_pct < warning_liq_distance):
                                     risk_level = 'warning'
 
                                 hedge_data = {
@@ -399,27 +406,34 @@ async def broadcast_data():
                     standx_risk = positions.get('standx', {}).get('risk_level', 'safe')
                     hedge_risk = positions.get('hedge', {}).get('risk_level', 'safe')
 
-                    # 從 config 讀取爆倉保護開關狀態
-                    liq_protection_enabled = config_manager.get_liquidation_protection()
-                    if liq_protection_enabled and mm_executor and mm_executor._running:
+                    # 使用已讀取的爆倉保護配置
+                    if liq_config['enabled'] and mm_executor and mm_executor._running:
                         now = time.time()
                         # 檢查是否任一帳戶處於危險狀態
-                        if (standx_risk == 'danger' or hedge_risk == 'danger'):
+                        primary_danger = standx_risk == 'danger'
+                        hedge_danger = hedge_risk == 'danger'
+
+                        if primary_danger or hedge_danger:
                             # 檢查冷卻期
                             if now - liquidation_state['last_trigger_time'] > liquidation_state['cooldown_sec']:
                                 logger.warning(f"[LiquidationProtection] 檢測到爆倉風險! standx={standx_risk}, hedge={hedge_risk}")
-                                # 觸發緊急平倉
+                                # 觸發緊急平倉（只平有危險的帳戶）
                                 reason_parts = []
-                                if standx_risk == 'danger':
+                                if primary_danger:
                                     standx_data = positions.get('standx', {})
                                     reason_parts.append(f"主帳戶: margin={standx_data.get('margin_ratio', 0)*100:.1f}%, liq_dist={standx_data.get('liq_distance_pct', 'N/A')}")
-                                if hedge_risk == 'danger':
+                                if hedge_danger:
                                     hedge_data = positions.get('hedge', {})
                                     reason_parts.append(f"對沖帳戶: margin={hedge_data.get('margin_ratio', 0)*100:.1f}%, liq_dist={hedge_data.get('liq_distance_pct', 'N/A')}")
 
                                 reason = "; ".join(reason_parts)
                                 try:
-                                    result = await mm_executor.emergency_close_all(reason=reason)
+                                    # 只平有危險的帳戶
+                                    result = await mm_executor.emergency_close_all(
+                                        reason=reason,
+                                        close_primary=primary_danger,
+                                        close_hedge=hedge_danger,
+                                    )
                                     logger.warning(f"[LiquidationProtection] 緊急平倉結果: {result}")
                                     liquidation_state['last_trigger_time'] = now
                                     liquidation_state['triggered'] = True
