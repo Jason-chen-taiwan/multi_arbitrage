@@ -56,6 +56,10 @@ _orderbook_cache_ttl = 2.0  # 緩存 2 秒
 _risk_data_cache: Dict[str, dict] = {}  # {account_name: {'data': ..., 'timestamp': ...}}
 _risk_data_cache_ttl = 5.0  # 緩存 5 秒，降低 API 請求頻率
 
+# 警告日誌頻率限制 (避免刷屏)
+_warning_log_last_time: Dict[str, float] = {}
+_warning_log_interval = 60.0  # 每 60 秒最多警告一次
+
 # 爆倉保護狀態 (使用 dict 來避免模組重導入問題)
 # 從環境變數讀取初始狀態
 liquidation_state = {
@@ -332,6 +336,7 @@ async def broadcast_data():
 
                     # 對沖帳戶 (STANDX_HEDGE)
                     if 'STANDX_HEDGE' in adapters:
+                        logger.debug(f"STANDX_HEDGE adapter found, fetching data...")
                         now = time.time()
                         cache_key = 'STANDX_HEDGE'
                         cached = _risk_data_cache.get(cache_key)
@@ -383,11 +388,34 @@ async def broadcast_data():
                                 # 更新緩存
                                 _risk_data_cache[cache_key] = {'data': hedge_data, 'timestamp': now}
                             except Exception as e:
-                                logger.debug(f"查詢對沖帳戶風險數據失敗: {e}")
+                                logger.warning(f"查詢對沖帳戶風險數據失敗: {e}")
                                 # 如果查詢失敗但有緩存，繼續使用緩存
                                 if cached:
                                     positions['hedge'] = cached['data'].copy()
                                     positions['hedge']['btc'] = hedge_pos
+                                else:
+                                    # 無緩存時設置錯誤狀態
+                                    positions['hedge'] = {
+                                        'btc': hedge_pos,
+                                        'error': str(e),
+                                        'equity': 0,
+                                        'pnl': 0,
+                                        'margin_ratio': 0,
+                                    }
+                    else:
+                        # STANDX_HEDGE 未連接 - 頻率限制警告日誌
+                        warn_key = 'STANDX_HEDGE_not_connected'
+                        now = time.time()
+                        if now - _warning_log_last_time.get(warn_key, 0) > _warning_log_interval:
+                            logger.warning("STANDX_HEDGE adapter 未連接，對沖帳戶資料無法取得。請檢查配置並重新連接。")
+                            _warning_log_last_time[warn_key] = now
+                        positions['hedge'] = {
+                            'btc': hedge_pos,
+                            'error': 'STANDX_HEDGE 未連接',
+                            'equity': 0,
+                            'pnl': 0,
+                            'margin_ratio': 0,
+                        }
 
                     # GRVT 帳戶 (兼容舊版)
                     if 'GRVT' in adapters:
