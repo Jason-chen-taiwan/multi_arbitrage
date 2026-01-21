@@ -41,7 +41,6 @@ function Layout() {
           {mmStatus && (
             <span className={`mm-status-badge ${mmStatus.running ? 'running' : 'stopped'}`}>
               MM: {mmStatus.running ? t.common.running : t.common.stopped}
-              {mmStatus.dry_run && ` (${t.mm.dryRunMode})`}
             </span>
           )}
         </div>

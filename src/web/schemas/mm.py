@@ -16,8 +16,7 @@ from pydantic import BaseModel, Field
 
 
 class MMStartRequest(BaseModel):
-    """Request body for POST /api/mm/start."""
-    dry_run: bool = Field(default=True, description="Whether to run in dry-run mode (no real orders)")
+    """Request body for POST /api/mm/start. All trading is live."""
     order_size: Optional[float] = Field(default=None, description="Order size in BTC (uses config default if not set)")
     order_distance: Optional[int] = Field(default=None, description="Order distance in basis points (uses config default if not set)")
 
@@ -45,8 +44,8 @@ class VolatilityConfig(BaseModel):
 
 
 class ExecutionConfig(BaseModel):
-    """Execution-related configuration."""
-    dry_run: bool = Field(default=True, description="Whether to run in dry-run mode")
+    """Execution-related configuration (deprecated - all trading is live)."""
+    pass  # All fields removed - kept for backwards compatibility
 
 
 class MMConfigResponse(BaseModel):
@@ -97,7 +96,7 @@ class MMStatusResponse(BaseModel):
     """Response for GET /api/mm/status."""
     running: bool = Field(..., description="Whether market maker is running")
     status: str = Field(default="stopped", description="Current status: running, stopped, etc.")
-    dry_run: bool = Field(default=True, description="Whether running in dry-run mode")
+    hedge_target: str = Field(default="none", description="Hedge target: grvt, standx_hedge, or none")
     order_size_btc: float = Field(default=0.0, description="Current order size in BTC")
     order_distance_bps: int = Field(default=0, description="Current order distance in basis points")
     cancel_distance_bps: int = Field(default=0, description="Current cancel distance in basis points")
@@ -111,7 +110,7 @@ class MMStatusResponse(BaseModel):
                 {
                     "running": True,
                     "status": "running",
-                    "dry_run": False,
+                    "hedge_target": "standx_hedge",
                     "order_size_btc": 0.001,
                     "order_distance_bps": 8,
                     "cancel_distance_bps": 3,

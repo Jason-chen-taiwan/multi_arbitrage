@@ -27,9 +27,15 @@ interface MMConfig {
     resume_threshold_bps: number
     stable_seconds: number
   }
-  execution: {
-    dry_run: boolean
-  }
+}
+
+interface HedgeStats {
+  total_attempts: number
+  total_success: number
+  total_failed: number
+  total_fallback: number
+  success_rate: number
+  avg_latency_ms: number | null
 }
 
 const defaultConfig: MMConfig = {
@@ -48,9 +54,6 @@ const defaultConfig: MMConfig = {
     threshold_bps: 4,
     resume_threshold_bps: 3,
     stable_seconds: 2,
-  },
-  execution: {
-    dry_run: false,
   },
 }
 
@@ -73,15 +76,6 @@ function MarketMakerPage() {
     loadConfig()
   }, [])
 
-  // Sync local config with backend mmStatus.dry_run when MM is running
-  useEffect(() => {
-    if (mmStatus?.running && mmStatus?.dry_run !== undefined) {
-      setConfig(prev => ({
-        ...prev,
-        execution: { ...prev.execution, dry_run: mmStatus.dry_run }
-      }))
-    }
-  }, [mmStatus?.running, mmStatus?.dry_run])
 
   const loadConfig = async () => {
     try {
@@ -103,9 +97,6 @@ function MarketMakerPage() {
             threshold_bps: response.data.volatility?.threshold_bps ?? defaultConfig.volatility.threshold_bps,
             resume_threshold_bps: response.data.volatility?.resume_threshold_bps ?? defaultConfig.volatility.resume_threshold_bps,
             stable_seconds: response.data.volatility?.stable_seconds ?? defaultConfig.volatility.stable_seconds,
-          },
-          execution: {
-            dry_run: response.data.execution?.dry_run ?? defaultConfig.execution.dry_run,
           },
         })
       }
@@ -146,7 +137,7 @@ function MarketMakerPage() {
   const handleStart = async () => {
     setIsLoading(true)
     try {
-      await mmApi.start({ dry_run: config.execution.dry_run })
+      await mmApi.start({})
     } catch (error) {
       console.error('Failed to start MM:', error)
     } finally {
@@ -264,9 +255,11 @@ function MarketMakerPage() {
   const updateVolatility = (key: keyof MMConfig['volatility'], value: number) => {
     setConfig(prev => ({ ...prev, volatility: { ...prev.volatility, [key]: value } }))
   }
-  const updateExecution = (key: keyof MMConfig['execution'], value: boolean) => {
-    setConfig(prev => ({ ...prev, execution: { ...prev.execution, [key]: value } }))
-  }
+
+  // Extract hedge stats from executor
+  const hedgeStats = (state?.hedge_stats as HedgeStats) || null
+  const hedgeTarget = mmStatus?.hedge_target as string || 'none'
+  const hedgeEnabled = hedgeTarget !== 'none'
 
   return (
     <div className="page">
@@ -439,27 +432,9 @@ function MarketMakerPage() {
             </div>
           </div>
 
-          {/* Execution Control */}
-          <div className="config-section execution-section">
-            <h4>{t.mm.executionControl}</h4>
-            <div className="execution-mode-toggle">
-              <div className={`mode-option ${config.execution.dry_run ? 'active' : ''}`}>
-                <span className="mode-icon">🧪</span>
-                <span className="mode-label">{t.mm.dryRunMode}</span>
-              </div>
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={!config.execution.dry_run}
-                  onChange={(e) => updateExecution('dry_run', !e.target.checked)}
-                />
-                <span className="toggle-slider"></span>
-              </label>
-              <div className={`mode-option ${!config.execution.dry_run ? 'active live' : ''}`}>
-                <span className="mode-icon">💰</span>
-                <span className="mode-label">{t.mm.liveTrading}</span>
-              </div>
-            </div>
+          {/* Config Actions */}
+          <div className="config-section">
+            <h4>配置操作</h4>
             <div className="config-buttons">
               <button
                 className="btn btn-primary"
@@ -488,9 +463,7 @@ function MarketMakerPage() {
           <div className={`card-value ${mmStatus?.running ? 'text-positive' : 'text-negative'}`}>
             {mmStatus?.running ? t.common.running : t.common.stopped}
           </div>
-          <div className="card-subtitle">
-            {mmStatus?.dry_run ? t.mm.dryRunMode : t.mm.liveTrading}
-          </div>
+          <div className="card-subtitle">實盤交易</div>
         </div>
 
         <div className="card">
@@ -521,6 +494,17 @@ function MarketMakerPage() {
           <div className="card-title">{t.mm.fills}</div>
           <div className="card-value">{fillCount}</div>
           <div className="card-subtitle">{t.mm.totalFills}</div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">對沖狀態</div>
+          <div className={`card-value ${hedgeEnabled ? 'text-positive' : 'text-muted'}`}>
+            {hedgeEnabled ? '已啟用' : '未啟用'}
+          </div>
+          <div className="card-subtitle">
+            {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' :
+             hedgeTarget === 'grvt' ? 'GRVT' : '不對沖'}
+          </div>
         </div>
       </div>
 
@@ -905,7 +889,9 @@ function MarketMakerPage() {
               </span>
             </div>
             <div className="metric-row">
-              <span className="metric-label">GRVT BTC</span>
+              <span className="metric-label">
+                {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'} BTC
+              </span>
               <span className="metric-value">
                 {mmPositions?.grvt?.btc?.toFixed(6) || '0.000000'}
               </span>
@@ -926,6 +912,49 @@ function MarketMakerPage() {
             </div>
           </div>
         </div>
+
+        {/* Hedge Stats */}
+        {hedgeEnabled && (
+          <div className="panel full-width">
+            <h3>對沖統計</h3>
+            <div className="positions-grid">
+              <div className="metric-row">
+                <span className="metric-label">對沖目標</span>
+                <span className="metric-value">
+                  {hedgeTarget === 'standx_hedge' ? 'StandX 對沖帳戶' : 'GRVT'}
+                </span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">總嘗試次數</span>
+                <span className="metric-value">{hedgeStats?.total_attempts || 0}</span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">成功 / 失敗</span>
+                <span className="metric-value">
+                  <span className="text-positive">{hedgeStats?.total_success || 0}</span>
+                  {' / '}
+                  <span className="text-negative">{hedgeStats?.total_failed || 0}</span>
+                </span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">成功率</span>
+                <span className={`metric-value ${(hedgeStats?.success_rate || 0) >= 0.9 ? 'text-positive' : 'text-warning'}`}>
+                  {((hedgeStats?.success_rate || 0) * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">Fallback 次數</span>
+                <span className="metric-value">{hedgeStats?.total_fallback || 0}</span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">平均延遲</span>
+                <span className="metric-value">
+                  {hedgeStats?.avg_latency_ms ? `${hedgeStats.avg_latency_ms.toFixed(0)} ms` : 'N/A'}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Fill History */}
         <div className="panel full-width">
@@ -1025,10 +1054,11 @@ function MarketMakerPage() {
       {/* Footer Status Bar */}
       <div className="status-bar">
         <span>StandX: {mmPositions?.standx?.btc?.toFixed(4) || '0.0000'} BTC</span>
-        <span>GRVT: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC</span>
+        <span>
+          {hedgeTarget === 'standx_hedge' ? '對沖帳戶' : 'GRVT'}: {mmPositions?.grvt?.btc?.toFixed(4) || '0.0000'} BTC
+        </span>
         <span>{t.mm.netExposure}: {mmPositions?.net_btc?.toFixed(4) || '0.0000'}</span>
-        <span>StandX {t.mm.equity}: ${mmPositions?.standx?.equity?.toFixed(2) || '0.00'}</span>
-        <span>GRVT USDT: ${mmPositions?.grvt?.usdt?.toFixed(2) || '0.00'}</span>
+        <span>對沖: {hedgeEnabled ? (hedgeTarget === 'standx_hedge' ? 'StandX' : 'GRVT') : '關閉'}</span>
         <span className="sync-status">
           {t.mm.sync}: {mmPositions?.seconds_ago ? `${mmPositions.seconds_ago.toFixed(1)}${t.common.syncAgo}` : 'N/A'}
         </span>

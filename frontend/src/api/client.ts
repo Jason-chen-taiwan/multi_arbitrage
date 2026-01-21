@@ -56,7 +56,7 @@ export const controlApi = {
 
 // Market Maker endpoints
 export const mmApi = {
-  start: (data: { dry_run?: boolean; order_size?: number; order_distance?: number }) =>
+  start: (data: { order_size?: number; order_distance?: number }) =>
     apiClient.post('/mm/start', data),
   stop: () => apiClient.post('/mm/stop'),
   status: () => apiClient.get('/mm/status'),
@@ -64,6 +64,9 @@ export const mmApi = {
   getConfig: () => apiClient.get('/mm/config'),
   updateConfig: (data: Record<string, unknown>) => apiClient.post('/mm/config', data),
   reloadConfig: () => apiClient.post('/mm/config/reload'),
+  // Close all positions with market orders
+  closeAllPositions: (account: 'main' | 'hedge' | 'both') =>
+    apiClient.post('/mm/close-positions', { account }),
 }
 
 // Simulation endpoints

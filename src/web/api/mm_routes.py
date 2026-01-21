@@ -56,8 +56,8 @@ def register_mm_routes(app, dependencies):
         啟動做市商
 
         啟動 StandX 做市商執行器。如果已有執行器運行，會先停止它。
+        所有交易均為實盤交易。
 
-        - **dry_run**: 是否為模擬模式（不會實際下單）
         - **order_size**: 訂單大小（BTC），使用配置預設值如未指定
         - **order_distance**: 訂單距離（基點），使用配置預設值如未指定
         """
@@ -71,8 +71,6 @@ def register_mm_routes(app, dependencies):
                 except Exception as e:
                     logger.warning(f"停止現有執行器時發生錯誤: {e}")
                 mm_executor_setter(None)
-
-            dry_run = request_data.dry_run
 
             # 從保存的配置讀取參數
             config_manager = get_mm_config()
@@ -124,7 +122,7 @@ def register_mm_routes(app, dependencies):
                 hedge_exchange = "grvt"
             # hedge_target == 'none' 時 hedge_adapter 保持 None
 
-            # 創建配置（使用保存的報價參數）
+            # 創建配置（使用保存的報價參數）- 全部實盤交易
             config = MMConfig(
                 symbol="BTC-USD",
                 hedge_symbol=hedge_symbol,
@@ -137,7 +135,7 @@ def register_mm_routes(app, dependencies):
                 # 硬停參數（根據 max_position 動態計算）
                 hard_stop_position_btc=hard_stop_position,
                 resume_position_btc=resume_position,
-                dry_run=dry_run,
+                dry_run=False,  # 全部實盤交易
                 # 波動率參數
                 volatility_window_sec=volatility_window,
                 volatility_threshold_bps=volatility_threshold,
@@ -199,14 +197,14 @@ def register_mm_routes(app, dependencies):
             mm_executor_setter(mm_executor)
             mm_status['running'] = True
             mm_status['status'] = 'running'
-            mm_status['dry_run'] = dry_run
+            mm_status['hedge_target'] = hedge_target
             mm_status['order_size_btc'] = float(order_size)
             mm_status['order_distance_bps'] = order_distance
             mm_status['cancel_distance_bps'] = cancel_distance
             mm_status['rebalance_distance_bps'] = rebalance_distance
             mm_status['max_position_btc'] = float(max_position)
 
-            logger.info(f"做市商已啟動 (dry_run={dry_run}, order_dist={order_distance}bps)")
+            logger.info(f"做市商已啟動 (實盤交易, hedge_target={hedge_target}, order_dist={order_distance}bps)")
             return JSONResponse({'success': True})
 
         except Exception as e:
@@ -336,6 +334,93 @@ def register_mm_routes(app, dependencies):
             config_manager.reload()
             return JSONResponse({'success': True, 'config': config_manager.get_dict()})
         except Exception as e:
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+    @router.post("/close-positions", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def close_all_positions(request: Request):
+        """
+        即時市價平倉
+
+        使用市價單平掉指定帳戶的所有倉位。
+
+        Body:
+        - account: "main" | "hedge" | "both"
+        """
+        try:
+            data = await request.json()
+            account = data.get('account', 'both')
+            adapters = adapters_getter()
+
+            results = {}
+            symbol = "BTC-USD"
+
+            # 平掉主帳戶倉位
+            if account in ('main', 'both') and 'STANDX' in adapters:
+                standx = adapters['STANDX']
+                try:
+                    positions = await standx.get_positions(symbol)
+                    for pos in positions:
+                        if pos.symbol == symbol and pos.size > 0:
+                            close_side = "sell" if pos.side == "long" else "buy"
+                            order = await standx.place_order(
+                                symbol=symbol,
+                                side=close_side,
+                                order_type="market",
+                                quantity=pos.size,
+                            )
+                            results['main'] = {
+                                'success': True,
+                                'closed_size': float(pos.size),
+                                'side': close_side,
+                                'order_id': getattr(order, 'order_id', None)
+                            }
+                            logger.info(f"主帳戶平倉: {close_side} {pos.size} BTC")
+                            break
+                    else:
+                        results['main'] = {'success': True, 'closed_size': 0, 'message': '無倉位'}
+                except Exception as e:
+                    results['main'] = {'success': False, 'error': str(e)}
+                    logger.error(f"主帳戶平倉失敗: {e}")
+
+            # 平掉對沖帳戶倉位
+            hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+            hedge_key = 'STANDX_HEDGE' if hedge_target == 'standx_hedge' else 'GRVT'
+
+            if account in ('hedge', 'both') and hedge_key in adapters:
+                hedge_adapter = adapters[hedge_key]
+                hedge_symbol = symbol if hedge_target == 'standx_hedge' else "BTC_USDT_Perp"
+                try:
+                    positions = await hedge_adapter.get_positions(hedge_symbol)
+                    for pos in positions:
+                        if pos.symbol == hedge_symbol and pos.size > 0:
+                            close_side = "sell" if pos.side == "long" else "buy"
+                            order = await hedge_adapter.place_order(
+                                symbol=hedge_symbol,
+                                side=close_side,
+                                order_type="market",
+                                quantity=pos.size,
+                            )
+                            results['hedge'] = {
+                                'success': True,
+                                'closed_size': float(pos.size),
+                                'side': close_side,
+                                'order_id': getattr(order, 'order_id', None)
+                            }
+                            logger.info(f"對沖帳戶平倉: {close_side} {pos.size}")
+                            break
+                    else:
+                        results['hedge'] = {'success': True, 'closed_size': 0, 'message': '無倉位'}
+                except Exception as e:
+                    results['hedge'] = {'success': False, 'error': str(e)}
+                    logger.error(f"對沖帳戶平倉失敗: {e}")
+
+            success = all(r.get('success', False) for r in results.values()) if results else False
+            return JSONResponse({
+                'success': success,
+                'results': results
+            })
+        except Exception as e:
+            logger.error(f"平倉失敗: {e}")
             return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
     app.include_router(router)

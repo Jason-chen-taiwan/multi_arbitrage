@@ -40,7 +40,7 @@ export interface WebSocketData {
   mm_status: {
     running: boolean
     status: string
-    dry_run: boolean
+    hedge_target: string
     order_size_btc: number
     order_distance_bps: number
   }

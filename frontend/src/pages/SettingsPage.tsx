@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { configApi, controlApi } from '../api/client'
+import { configApi, controlApi, mmApi } from '../api/client'
 import { useI18n } from '../i18n'
 import './Page.css'
 
@@ -504,6 +504,82 @@ function SettingsPage() {
               {isLoading ? t.common.loading : '保存對沖配置'}
             </button>
           </form>
+        </div>
+
+        {/* Instant Close Position */}
+        <div className="panel">
+          <h3>即時平倉</h3>
+          <p className="form-hint" style={{ marginBottom: 'var(--spacing-md)' }}>
+            使用市價單立即平掉所有倉位。此操作不可逆，請謹慎使用。
+          </p>
+          <div className="button-group">
+            <button
+              className="btn btn-warning"
+              onClick={async () => {
+                if (!confirm('確定要平掉主帳戶所有倉位嗎？')) return
+                setIsLoading(true)
+                try {
+                  const response = await mmApi.closeAllPositions('main')
+                  if (response.data.success) {
+                    setMessage({ type: 'success', text: '主帳戶平倉成功' })
+                  } else {
+                    setMessage({ type: 'error', text: response.data.error || '平倉失敗' })
+                  }
+                } catch {
+                  setMessage({ type: 'error', text: '平倉請求失敗' })
+                } finally {
+                  setIsLoading(false)
+                }
+              }}
+              disabled={isLoading}
+            >
+              平倉主帳戶
+            </button>
+            <button
+              className="btn btn-warning"
+              onClick={async () => {
+                if (!confirm('確定要平掉對沖帳戶所有倉位嗎？')) return
+                setIsLoading(true)
+                try {
+                  const response = await mmApi.closeAllPositions('hedge')
+                  if (response.data.success) {
+                    setMessage({ type: 'success', text: '對沖帳戶平倉成功' })
+                  } else {
+                    setMessage({ type: 'error', text: response.data.error || '平倉失敗' })
+                  }
+                } catch {
+                  setMessage({ type: 'error', text: '平倉請求失敗' })
+                } finally {
+                  setIsLoading(false)
+                }
+              }}
+              disabled={isLoading}
+            >
+              平倉對沖帳戶
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={async () => {
+                if (!confirm('確定要平掉所有帳戶的倉位嗎？這將同時平掉主帳戶和對沖帳戶的所有倉位！')) return
+                setIsLoading(true)
+                try {
+                  const response = await mmApi.closeAllPositions('both')
+                  if (response.data.success) {
+                    setMessage({ type: 'success', text: '所有帳戶平倉成功' })
+                  } else {
+                    setMessage({ type: 'error', text: response.data.error || '平倉失敗' })
+                  }
+                } catch {
+                  setMessage({ type: 'error', text: '平倉請求失敗' })
+                } finally {
+                  setIsLoading(false)
+                }
+              }}
+              disabled={isLoading}
+            >
+              平倉所有帳戶
+            </button>
+          </div>
         </div>
 
         {/* System Controls */}
