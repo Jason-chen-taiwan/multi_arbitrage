@@ -118,14 +118,19 @@ class SystemManager:
                         'exchange_name': 'standx',
                         'api_token': hedge_token,
                         'ed25519_private_key': hedge_key,
-                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
+                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true',
+                        # 代理配置（用於女巫防護，讓對沖帳戶走不同 IP）
+                        'proxy_url': os.getenv('STANDX_HEDGE_PROXY_URL'),
+                        'proxy_username': os.getenv('STANDX_HEDGE_PROXY_USERNAME'),
+                        'proxy_password': os.getenv('STANDX_HEDGE_PROXY_PASSWORD'),
                     }
                     hedge_adapter = create_adapter(hedge_config)
                     if hasattr(hedge_adapter, 'connect'):
                         connected = await hedge_adapter.connect()
                         if connected:
                             self.adapters['STANDX_HEDGE'] = hedge_adapter
-                            logger.info("  ✅ STANDX_HEDGE - 已連接（對沖帳戶）")
+                            proxy_info = " (via proxy)" if hedge_config.get('proxy_url') else ""
+                            logger.info(f"  ✅ STANDX_HEDGE - 已連接（對沖帳戶）{proxy_info}")
                         else:
                             logger.warning("  ⚠️  STANDX_HEDGE - 連接失敗")
                 except Exception as e:
@@ -524,7 +529,11 @@ class SystemManager:
                         'exchange_name': 'standx',
                         'api_token': hedge_token,
                         'ed25519_private_key': hedge_key,
-                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
+                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true',
+                        # 代理配置（用於女巫防護，讓對沖帳戶走不同 IP）
+                        'proxy_url': os.getenv('STANDX_HEDGE_PROXY_URL'),
+                        'proxy_username': os.getenv('STANDX_HEDGE_PROXY_USERNAME'),
+                        'proxy_password': os.getenv('STANDX_HEDGE_PROXY_PASSWORD'),
                     }
                     hedge_adapter = create_adapter(hedge_config)
                     if hasattr(hedge_adapter, 'connect'):
@@ -532,7 +541,8 @@ class SystemManager:
                         if connected:
                             new_adapters['STANDX_HEDGE'] = hedge_adapter
                             results['STANDX_HEDGE'] = {"success": True, "error": None}
-                            logger.info("  ✅ STANDX_HEDGE 新連接已建立")
+                            proxy_info = " (via proxy)" if hedge_config.get('proxy_url') else ""
+                            logger.info(f"  ✅ STANDX_HEDGE 新連接已建立{proxy_info}")
                         else:
                             results['STANDX_HEDGE'] = {"success": False, "error": "連接失敗"}
                             logger.error("  ❌ STANDX_HEDGE 重新連接失敗")

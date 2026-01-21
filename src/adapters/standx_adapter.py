@@ -127,6 +127,16 @@ class StandXAdapter(BasePerpAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._fill_callbacks: List[Any] = []
         self._order_state_callbacks: List[Any] = []
+
+        # 代理配置（用於女巫防護）
+        self.proxy_url = config.get("proxy_url")
+        self.proxy_auth = None
+        if self.proxy_url:
+            proxy_username = config.get("proxy_username")
+            proxy_password = config.get("proxy_password", "")
+            if proxy_username:
+                self.proxy_auth = aiohttp.BasicAuth(proxy_username, proxy_password)
+            logger.info(f"[StandX] 代理已配置: {self.proxy_url[:30]}...")
     
     async def connect(self) -> bool:
         """連接到 StandX 並完成認證"""
@@ -355,13 +365,22 @@ class StandXAdapter(BasePerpAdapter):
         last_error = None
         for attempt in range(max_retries):
             try:
-                async with self.session.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    json=data if data else None,
-                    headers=headers
-                ) as response:
+                # 構建請求參數
+                request_kwargs = {
+                    'method': method,
+                    'url': url,
+                    'params': params,
+                    'json': data if data else None,
+                    'headers': headers,
+                }
+
+                # 添加代理支援
+                if self.proxy_url:
+                    request_kwargs['proxy'] = self.proxy_url
+                    if self.proxy_auth:
+                        request_kwargs['proxy_auth'] = self.proxy_auth
+
+                async with self.session.request(**request_kwargs) as response:
                     # 處理錯誤狀態碼
                     if response.status >= 400:
                         error_text = await response.text()
@@ -791,8 +810,12 @@ class StandXAdapter(BasePerpAdapter):
             self._ws_client = StandXWebSocketClient(
                 auth_token=auth_token,
                 reconnect_delay=5,
+                proxy_url=self.proxy_url,
+                proxy_auth=self.proxy_auth,
             )
             logger.info(f"[StandX WS] WebSocket URL: {self._ws_client.ws_url}")
+            if self.proxy_url:
+                logger.info(f"[StandX WS] 使用代理: {self.proxy_url[:30]}...")
 
             # 註冊內部回調（轉發到外部回調）
             async def internal_fill_callback(order_update: OrderUpdate):

@@ -22,6 +22,7 @@ pandas>=2.1.0
 
 # Async Support
 aiohttp>=3.9.0
+aiohttp-socks>=0.8.0  # SOCKS proxy support for aiohttp
 
 # Monitoring & Logging
 rich>=13.7.0

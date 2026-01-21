@@ -87,11 +87,17 @@ class StandXWebSocketClient:
         ws_url: str = None,  # 保持兼容性，但會被忽略
         auth_token: Optional[str] = None,
         reconnect_delay: int = 5,
+        proxy_url: Optional[str] = None,
+        proxy_auth: Optional[aiohttp.BasicAuth] = None,
     ):
         # 強制使用正確的 URL
         self.ws_url = self.WS_STREAM_URL
         self.auth_token = auth_token
         self.reconnect_delay = reconnect_delay
+
+        # 代理配置（用於女巫防護）
+        self.proxy_url = proxy_url
+        self.proxy_auth = proxy_auth
 
         # WebSocket 連接 (單一連接)
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -169,16 +175,27 @@ class StandXWebSocketClient:
     async def connect(self) -> bool:
         """建立 WebSocket 連接"""
         try:
-            logger.info(f"[StandX WS] Connecting to {self.ws_url}")
+            if self.proxy_url:
+                logger.info(f"[StandX WS] Connecting to {self.ws_url} via proxy {self.proxy_url[:30]}...")
+            else:
+                logger.info(f"[StandX WS] Connecting to {self.ws_url}")
 
             self._session = aiohttp.ClientSession()
 
+            # 構建 WebSocket 連接參數
+            ws_kwargs = {
+                'heartbeat': 10,  # StandX 每 10 秒發送 ping
+                'receive_timeout': 300,  # 5 分鐘超時
+            }
+
+            # 添加代理支援（用於女巫防護）
+            if self.proxy_url:
+                ws_kwargs['proxy'] = self.proxy_url
+                if self.proxy_auth:
+                    ws_kwargs['proxy_auth'] = self.proxy_auth
+
             # 連接到 Market Stream
-            self._ws = await self._session.ws_connect(
-                self.ws_url,
-                heartbeat=10,  # StandX 每 10 秒發送 ping
-                receive_timeout=300,  # 5 分鐘超時
-            )
+            self._ws = await self._session.ws_connect(self.ws_url, **ws_kwargs)
 
             self._connected = True
             logger.info(f"[StandX WS] Connected to Market Stream")
