@@ -280,6 +280,28 @@ class StandXAdapter(BasePerpAdapter):
                 redacted[k] = v
         return redacted
 
+    async def get_external_ip(self) -> Optional[str]:
+        """
+        獲取當前連接的外部 IP 地址
+
+        用於驗證代理是否生效。如果配置了代理，應該返回代理服務器的 IP。
+        """
+        if not self._session:
+            return None
+
+        try:
+            # 使用 httpbin 獲取外部 IP
+            async with self._session.get(
+                'https://httpbin.org/ip',
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('origin')
+        except Exception as e:
+            logger.warning(f"[StandX] 獲取外部 IP 失敗: {e}")
+        return None
+
     async def health_check(self) -> dict:
         """
         健康檢查（帶超時）
@@ -318,15 +340,29 @@ class StandXAdapter(BasePerpAdapter):
                     "details": {}
                 }
 
+            # 3. 如果有代理配置，檢測外部 IP（驗證代理是否生效）
+            external_ip = None
+            if self.proxy_url:
+                external_ip = await self.get_external_ip()
+                if external_ip:
+                    logger.info(f"[StandX] 外部 IP: {external_ip} (via proxy)")
+
+            details = {
+                "equity": float(balance.equity),
+                "available": float(balance.available_balance),
+                "btc_price": float(orderbook.bids[0][0]),
+            }
+
+            # 添加代理信息到 details
+            if self.proxy_url:
+                details["proxy_enabled"] = True
+                details["external_ip"] = external_ip
+
             return {
                 "healthy": True,
                 "latency_ms": (time.time() - start) * 1000,
                 "error": None,
-                "details": {
-                    "equity": float(balance.equity),
-                    "available": float(balance.available_balance),
-                    "btc_price": float(orderbook.bids[0][0]),
-                }
+                "details": details
             }
 
         except asyncio.TimeoutError:
