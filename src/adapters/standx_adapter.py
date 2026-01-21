@@ -422,6 +422,7 @@ class StandXAdapter(BasePerpAdapter):
                     unrealized_pnl=Decimal(str(pos_data.get("upnl", "0"))),
                     leverage=int(pos_data.get("leverage", 1)) if pos_data.get("leverage") else None,
                     margin_mode=pos_data.get("margin_mode"),
+                    liquidation_price=Decimal(str(pos_data.get("liq_price", "0"))) if pos_data.get("liq_price") else None,
                 )
                 positions.append(position)
             

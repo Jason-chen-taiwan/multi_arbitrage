@@ -49,8 +49,28 @@ export interface WebSocketData {
   mm_executor?: Record<string, unknown>
   mm_positions?: {
     status: string
-    standx?: { btc: number; equity?: number; pnl?: number }
-    hedge?: { btc: number; equity?: number; pnl?: number }
+    standx?: {
+      btc: number
+      equity?: number
+      pnl?: number
+      used_margin?: number
+      margin_ratio?: number
+      liq_price?: number
+      liq_distance_pct?: number
+      mark_price?: number
+      risk_level?: 'safe' | 'warning' | 'danger'
+    }
+    hedge?: {
+      btc: number
+      equity?: number
+      pnl?: number
+      used_margin?: number
+      margin_ratio?: number
+      liq_price?: number
+      liq_distance_pct?: number
+      mark_price?: number
+      risk_level?: 'safe' | 'warning' | 'danger'
+    }
     grvt?: { btc: number; usdt?: number }
     net_btc: number
     is_hedged: boolean

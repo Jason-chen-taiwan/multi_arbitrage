@@ -1004,7 +1004,9 @@ function MarketMakerPage() {
         {hedgeConfigured && (
           <div className="panel full-width">
             <h3>對沖統計</h3>
-            <div className="positions-grid">
+
+            {/* 基本資訊 */}
+            <div className="positions-grid" style={{ marginBottom: '16px' }}>
               <div className="metric-row">
                 <span className="metric-label">對沖目標</span>
                 <span className="metric-value">StandX 對沖帳戶</span>
@@ -1017,10 +1019,6 @@ function MarketMakerPage() {
                 </span>
               </div>
               <div className="metric-row">
-                <span className="metric-label">總嘗試次數</span>
-                <span className="metric-value">{hedgeStats?.total_attempts || 0}</span>
-              </div>
-              <div className="metric-row">
                 <span className="metric-label">成功 / 失敗</span>
                 <span className="metric-value">
                   <span className="text-positive">{hedgeStats?.total_success || 0}</span>
@@ -1029,40 +1027,97 @@ function MarketMakerPage() {
                 </span>
               </div>
               <div className="metric-row">
-                <span className="metric-label">成功率</span>
-                <span className={`metric-value ${(hedgeStats?.success_rate || 0) >= 0.9 ? 'text-positive' : 'text-warning'}`}>
-                  {((hedgeStats?.success_rate || 0) * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="metric-row">
-                <span className="metric-label">Fallback 次數</span>
-                <span className="metric-value">{hedgeStats?.total_fallback || 0}</span>
-              </div>
-              <div className="metric-row">
                 <span className="metric-label">平均延遲</span>
                 <span className="metric-value">
                   {hedgeStats?.avg_latency_ms ? `${hedgeStats.avg_latency_ms.toFixed(0)} ms` : 'N/A'}
                 </span>
               </div>
-              <div className="metric-row" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '8px', marginTop: '8px' }}>
-                <span className="metric-label">主帳戶 PnL</span>
-                <span className={`metric-value ${(mmPositions?.standx?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
-                  ${(mmPositions?.standx?.pnl || 0).toFixed(2)}
-                </span>
+            </div>
+
+            {/* 帳戶對比表格 */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+              {/* 主帳戶 */}
+              <div style={{ backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                  主帳戶
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>PnL</span>
+                    <span className={`${(mmPositions?.standx?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`} style={{ fontWeight: 'bold' }}>
+                      ${(mmPositions?.standx?.pnl || 0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Margin Ratio</span>
+                    <span className={`${
+                      mmPositions?.standx?.risk_level === 'danger' ? 'text-negative' :
+                      mmPositions?.standx?.risk_level === 'warning' ? 'text-warning' : 'text-positive'
+                    }`}>
+                      {((mmPositions?.standx?.margin_ratio || 0) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>清算距離</span>
+                    <span className={`${
+                      (mmPositions?.standx?.liq_distance_pct || 100) < 5 ? 'text-negative' :
+                      (mmPositions?.standx?.liq_distance_pct || 100) < 10 ? 'text-warning' : 'text-positive'
+                    }`}>
+                      {mmPositions?.standx?.liq_distance_pct != null ? `${mmPositions.standx.liq_distance_pct.toFixed(1)}%` : 'N/A'}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="metric-row">
-                <span className="metric-label">對沖帳戶 PnL</span>
-                <span className={`metric-value ${(mmPositions?.hedge?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
-                  ${(mmPositions?.hedge?.pnl || 0).toFixed(2)}
-                </span>
-              </div>
-              <div className="metric-row">
-                <span className="metric-label">合計淨利潤</span>
-                <span className={`metric-value ${(mmPositions?.total_pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`} style={{ fontWeight: 'bold' }}>
-                  ${(mmPositions?.total_pnl || 0).toFixed(2)}
-                </span>
+
+              {/* 對沖帳戶 */}
+              <div style={{ backgroundColor: 'var(--bg-secondary)', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                  對沖帳戶
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>PnL</span>
+                    <span className={`${(mmPositions?.hedge?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`} style={{ fontWeight: 'bold' }}>
+                      ${(mmPositions?.hedge?.pnl || 0).toFixed(2)}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>Margin Ratio</span>
+                    <span className={`${
+                      mmPositions?.hedge?.risk_level === 'danger' ? 'text-negative' :
+                      mmPositions?.hedge?.risk_level === 'warning' ? 'text-warning' : 'text-positive'
+                    }`}>
+                      {((mmPositions?.hedge?.margin_ratio || 0) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>清算距離</span>
+                    <span className={`${
+                      (mmPositions?.hedge?.liq_distance_pct || 100) < 5 ? 'text-negative' :
+                      (mmPositions?.hedge?.liq_distance_pct || 100) < 10 ? 'text-warning' : 'text-positive'
+                    }`}>
+                      {mmPositions?.hedge?.liq_distance_pct != null ? `${mmPositions.hedge.liq_distance_pct.toFixed(1)}%` : 'N/A'}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
+
+            {/* 合計淨利潤 */}
+            <div style={{ backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '14px', fontWeight: 'bold' }}>合計淨利潤</span>
+              <span className={`${(mmPositions?.total_pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`} style={{ fontSize: '18px', fontWeight: 'bold' }}>
+                ${(mmPositions?.total_pnl || 0).toFixed(2)}
+              </span>
+            </div>
+
+            {/* 危險警告 */}
+            {/* 危險警告 */}
+            {(mmPositions?.standx?.risk_level === 'danger' || mmPositions?.hedge?.risk_level === 'danger') && (
+              <div style={{ marginTop: '12px', padding: '12px', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--negative-color)', borderRadius: '8px', color: 'var(--negative-color)', fontWeight: 'bold', textAlign: 'center' }}>
+                ⚠️ 爆倉風險警告！請立即減倉或補充保證金
+              </div>
+            )}
           </div>
         )}
 

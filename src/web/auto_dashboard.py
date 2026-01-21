@@ -9,6 +9,7 @@ Automated Arbitrage Control Panel
 import asyncio
 import json
 import os
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 from decimal import Decimal
@@ -50,6 +51,10 @@ connected_clients: List[WebSocket] = []
 # Orderbook 緩存 (避免 rate limiting)
 _orderbook_cache: Dict[str, dict] = {}  # {exchange_symbol: {'data': ..., 'timestamp': ...}}
 _orderbook_cache_ttl = 2.0  # 緩存 2 秒
+
+# 風險數據緩存 (避免 rate limiting)
+_risk_data_cache: Dict[str, dict] = {}  # {account_name: {'data': ..., 'timestamp': ...}}
+_risk_data_cache_ttl = 5.0  # 緩存 5 秒，降低 API 請求頻率
 
 mm_status = {
     'running': False,
@@ -246,26 +251,124 @@ async def broadcast_data():
                         'seconds_ago': seconds_ago,
                     }
 
-                    # 餘額和 PnL 從 adapter 查詢
+                    # 餘額、PnL 和風險數據從 adapter 查詢（帶緩存避免 rate limiting）
                     if 'STANDX' in adapters:
-                        try:
-                            balance = await adapters['STANDX'].get_balance()
-                            positions['standx']['equity'] = float(balance.equity)
-                            positions['standx']['pnl'] = float(balance.unrealized_pnl)
-                        except Exception as e:
-                            logger.debug(f"查詢 StandX 餘額失敗: {e}")
+                        now = time.time()
+                        cache_key = 'STANDX'
+                        cached = _risk_data_cache.get(cache_key)
+
+                        # 檢查緩存是否有效
+                        if cached and (now - cached.get('timestamp', 0)) < _risk_data_cache_ttl:
+                            # 使用緩存數據，但更新 btc 持倉（這個是即時的）
+                            positions['standx'] = cached['data'].copy()
+                            positions['standx']['btc'] = standx_pos
+                        else:
+                            # 緩存過期，重新查詢
+                            try:
+                                balance = await adapters['STANDX'].get_balance()
+                                positions_list = await adapters['STANDX'].get_positions('BTC-USD')
+
+                                # 計算 margin ratio
+                                margin_ratio = float(balance.used_margin / balance.equity) if balance.equity > 0 else 0
+
+                                # 清算價格和距離
+                                liq_price = None
+                                liq_distance_pct = None
+                                mark_price = None
+                                if positions_list:
+                                    pos = positions_list[0]
+                                    mark_price = float(pos.mark_price) if pos.mark_price else None
+                                    if pos.liquidation_price and pos.mark_price and float(pos.mark_price) > 0:
+                                        liq_price = float(pos.liquidation_price)
+                                        liq_distance_pct = abs(float(pos.mark_price) - liq_price) / float(pos.mark_price) * 100
+
+                                # 風險等級判斷
+                                risk_level = 'safe'
+                                if margin_ratio > 0.8 or (liq_distance_pct is not None and liq_distance_pct < 5):
+                                    risk_level = 'danger'
+                                elif margin_ratio > 0.5 or (liq_distance_pct is not None and liq_distance_pct < 10):
+                                    risk_level = 'warning'
+
+                                standx_data = {
+                                    'btc': standx_pos,
+                                    'equity': float(balance.equity),
+                                    'pnl': float(balance.unrealized_pnl),
+                                    'used_margin': float(balance.used_margin),
+                                    'margin_ratio': margin_ratio,
+                                    'liq_price': liq_price,
+                                    'liq_distance_pct': liq_distance_pct,
+                                    'mark_price': mark_price,
+                                    'risk_level': risk_level,
+                                }
+                                positions['standx'] = standx_data
+
+                                # 更新緩存
+                                _risk_data_cache[cache_key] = {'data': standx_data, 'timestamp': now}
+                            except Exception as e:
+                                logger.debug(f"查詢 StandX 風險數據失敗: {e}")
+                                # 如果查詢失敗但有緩存，繼續使用緩存
+                                if cached:
+                                    positions['standx'] = cached['data'].copy()
+                                    positions['standx']['btc'] = standx_pos
 
                     # 對沖帳戶 (STANDX_HEDGE)
                     if 'STANDX_HEDGE' in adapters:
-                        try:
-                            balance = await adapters['STANDX_HEDGE'].get_balance()
-                            positions['hedge'] = {
-                                'btc': hedge_pos,
-                                'equity': float(balance.equity),
-                                'pnl': float(balance.unrealized_pnl),
-                            }
-                        except Exception as e:
-                            logger.debug(f"查詢對沖帳戶餘額失敗: {e}")
+                        now = time.time()
+                        cache_key = 'STANDX_HEDGE'
+                        cached = _risk_data_cache.get(cache_key)
+
+                        # 檢查緩存是否有效
+                        if cached and (now - cached.get('timestamp', 0)) < _risk_data_cache_ttl:
+                            # 使用緩存數據，但更新 btc 持倉
+                            positions['hedge'] = cached['data'].copy()
+                            positions['hedge']['btc'] = hedge_pos
+                        else:
+                            try:
+                                balance = await adapters['STANDX_HEDGE'].get_balance()
+                                positions_list = await adapters['STANDX_HEDGE'].get_positions('BTC-USD')
+
+                                # 計算 margin ratio
+                                margin_ratio = float(balance.used_margin / balance.equity) if balance.equity > 0 else 0
+
+                                # 清算價格和距離
+                                liq_price = None
+                                liq_distance_pct = None
+                                mark_price = None
+                                if positions_list:
+                                    pos = positions_list[0]
+                                    mark_price = float(pos.mark_price) if pos.mark_price else None
+                                    if pos.liquidation_price and pos.mark_price and float(pos.mark_price) > 0:
+                                        liq_price = float(pos.liquidation_price)
+                                        liq_distance_pct = abs(float(pos.mark_price) - liq_price) / float(pos.mark_price) * 100
+
+                                # 風險等級判斷
+                                risk_level = 'safe'
+                                if margin_ratio > 0.8 or (liq_distance_pct is not None and liq_distance_pct < 5):
+                                    risk_level = 'danger'
+                                elif margin_ratio > 0.5 or (liq_distance_pct is not None and liq_distance_pct < 10):
+                                    risk_level = 'warning'
+
+                                hedge_data = {
+                                    'btc': hedge_pos,
+                                    'equity': float(balance.equity),
+                                    'pnl': float(balance.unrealized_pnl),
+                                    'used_margin': float(balance.used_margin),
+                                    'margin_ratio': margin_ratio,
+                                    'liq_price': liq_price,
+                                    'liq_distance_pct': liq_distance_pct,
+                                    'mark_price': mark_price,
+                                    'risk_level': risk_level,
+                                }
+                                positions['hedge'] = hedge_data
+
+                                # 更新緩存
+                                _risk_data_cache[cache_key] = {'data': hedge_data, 'timestamp': now}
+                            except Exception as e:
+                                logger.debug(f"查詢對沖帳戶風險數據失敗: {e}")
+                                # 如果查詢失敗但有緩存，繼續使用緩存
+                                if cached:
+                                    positions['hedge'] = cached['data'].copy()
+                                    positions['hedge']['btc'] = hedge_pos
 
                     # GRVT 帳戶 (兼容舊版)
                     if 'GRVT' in adapters:
