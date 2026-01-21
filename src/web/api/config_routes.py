@@ -247,12 +247,32 @@ def register_config_routes(app, dependencies):
         重新連接所有已配置的交易所
 
         斷開現有連接並重新建立連接。
+        注意：重新連接會停止正在運行的做市商，需要手動重新啟動。
         """
+        mm_executor_getter = dependencies.get('mm_executor_getter')
+        mm_executor_setter = dependencies.get('mm_executor_setter')
+        mm_was_running = False
+
         try:
+            # 【重要】先停止做市商，因為重新連接後 adapter 引用會失效
+            if mm_executor_getter:
+                mm_executor = mm_executor_getter()
+                if mm_executor and mm_executor._running:
+                    mm_was_running = True
+                    if logger:
+                        logger.info("[Reconnect] 停止做市商以準備重新連接...")
+                    await mm_executor.stop()
+                    # 清除舊的 executor 引用
+                    if mm_executor_setter:
+                        mm_executor_setter(None)
+
             if system_manager_getter:
                 system_manager = system_manager_getter()
                 if system_manager and hasattr(system_manager, 'reconnect_all'):
                     result = await system_manager.reconnect_all()
+                    # 添加提示信息
+                    if mm_was_running:
+                        result['message'] = '重新連接完成。做市商已停止，請手動重新啟動。'
                     return JSONResponse(result)
 
             return JSONResponse({
@@ -261,6 +281,8 @@ def register_config_routes(app, dependencies):
             }, status_code=500)
 
         except Exception as e:
+            if logger:
+                logger.error(f"[Reconnect] 重新連接失敗: {e}")
             return JSONResponse({
                 "success": False,
                 "error": str(e)

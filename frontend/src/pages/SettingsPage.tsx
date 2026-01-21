@@ -46,7 +46,7 @@ function SettingsPage() {
   const [tradingAccountId, setTradingAccountId] = useState('')
 
   // Hedge config state
-  const [hedgeTarget, setHedgeTarget] = useState<'grvt' | 'standx_hedge' | 'none'>('grvt')
+  const [hedgeTarget, setHedgeTarget] = useState<'standx_hedge' | 'none'>('standx_hedge')
   const [hedgeApiToken, setHedgeApiToken] = useState('')
   const [hedgePrivateKey, setHedgePrivateKey] = useState('')
   const [hedgeConfigured, setHedgeConfigured] = useState(false)
@@ -60,11 +60,13 @@ function SettingsPage() {
 
       // Load hedge config
       if (response.data.hedge) {
-        setHedgeTarget(response.data.hedge.target as 'grvt' | 'standx_hedge' | 'none')
+        // Convert old 'grvt' value to 'standx_hedge' for backwards compatibility
+        const target = response.data.hedge.target
+        setHedgeTarget(target === 'grvt' ? 'standx_hedge' : (target || 'standx_hedge') as 'standx_hedge' | 'none')
         setHedgeConfigured(
-          response.data.hedge.target === 'none' ||
-          (response.data.hedge.target === 'grvt' && response.data.hedge.grvt?.configured) ||
-          (response.data.hedge.target === 'standx_hedge' && response.data.hedge.standx?.configured) ||
+          target === 'none' ||
+          (target === 'grvt' && response.data.hedge.grvt?.configured) ||
+          (target === 'standx_hedge' && response.data.hedge.standx?.configured) ||
           false
         )
       }
@@ -77,7 +79,9 @@ function SettingsPage() {
     try {
       const response = await configApi.getHedgeConfig()
       if (response.data) {
-        setHedgeTarget(response.data.hedge_target || 'grvt')
+        // Convert old 'grvt' value to 'standx_hedge' for backwards compatibility
+        const target = response.data.hedge_target
+        setHedgeTarget(target === 'grvt' ? 'standx_hedge' : (target || 'standx_hedge') as 'standx_hedge' | 'none')
         setHedgeConfigured(response.data.configured || false)
         setHedgeMaskedToken(response.data.api_token_masked || '')
         setHedgeMaskedKey(response.data.ed25519_key_masked || '')
@@ -188,9 +192,25 @@ function SettingsPage() {
     try {
       const response = await configApi.reconnect()
       if (response.data.success) {
-        setMessage({ type: 'success', text: t.settings.reconnected })
+        // 顯示詳細的重新連接結果
+        const results = response.data.results || {}
+        const successList = Object.entries(results)
+          .filter(([, r]) => (r as { success: boolean }).success)
+          .map(([name]) => name)
+        const failList = Object.entries(results)
+          .filter(([, r]) => !(r as { success: boolean }).success)
+          .map(([name, r]) => `${name}: ${(r as { error?: string }).error || '失敗'}`)
+
+        let msg = `重新連接完成: ${successList.join(', ') || '無'}`
+        if (failList.length > 0) {
+          msg += `\n失敗: ${failList.join(', ')}`
+        }
+        if (response.data.message) {
+          msg += `\n${response.data.message}`
+        }
+        setMessage({ type: 'success', text: msg })
       } else {
-        setMessage({ type: 'error', text: t.settings.reconnectFailed })
+        setMessage({ type: 'error', text: response.data.error || t.settings.reconnectFailed })
       }
     } catch (error) {
       setMessage({ type: 'error', text: t.settings.reconnectFailed })

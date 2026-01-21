@@ -518,6 +518,9 @@ def _set_mm_executor(value):
     global mm_executor
     mm_executor = value
 
+def _get_system_manager():
+    return system_manager
+
 api_dependencies = {
     'config_manager': config_manager,
     'adapters_getter': get_adapters,
@@ -525,6 +528,7 @@ api_dependencies = {
     'mm_executor_getter': _get_mm_executor,
     'mm_executor_setter': _set_mm_executor,
     'monitor_getter': get_monitor,
+    'system_manager_getter': _get_system_manager,
     'system_status': get_system_status(),
     'mm_status': mm_status,
     'init_system': init_system,
