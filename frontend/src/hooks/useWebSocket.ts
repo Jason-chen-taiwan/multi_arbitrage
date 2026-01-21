@@ -49,10 +49,12 @@ export interface WebSocketData {
   mm_executor?: Record<string, unknown>
   mm_positions?: {
     status: string
-    standx?: { btc: number; equity?: number }
+    standx?: { btc: number; equity?: number; pnl?: number }
+    hedge?: { btc: number; equity?: number; pnl?: number }
     grvt?: { btc: number; usdt?: number }
     net_btc: number
     is_hedged: boolean
+    total_pnl?: number
     seconds_ago?: number
   }
   fill_history: Array<{

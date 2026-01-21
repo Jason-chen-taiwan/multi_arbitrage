@@ -246,19 +246,39 @@ async def broadcast_data():
                         'seconds_ago': seconds_ago,
                     }
 
-                    # 餘額仍需從 adapter 查詢 (state 不追蹤餘額)
+                    # 餘額和 PnL 從 adapter 查詢
                     if 'STANDX' in adapters:
                         try:
                             balance = await adapters['STANDX'].get_balance()
                             positions['standx']['equity'] = float(balance.equity)
+                            positions['standx']['pnl'] = float(balance.unrealized_pnl)
                         except Exception as e:
                             logger.debug(f"查詢 StandX 餘額失敗: {e}")
+
+                    # 對沖帳戶 (STANDX_HEDGE)
+                    if 'STANDX_HEDGE' in adapters:
+                        try:
+                            balance = await adapters['STANDX_HEDGE'].get_balance()
+                            positions['hedge'] = {
+                                'btc': hedge_pos,
+                                'equity': float(balance.equity),
+                                'pnl': float(balance.unrealized_pnl),
+                            }
+                        except Exception as e:
+                            logger.debug(f"查詢對沖帳戶餘額失敗: {e}")
+
+                    # GRVT 帳戶 (兼容舊版)
                     if 'GRVT' in adapters:
                         try:
                             balance = await adapters['GRVT'].get_balance()
                             positions['grvt']['usdt'] = float(balance.available_balance) if balance else 0
                         except Exception as e:
                             logger.debug(f"查詢 GRVT 餘額失敗: {e}")
+
+                    # 計算合計淨利潤
+                    standx_pnl = positions.get('standx', {}).get('pnl', 0) or 0
+                    hedge_pnl = positions.get('hedge', {}).get('pnl', 0) or 0
+                    positions['total_pnl'] = standx_pnl + hedge_pnl
 
                 data['mm_positions'] = positions
 

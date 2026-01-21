@@ -1044,6 +1044,24 @@ function MarketMakerPage() {
                   {hedgeStats?.avg_latency_ms ? `${hedgeStats.avg_latency_ms.toFixed(0)} ms` : 'N/A'}
                 </span>
               </div>
+              <div className="metric-row" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '8px', marginTop: '8px' }}>
+                <span className="metric-label">主帳戶 PnL</span>
+                <span className={`metric-value ${(mmPositions?.standx?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
+                  ${(mmPositions?.standx?.pnl || 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">對沖帳戶 PnL</span>
+                <span className={`metric-value ${(mmPositions?.hedge?.pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`}>
+                  ${(mmPositions?.hedge?.pnl || 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="metric-row">
+                <span className="metric-label">合計淨利潤</span>
+                <span className={`metric-value ${(mmPositions?.total_pnl || 0) >= 0 ? 'text-positive' : 'text-negative'}`} style={{ fontWeight: 'bold' }}>
+                  ${(mmPositions?.total_pnl || 0).toFixed(2)}
+                </span>
+              </div>
             </div>
           </div>
         )}
