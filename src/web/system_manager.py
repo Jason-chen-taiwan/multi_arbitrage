@@ -10,6 +10,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Optional, Callable, Any
 
+from dotenv import load_dotenv
+
 from src.adapters.factory import create_adapter
 from src.adapters.base_adapter import BasePerpAdapter
 from src.monitor.multi_exchange_monitor import MultiExchangeMonitor
@@ -51,6 +53,9 @@ class SystemManager:
     async def init_system(self):
         """初始化系統 - 自動加載所有已配置的交易所"""
         logger.info("🚀 正在初始化系統...")
+
+        # 重新載入 .env 以獲取最新配置（包括代理設定）
+        load_dotenv(override=True)
 
         # 加載配置
         configs = self.config_manager.get_all_configs()
@@ -454,6 +459,9 @@ class SystemManager:
         """
         logger.info("🔄 正在重新連接所有交易所...")
         results = {}
+
+        # 重新載入 .env 以獲取最新配置（包括代理設定）
+        load_dotenv(override=True)
 
         # 保存舊的 adapters 引用
         old_adapters = dict(self.adapters)

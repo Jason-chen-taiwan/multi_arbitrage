@@ -246,10 +246,10 @@ function SettingsPage() {
         if (hedgePrivateKey) hedgeConfig.ed25519_private_key = hedgePrivateKey
 
         // Proxy config (for Sybil protection)
-        // Only include if user entered something (empty string means clear)
-        if (proxyUrl !== undefined) hedgeConfig.proxy_url = proxyUrl
-        if (proxyUsername !== undefined) hedgeConfig.proxy_username = proxyUsername
-        if (proxyPassword !== undefined) hedgeConfig.proxy_password = proxyPassword
+        // Only send if user entered a new value, to avoid clearing existing config
+        if (proxyUrl) hedgeConfig.proxy_url = proxyUrl
+        if (proxyUsername) hedgeConfig.proxy_username = proxyUsername
+        if (proxyPassword) hedgeConfig.proxy_password = proxyPassword
       }
 
       await configApi.saveHedgeConfig(hedgeConfig)

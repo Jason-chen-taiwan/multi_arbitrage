@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import aiohttp
+from aiohttp_socks import ProxyConnector, ProxyType
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,37 @@ class StandXWebSocketClient:
 
     # ==================== 連接管理 ====================
 
+    def _create_proxy_connector(self) -> ProxyConnector:
+        """創建代理連接器，解析 URL 並設置認證"""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.proxy_url)
+        scheme = parsed.scheme.lower()
+
+        # 確定代理類型
+        if scheme in ('socks5', 'socks5h'):
+            proxy_type = ProxyType.SOCKS5
+        elif scheme == 'socks4':
+            proxy_type = ProxyType.SOCKS4
+        elif scheme in ('http', 'https'):
+            proxy_type = ProxyType.HTTP
+        else:
+            proxy_type = ProxyType.SOCKS5  # 默認
+
+        # 構建連接器參數
+        connector_kwargs = {
+            'proxy_type': proxy_type,
+            'host': parsed.hostname,
+            'port': parsed.port or 1080,
+        }
+
+        # 添加認證（如果有）
+        if self.proxy_auth:
+            connector_kwargs['username'] = self.proxy_auth.login
+            connector_kwargs['password'] = self.proxy_auth.password
+
+        return ProxyConnector(**connector_kwargs)
+
     async def connect(self) -> bool:
         """建立 WebSocket 連接"""
         try:
@@ -180,19 +212,19 @@ class StandXWebSocketClient:
             else:
                 logger.info(f"[StandX WS] Connecting to {self.ws_url}")
 
-            self._session = aiohttp.ClientSession()
+            # 根據是否有代理配置選擇 connector
+            connector = None
+            if self.proxy_url:
+                # 使用 ProxyConnector 支援 SOCKS5/HTTP 代理
+                connector = self._create_proxy_connector()
+
+            self._session = aiohttp.ClientSession(connector=connector)
 
             # 構建 WebSocket 連接參數
             ws_kwargs = {
                 'heartbeat': 10,  # StandX 每 10 秒發送 ping
                 'receive_timeout': 300,  # 5 分鐘超時
             }
-
-            # 添加代理支援（用於女巫防護）
-            if self.proxy_url:
-                ws_kwargs['proxy'] = self.proxy_url
-                if self.proxy_auth:
-                    ws_kwargs['proxy_auth'] = self.proxy_auth
 
             # 連接到 Market Stream
             self._ws = await self._session.ws_connect(self.ws_url, **ws_kwargs)

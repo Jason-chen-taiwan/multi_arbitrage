@@ -168,6 +168,11 @@ class ConfigManager:
             'proxy_password': str (代理密碼，可選),
         }
         """
+        # 調試日誌
+        print(f"[ConfigManager] save_hedge_config called with keys: {list(config.keys())}")
+        if 'proxy_url' in config:
+            print(f"[ConfigManager] proxy_url value: '{config.get('proxy_url')}'")
+
         hedge_target = config.get('hedge_target', 'grvt')
         set_key(self.env_file, 'HEDGE_TARGET', hedge_target, quote_mode='never')
 

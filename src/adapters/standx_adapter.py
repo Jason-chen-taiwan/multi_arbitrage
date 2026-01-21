@@ -13,6 +13,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import aiohttp
+from aiohttp_socks import ProxyConnector, ProxyType
 from eth_account import Account
 
 from .base_adapter import BasePerpAdapter, Balance, Position, Order, OrderSide, OrderType, OrderStatus, Orderbook, SymbolInfo, Trade
@@ -137,7 +138,38 @@ class StandXAdapter(BasePerpAdapter):
             if proxy_username:
                 self.proxy_auth = aiohttp.BasicAuth(proxy_username, proxy_password)
             logger.info(f"[StandX] 代理已配置: {self.proxy_url[:30]}...")
-    
+
+    def _create_proxy_connector(self) -> ProxyConnector:
+        """創建代理連接器，解析 URL 並設置認證"""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self.proxy_url)
+        scheme = parsed.scheme.lower()
+
+        # 確定代理類型
+        if scheme in ('socks5', 'socks5h'):
+            proxy_type = ProxyType.SOCKS5
+        elif scheme == 'socks4':
+            proxy_type = ProxyType.SOCKS4
+        elif scheme in ('http', 'https'):
+            proxy_type = ProxyType.HTTP
+        else:
+            proxy_type = ProxyType.SOCKS5  # 默認
+
+        # 構建連接器參數
+        connector_kwargs = {
+            'proxy_type': proxy_type,
+            'host': parsed.hostname,
+            'port': parsed.port or 1080,
+        }
+
+        # 添加認證（如果有）
+        if self.proxy_auth:
+            connector_kwargs['username'] = self.proxy_auth.login
+            connector_kwargs['password'] = self.proxy_auth.password
+
+        return ProxyConnector(**connector_kwargs)
+
     async def connect(self) -> bool:
         """連接到 StandX 並完成認證"""
         try:
@@ -148,11 +180,20 @@ class StandXAdapter(BasePerpAdapter):
                 sock_connect=10, # Socket 連接超時 10 秒
                 sock_read=10     # Socket 讀取超時 10 秒
             )
-            connector = aiohttp.TCPConnector(
-                limit=10,        # 最大連接數
-                ttl_dns_cache=300,  # DNS 快取 5 分鐘
-                use_dns_cache=True,
-            )
+
+            # 根據是否有代理配置選擇 connector
+            if self.proxy_url:
+                # 使用 ProxyConnector 支援 SOCKS5/HTTP 代理
+                # 解析 proxy URL 格式: scheme://host:port
+                connector = self._create_proxy_connector()
+                logger.info(f"[StandX] 使用代理連接: {self.proxy_url[:40]}...")
+            else:
+                connector = aiohttp.TCPConnector(
+                    limit=10,        # 最大連接數
+                    ttl_dns_cache=300,  # DNS 快取 5 分鐘
+                    use_dns_cache=True,
+                )
+
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector
@@ -247,11 +288,14 @@ class StandXAdapter(BasePerpAdapter):
         """
         start = time.time()
 
+        # 代理連接需要更長的超時時間
+        timeout_sec = self.HEALTH_CHECK_TIMEOUT_SEC * 3 if self.proxy_url else self.HEALTH_CHECK_TIMEOUT_SEC
+
         try:
             # 1. 測試市場資料 API（公開 API）
             orderbook = await asyncio.wait_for(
                 self.get_orderbook("BTC-USD", depth=1),
-                timeout=self.HEALTH_CHECK_TIMEOUT_SEC / 2
+                timeout=timeout_sec / 2
             )
             if not orderbook or not orderbook.bids:
                 return {
@@ -264,7 +308,7 @@ class StandXAdapter(BasePerpAdapter):
             # 2. 測試帳戶 API（需認證）
             balance = await asyncio.wait_for(
                 self.get_balance(),
-                timeout=self.HEALTH_CHECK_TIMEOUT_SEC / 2
+                timeout=timeout_sec / 2
             )
             if balance is None:
                 return {
@@ -289,7 +333,7 @@ class StandXAdapter(BasePerpAdapter):
             return {
                 "healthy": False,
                 "latency_ms": (time.time() - start) * 1000,
-                "error": f"健康檢查超時 ({self.HEALTH_CHECK_TIMEOUT_SEC}s)",
+                "error": f"健康檢查超時 ({timeout_sec}s)",
                 "details": {}
             }
         except Exception as e:
@@ -374,11 +418,12 @@ class StandXAdapter(BasePerpAdapter):
                     'headers': headers,
                 }
 
-                # 添加代理支援
+                # 代理已在 connector 層級處理（ProxyConnector）
+                # 這裡只記錄日誌確認代理使用情況
                 if self.proxy_url:
-                    request_kwargs['proxy'] = self.proxy_url
-                    if self.proxy_auth:
-                        request_kwargs['proxy_auth'] = self.proxy_auth
+                    # 對沖操作日誌：記錄代理使用情況
+                    if '/order' in endpoint or '/cancel' in endpoint or '/position' in endpoint or '/new_order' in endpoint:
+                        logger.info(f"[HEDGE-PROXY] {method} {endpoint} via {self.proxy_url[:40]}...")
 
                 async with self.session.request(**request_kwargs) as response:
                     # 處理錯誤狀態碼

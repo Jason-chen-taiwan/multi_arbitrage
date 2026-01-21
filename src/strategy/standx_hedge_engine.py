@@ -100,9 +100,14 @@ class StandXHedgeEngine(BaseHedgeEngine):
             started_at=datetime.now(),
         )
 
+        # 記錄代理狀態
+        proxy_info = ""
+        if hasattr(self.hedge_adapter, 'proxy_url') and self.hedge_adapter.proxy_url:
+            proxy_info = f" [VIA PROXY: {self.hedge_adapter.proxy_url[:30]}...]"
+
         logger.info(
             f"[StandX Hedge] Starting: {source_symbol} → {hedge_symbol}, "
-            f"{hedge_side} {fill_qty} (fill_price: {fill_price})"
+            f"{hedge_side} {fill_qty} (fill_price: {fill_price}){proxy_info}"
         )
 
         # 重試執行
