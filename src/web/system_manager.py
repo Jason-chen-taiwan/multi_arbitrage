@@ -22,9 +22,9 @@ class SystemManager:
     """系統管理器 - 管理交易所連接和監控"""
 
     # 定義必要 vs 可選的適配器
-    # 做市商需要 STANDX，對沖可選 GRVT
+    # 做市商需要 STANDX，對沖可選 GRVT 或 STANDX_HEDGE
     REQUIRED_ADAPTERS = {"STANDX"}     # 做市必需
-    OPTIONAL_ADAPTERS = {"GRVT"}       # 對沖可選
+    OPTIONAL_ADAPTERS = {"GRVT", "STANDX_HEDGE"}  # 對沖可選
 
     def __init__(self, config_manager):
         """
@@ -106,6 +106,32 @@ class SystemManager:
                 logger.info(f"  ✅ {exchange_name.upper()} - 已連接")
             except Exception as e:
                 logger.warning(f"  ⚠️  {exchange_name.upper()} - 跳過: {str(e)[:50]}")
+
+        # 加載對沖帳戶（StandX Hedge）
+        hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+        if hedge_target == 'standx_hedge':
+            hedge_token = os.getenv('STANDX_HEDGE_API_TOKEN')
+            hedge_key = os.getenv('STANDX_HEDGE_ED25519_PRIVATE_KEY')
+            if hedge_token and hedge_key:
+                try:
+                    hedge_config = {
+                        'exchange_name': 'standx',
+                        'api_token': hedge_token,
+                        'ed25519_private_key': hedge_key,
+                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
+                    }
+                    hedge_adapter = create_adapter(hedge_config)
+                    if hasattr(hedge_adapter, 'connect'):
+                        connected = await hedge_adapter.connect()
+                        if connected:
+                            self.adapters['STANDX_HEDGE'] = hedge_adapter
+                            logger.info("  ✅ STANDX_HEDGE - 已連接（對沖帳戶）")
+                        else:
+                            logger.warning("  ⚠️  STANDX_HEDGE - 連接失敗")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  STANDX_HEDGE - 跳過: {str(e)[:50]}")
+            else:
+                logger.info("  ℹ️  STANDX_HEDGE - 未配置 (HEDGE_TARGET=standx_hedge 但缺少憑證)")
 
         # 加載 CEX
         for exchange_name, config in configs['cex'].items():
@@ -480,6 +506,33 @@ class SystemManager:
             except Exception as e:
                 results[name_upper] = {"success": False, "error": str(e)}
                 logger.error(f"  ❌ {name_upper} 重新連接異常: {e}")
+
+        # 重新連接對沖帳戶（StandX Hedge）
+        hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+        if hedge_target == 'standx_hedge':
+            hedge_token = os.getenv('STANDX_HEDGE_API_TOKEN')
+            hedge_key = os.getenv('STANDX_HEDGE_ED25519_PRIVATE_KEY')
+            if hedge_token and hedge_key:
+                try:
+                    hedge_config = {
+                        'exchange_name': 'standx',
+                        'api_token': hedge_token,
+                        'ed25519_private_key': hedge_key,
+                        'testnet': os.getenv('STANDX_TESTNET', 'false').lower() == 'true'
+                    }
+                    hedge_adapter = create_adapter(hedge_config)
+                    if hasattr(hedge_adapter, 'connect'):
+                        connected = await hedge_adapter.connect()
+                        if connected:
+                            self.adapters['STANDX_HEDGE'] = hedge_adapter
+                            results['STANDX_HEDGE'] = {"success": True, "error": None}
+                            logger.info("  ✅ STANDX_HEDGE 重新連接成功")
+                        else:
+                            results['STANDX_HEDGE'] = {"success": False, "error": "連接失敗"}
+                            logger.error("  ❌ STANDX_HEDGE 重新連接失敗")
+                except Exception as e:
+                    results['STANDX_HEDGE'] = {"success": False, "error": str(e)}
+                    logger.error(f"  ❌ STANDX_HEDGE 重新連接異常: {e}")
 
         # 重新連接 CEX
         for exchange_name, config in configs['cex'].items():

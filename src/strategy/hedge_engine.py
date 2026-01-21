@@ -11,35 +11,29 @@ Hedge Engine for GRVT (DEX)
 import asyncio
 import logging
 import time
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Set
 from decimal import Decimal
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+
+from .base_hedge_engine import (
+    BaseHedgeEngine,
+    BaseHedgeConfig,
+    HedgeResult,
+    HedgeStatus,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class HedgeStatus(Enum):
-    """對沖狀態"""
-    PENDING = "pending"
-    EXECUTING = "executing"
-    FILLED = "filled"
-    PARTIAL = "partial"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    FALLBACK = "fallback"
-
-    # 風控狀態
-    RISK_CONTROL = "risk_control"           # 進入風控模式
-    WAITING_RECOVERY = "waiting_recovery"   # 等待恢復
-    PARTIAL_FALLBACK = "partial_fallback"   # 部分平倉
-    FALLBACK_FAILED = "fallback_failed"     # 平倉也失敗
+# Re-export for backward compatibility
+__all__ = ['HedgeEngine', 'HedgeConfig', 'HedgeResult', 'HedgeStatus']
 
 
 @dataclass
-class HedgeConfig:
-    """對沖配置"""
+class HedgeConfig(BaseHedgeConfig):
+    """GRVT 對沖配置（保持 backward compatible）"""
+    hedge_type: str = "grvt"
+
     # 交易對
     symbol: str = "BTC_USDT_Perp"           # 對沖交易對（GRVT 格式）
     standx_symbol: str = "BTC-USD"          # StandX 交易對
@@ -54,58 +48,8 @@ class HedgeConfig:
         "SOL-USD": "SOL_USDT_Perp",
     })
 
-    # 超時和重試
-    timeout_ms: int = 1000                  # 總超時時間 (1秒)
-    max_retries: int = 3                    # 最大重試次數
-    retry_delay_ms: int = 100               # 重試間隔
 
-    # 訂單類型
-    use_market_order: bool = True           # 使用市價單
-    max_slippage_bps: int = 20              # 最大允許滑點
-
-    # 風控參數
-    max_unhedged_position: Decimal = Decimal("0.01")  # 最大未對沖倉位 (BTC)
-
-
-@dataclass
-class HedgeResult:
-    """對沖結果（增強版）"""
-    success: bool
-    status: HedgeStatus
-    source_fill_id: str                     # 觸發對沖的成交 ID
-
-    # 交易對信息（調試用）
-    standx_symbol: str = ""                 # 原始 StandX 交易對
-    hedge_symbol: str = ""                  # 匹配的對沖交易對
-
-    # 數量信息（調試用）
-    requested_qty: Decimal = Decimal("0")   # 請求的對沖量
-    normalized_qty: Decimal = Decimal("0")  # 正規化後的對沖量
-
-    # 執行信息
-    order_id: Optional[str] = None
-    fill_price: Optional[Decimal] = None
-    fill_qty: Optional[Decimal] = None
-    slippage_bps: Optional[float] = None
-
-    # ==================== 成本追蹤 (rebate 模式用) ====================
-    hedge_side: Optional[str] = None        # 對沖方向 ("buy" / "sell")
-    execution_price: Optional[Decimal] = None  # 實際成交價 (同 fill_price，語義更清楚)
-    fee_paid: Decimal = Decimal("0")        # 實際手續費
-
-    # 重試信息
-    attempts: int = 0
-    latency_ms: float = 0.0
-
-    # 錯誤信息
-    error_message: Optional[str] = None
-
-    # 時間戳
-    started_at: datetime = field(default_factory=datetime.now)
-    completed_at: Optional[datetime] = None
-
-
-class HedgeEngine:
+class HedgeEngine(BaseHedgeEngine):
     """
     對沖引擎 (GRVT)
 
@@ -121,34 +65,31 @@ class HedgeEngine:
     # 快取 TTL
     VALID_SYMBOLS_TTL_SEC = 300             # 5 分鐘
 
-    # 恢復條件
-    RECOVERY_SUCCESS_REQUIRED = 3           # 連續成功次數
-    RECOVERY_CHECK_INTERVAL_SEC = 2.0       # 恢復檢查間隔
-
     def __init__(
         self,
         hedge_adapter,                      # GRVT 適配器
         standx_adapter,                     # StandX 適配器 (用於 fallback)
         config: Optional[HedgeConfig] = None,
     ):
-        self.hedge_adapter = hedge_adapter
+        # 調用基類初始化
+        super().__init__(
+            hedge_adapter=hedge_adapter,
+            fallback_adapter=standx_adapter,
+            config=config or HedgeConfig(),
+        )
+
+        # 保持 backward compatibility
         self.standx = standx_adapter
-        self.config = config or HedgeConfig()
 
         # 交易對驗證快取
         self._valid_symbols: Optional[Set[str]] = None
         self._valid_symbols_ts: Optional[float] = None
 
-        # 恢復狀態
-        self._recovery_success_count = 0
-        self._last_recovery_check_ts: Optional[float] = None
+    # ==================== 實現抽象方法 ====================
 
-        # 統計
-        self._total_attempts = 0
-        self._total_success = 0
-        self._total_failed = 0
-        self._total_fallback = 0
-        self._total_latency_ms = 0.0
+    def map_symbol(self, source_symbol: str) -> str:
+        """交易對映射（實現基類抽象方法）"""
+        return self._match_hedge_symbol(source_symbol) or ""
 
     # ==================== 交易對匹配 ====================
 
@@ -233,9 +174,10 @@ class HedgeEngine:
             status=HedgeStatus.PENDING,
             source_fill_id=fill_id,
             started_at=datetime.now(),
-            standx_symbol=standx_symbol,
+            source_symbol=standx_symbol,
             hedge_symbol=hedge_symbol or "",
             requested_qty=fill_qty,
+            hedge_side=hedge_side,
         )
 
         # 驗證交易對匹配
@@ -289,6 +231,7 @@ class HedgeEngine:
                     result.status = HedgeStatus.FILLED
                     result.order_id = hedge_result.get("order_id")
                     result.fill_price = hedge_result.get("fill_price")
+                    result.execution_price = result.fill_price
                     result.fill_qty = hedge_result.get("fill_qty")
                     result.slippage_bps = self._calculate_slippage(
                         fill_price,
@@ -475,7 +418,7 @@ class HedgeEngine:
 
             logger.warning(f"Position {current_position} exceeds hard limit, reducing by {reduce_qty}")
 
-            fallback_result = await self._execute_fallback(
+            fallback_result = await self.execute_fallback(
                 side=fill_side,
                 qty=reduce_qty,
                 symbol=standx_symbol,
@@ -493,37 +436,6 @@ class HedgeEngine:
 
         result.completed_at = datetime.now()
         return result
-
-    async def _execute_fallback(
-        self,
-        side: str,
-        qty: Decimal,
-        symbol: str,
-    ) -> dict:
-        """在 StandX 部分平倉"""
-        try:
-            close_side = "sell" if side == "buy" else "buy"
-
-            logger.info(f"Executing fallback: {close_side} {qty} on StandX")
-
-            order = await self.standx.place_order(
-                symbol=symbol,
-                side=close_side,
-                order_type="market",
-                quantity=qty,
-                reduce_only=True,
-            )
-
-            if order:
-                return {
-                    "success": True,
-                    "order_id": getattr(order, "client_order_id", None) or getattr(order, "order_id", None),
-                }
-            else:
-                return {"success": False, "error": "StandX order returned None"}
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
 
     # ==================== 恢復檢測 ====================
 
@@ -568,45 +480,12 @@ class HedgeEngine:
             self._recovery_success_count = 0
             return False
 
-    # ==================== 輔助方法 ====================
-
-    def _calculate_slippage(
-        self,
-        expected_price: Decimal,
-        actual_price: Optional[Decimal],
-        side: str,
-    ) -> float:
-        """計算滑點 (basis points)"""
-        if actual_price is None or expected_price == 0:
-            return 0.0
-
-        diff = actual_price - expected_price
-        if side == "buy":
-            slippage = -float(diff / expected_price * 10000)
-        else:
-            slippage = float(diff / expected_price * 10000)
-
-        return slippage
-
-    # ==================== 統計 ====================
-
-    @property
-    def success_rate(self) -> float:
-        """成功率"""
-        if self._total_attempts == 0:
-            return 0.0
-        return self._total_success / self._total_attempts * 100
-
-    @property
-    def avg_latency_ms(self) -> float:
-        """平均延遲"""
-        if self._total_success == 0:
-            return 0.0
-        return self._total_latency_ms / self._total_success
+    # ==================== 統計（覆蓋基類添加 hedge_type）====================
 
     def get_stats(self) -> dict:
         """獲取統計"""
         return {
+            "hedge_type": "grvt",
             "total_attempts": self._total_attempts,
             "total_success": self._total_success,
             "total_failed": self._total_failed,
@@ -614,11 +493,3 @@ class HedgeEngine:
             "success_rate": self.success_rate,
             "avg_latency_ms": self.avg_latency_ms,
         }
-
-    def reset_stats(self):
-        """重置統計"""
-        self._total_attempts = 0
-        self._total_success = 0
-        self._total_failed = 0
-        self._total_fallback = 0
-        self._total_latency_ms = 0.0

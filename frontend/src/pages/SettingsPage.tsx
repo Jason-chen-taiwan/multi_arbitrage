@@ -15,6 +15,12 @@ interface ExchangeConfig {
 interface ConfigList {
   cex: Record<string, ExchangeConfig>
   dex: Record<string, ExchangeConfig>
+  hedge?: {
+    target: string
+    configured: boolean
+    standx?: { configured: boolean }
+    grvt?: { configured: boolean }
+  }
 }
 
 // Predefined exchange options
@@ -39,17 +45,51 @@ function SettingsPage() {
   const [walletAddress, setWalletAddress] = useState('')
   const [tradingAccountId, setTradingAccountId] = useState('')
 
+  // Hedge config state
+  const [hedgeTarget, setHedgeTarget] = useState<'grvt' | 'standx_hedge' | 'none'>('grvt')
+  const [hedgeApiToken, setHedgeApiToken] = useState('')
+  const [hedgePrivateKey, setHedgePrivateKey] = useState('')
+  const [hedgeConfigured, setHedgeConfigured] = useState(false)
+  const [hedgeMaskedToken, setHedgeMaskedToken] = useState('')
+  const [hedgeMaskedKey, setHedgeMaskedKey] = useState('')
+
   const loadConfigs = async () => {
     try {
       const response = await configApi.list()
       setConfigs(response.data)
+
+      // Load hedge config
+      if (response.data.hedge) {
+        setHedgeTarget(response.data.hedge.target as 'grvt' | 'standx_hedge' | 'none')
+        setHedgeConfigured(
+          response.data.hedge.target === 'none' ||
+          (response.data.hedge.target === 'grvt' && response.data.hedge.grvt?.configured) ||
+          (response.data.hedge.target === 'standx_hedge' && response.data.hedge.standx?.configured) ||
+          false
+        )
+      }
     } catch (error) {
       console.error('Failed to load configs:', error)
     }
   }
 
+  const loadHedgeConfig = async () => {
+    try {
+      const response = await configApi.getHedgeConfig()
+      if (response.data) {
+        setHedgeTarget(response.data.hedge_target || 'grvt')
+        setHedgeConfigured(response.data.configured || false)
+        setHedgeMaskedToken(response.data.api_token_masked || '')
+        setHedgeMaskedKey(response.data.ed25519_key_masked || '')
+      }
+    } catch (error) {
+      console.error('Failed to load hedge config:', error)
+    }
+  }
+
   useEffect(() => {
     loadConfigs()
+    loadHedgeConfig()
   }, [])
 
   const handleSaveConfig = async (e: React.FormEvent) => {
@@ -154,6 +194,35 @@ function SettingsPage() {
       }
     } catch (error) {
       setMessage({ type: 'error', text: t.settings.reconnectFailed })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSaveHedgeConfig = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsLoading(true)
+    setMessage(null)
+
+    try {
+      const hedgeConfig: Record<string, string> = {
+        hedge_target: hedgeTarget,
+      }
+
+      if (hedgeTarget === 'standx_hedge') {
+        if (hedgeApiToken) hedgeConfig.api_token = hedgeApiToken
+        if (hedgePrivateKey) hedgeConfig.ed25519_private_key = hedgePrivateKey
+      }
+
+      await configApi.saveHedgeConfig(hedgeConfig)
+      setMessage({ type: 'success', text: '對沖配置已保存。請重新連接交易所以啟用新配置。' })
+
+      // Reset form and reload config
+      setHedgeApiToken('')
+      setHedgePrivateKey('')
+      loadHedgeConfig()
+    } catch (error) {
+      setMessage({ type: 'error', text: '保存對沖配置失敗' })
     } finally {
       setIsLoading(false)
     }
@@ -369,6 +438,72 @@ function SettingsPage() {
               <div className="text-muted">{t.settings.noExchanges}</div>
             )}
           </div>
+        </div>
+
+        {/* Hedge Account Configuration */}
+        <div className="panel">
+          <h3>對沖帳戶配置</h3>
+          <form onSubmit={handleSaveHedgeConfig} className="form">
+            <div className="form-group">
+              <label>對沖目標</label>
+              <select
+                value={hedgeTarget}
+                onChange={(e) => setHedgeTarget(e.target.value as 'grvt' | 'standx_hedge' | 'none')}
+              >
+                <option value="grvt">GRVT (DEX)</option>
+                <option value="standx_hedge">StandX 對沖帳戶</option>
+                <option value="none">不對沖</option>
+              </select>
+              <small className="form-hint">
+                {hedgeTarget === 'grvt' && '使用 GRVT 交易所對沖（需先配置 GRVT）'}
+                {hedgeTarget === 'standx_hedge' && '使用另一個 StandX 帳戶對沖'}
+                {hedgeTarget === 'none' && '做市商成交後不執行對沖操作'}
+              </small>
+            </div>
+
+            {hedgeTarget === 'standx_hedge' && (
+              <>
+                {/* 顯示已配置的帳戶資訊 */}
+                {hedgeConfigured && hedgeMaskedToken && (
+                  <div className="form-group">
+                    <label>目前配置</label>
+                    <div className="configured-info">
+                      <div><strong>API Token:</strong> <code>{hedgeMaskedToken}</code></div>
+                      <div><strong>Ed25519 Key:</strong> <code>{hedgeMaskedKey}</code></div>
+                    </div>
+                  </div>
+                )}
+                <div className="form-group">
+                  <label>API Token (對沖帳戶) {hedgeConfigured && '(留空保留現有)'}</label>
+                  <input
+                    type="password"
+                    value={hedgeApiToken}
+                    onChange={(e) => setHedgeApiToken(e.target.value)}
+                    placeholder={hedgeConfigured ? '留空保留現有 Token' : 'StandX 對沖帳戶的 API Token'}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Ed25519 Private Key (對沖帳戶) {hedgeConfigured && '(留空保留現有)'}</label>
+                  <input
+                    type="password"
+                    value={hedgePrivateKey}
+                    onChange={(e) => setHedgePrivateKey(e.target.value)}
+                    placeholder={hedgeConfigured ? '留空保留現有 Key' : 'StandX 對沖帳戶的 Ed25519 Private Key'}
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="form-group">
+              <span className={`status-badge ${hedgeConfigured ? 'status-success' : 'status-warning'}`}>
+                {hedgeConfigured ? '已配置' : '未配置'}
+              </span>
+            </div>
+
+            <button type="submit" className="btn btn-primary" disabled={isLoading}>
+              {isLoading ? t.common.loading : '保存對沖配置'}
+            </button>
+          </form>
         </div>
 
         {/* System Controls */}

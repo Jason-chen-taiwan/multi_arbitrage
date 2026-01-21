@@ -23,7 +23,7 @@ class ConfigManager:
         """獲取所有配置"""
         load_dotenv(self.env_file, override=True)
 
-        configs = {'dex': {}, 'cex': {}}
+        configs = {'dex': {}, 'cex': {}, 'hedge': {}}
 
         # DEX 配置
         # StandX: 支援 Token 模式 (推薦) 和 錢包簽名模式
@@ -60,6 +60,38 @@ class ConfigManager:
                 'trading_account_id': os.getenv('GRVT_TRADING_ACCOUNT_ID', ''),
                 'testnet': os.getenv('GRVT_TESTNET', 'false').lower() == 'true'
             }
+
+        # 對沖帳戶配置
+        hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+        configs['hedge']['target'] = hedge_target
+
+        if hedge_target == 'standx_hedge':
+            hedge_token = os.getenv('STANDX_HEDGE_API_TOKEN')
+            hedge_key = os.getenv('STANDX_HEDGE_ED25519_PRIVATE_KEY')
+            if hedge_token and hedge_key:
+                configs['hedge']['standx'] = {
+                    'name': 'StandX Hedge Account',
+                    'configured': True,
+                    'api_token_masked': self._mask_key(hedge_token),
+                    'ed25519_key_masked': self._mask_key(hedge_key),
+                }
+            else:
+                configs['hedge']['standx'] = {
+                    'name': 'StandX Hedge Account',
+                    'configured': False,
+                }
+        elif hedge_target == 'grvt':
+            # GRVT 作為對沖目標使用現有 GRVT 配置
+            if os.getenv('GRVT_API_KEY'):
+                configs['hedge']['grvt'] = {
+                    'name': 'GRVT (DEX)',
+                    'configured': True,
+                }
+            else:
+                configs['hedge']['grvt'] = {
+                    'name': 'GRVT (DEX)',
+                    'configured': False,
+                }
 
         # CEX 配置
         for exchange in ['binance', 'okx', 'bitget', 'bybit']:
@@ -123,6 +155,73 @@ class ConfigManager:
 
         load_dotenv(self.env_file, override=True)
 
+    def save_hedge_config(self, config: dict):
+        """
+        保存對沖帳戶配置
+
+        config: {
+            'hedge_target': 'grvt' | 'standx_hedge' | 'none',
+            'api_token': str (StandX 對沖帳戶 API Token),
+            'ed25519_private_key': str (StandX 對沖帳戶 Ed25519 Key),
+        }
+        """
+        hedge_target = config.get('hedge_target', 'grvt')
+        set_key(self.env_file, 'HEDGE_TARGET', hedge_target, quote_mode='never')
+
+        if hedge_target == 'standx_hedge':
+            # 保存 StandX 對沖帳戶配置
+            if config.get('api_token'):
+                set_key(self.env_file, 'STANDX_HEDGE_API_TOKEN',
+                        config['api_token'], quote_mode='never')
+            if config.get('ed25519_private_key'):
+                set_key(self.env_file, 'STANDX_HEDGE_ED25519_PRIVATE_KEY',
+                        config['ed25519_private_key'], quote_mode='never')
+        elif hedge_target == 'none':
+            # 不對沖，清除對沖帳戶配置
+            unset_key(self.env_file, 'STANDX_HEDGE_API_TOKEN')
+            unset_key(self.env_file, 'STANDX_HEDGE_ED25519_PRIVATE_KEY')
+
+        load_dotenv(self.env_file, override=True)
+
+    def get_hedge_config(self) -> dict:
+        """獲取對沖配置"""
+        load_dotenv(self.env_file, override=True)
+
+        hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+
+        result = {
+            'hedge_target': hedge_target,
+            'configured': False,
+        }
+
+        if hedge_target == 'standx_hedge':
+            hedge_token = os.getenv('STANDX_HEDGE_API_TOKEN')
+            hedge_key = os.getenv('STANDX_HEDGE_ED25519_PRIVATE_KEY')
+            result['configured'] = bool(hedge_token and hedge_key)
+            if result['configured']:
+                result['api_token_masked'] = self._mask_key(hedge_token)
+                result['ed25519_key_masked'] = self._mask_key(hedge_key)
+        elif hedge_target == 'grvt':
+            result['configured'] = bool(os.getenv('GRVT_API_KEY'))
+        elif hedge_target == 'none':
+            result['configured'] = True  # "不對沖" 視為已配置
+
+        return result
+
+    def delete_hedge_config(self):
+        """刪除對沖帳戶配置"""
+        keys = [
+            'HEDGE_TARGET',
+            'STANDX_HEDGE_API_TOKEN',
+            'STANDX_HEDGE_ED25519_PRIVATE_KEY',
+        ]
+        for key in keys:
+            unset_key(self.env_file, key)
+            if key in os.environ:
+                del os.environ[key]
+
+        load_dotenv(self.env_file, override=True)
+
     def delete_config(self, exchange_name: str, exchange_type: str):
         """刪除配置"""
         # 統一轉換為小寫進行比對
@@ -152,8 +251,12 @@ class ConfigManager:
         load_dotenv(self.env_file, override=True)
 
     @staticmethod
-    def _mask_key(key: str) -> str:
-        """遮罩敏感信息"""
+    def _mask_key(key: str, max_length: int = 20) -> str:
+        """遮罩敏感信息，限制總長度"""
         if len(key) <= 8:
             return '*' * len(key)
-        return key[:4] + '*' * (len(key) - 8) + key[-4:]
+        # 顯示前4字元 + 星號 + 後4字元，但限制總長度
+        masked = key[:4] + '****' + key[-4:]
+        if len(masked) > max_length:
+            return masked[:max_length]
+        return masked

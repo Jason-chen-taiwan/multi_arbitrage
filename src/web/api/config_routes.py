@@ -191,6 +191,48 @@ def register_config_routes(app, dependencies):
                 "details": {}
             }, status_code=500)
 
+    @router.get("/hedge")
+    async def get_hedge_config():
+        """
+        獲取對沖配置
+
+        返回當前的對沖目標設定和配置狀態。
+        """
+        try:
+            hedge_config = config_manager.get_hedge_config()
+            return JSONResponse(hedge_config)
+        except Exception as e:
+            return JSONResponse({'error': str(e)}, status_code=500)
+
+    @router.post("/hedge", response_model=SuccessResponse, responses={500: {"model": ErrorResponse}})
+    async def save_hedge_config(request: Request):
+        """
+        保存對沖配置
+
+        設定對沖目標（grvt / standx_hedge / none）和相關憑證。
+
+        Body:
+        - hedge_target: 對沖目標 ("grvt" | "standx_hedge" | "none")
+        - api_token: StandX 對沖帳戶 API Token（當 hedge_target=standx_hedge 時）
+        - ed25519_private_key: StandX 對沖帳戶 Ed25519 Key（當 hedge_target=standx_hedge 時）
+        """
+        try:
+            data = await request.json()
+            config_manager.save_hedge_config(data)
+
+            # 如果系統已運行，需要重新連接以載入新的對沖帳戶
+            if logger:
+                logger.info(f"對沖配置已更新: hedge_target={data.get('hedge_target')}")
+
+            return JSONResponse({
+                'success': True,
+                'message': '對沖配置已保存。請重新連接交易所以啟用新配置。'
+            })
+        except Exception as e:
+            if logger:
+                logger.error(f"保存對沖配置失敗: {e}")
+            return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
     @router.post("/reconnect", response_model=ReconnectResponse, responses={500: {"model": ErrorResponse}})
     async def reconnect_all_exchanges():
         """

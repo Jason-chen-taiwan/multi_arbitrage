@@ -42,6 +42,9 @@ export const configApi = {
   health: () => apiClient.get('/config/health'),
   healthExchange: (exchange: string) => apiClient.get(`/config/health/${exchange}`),
   reconnect: () => apiClient.post('/config/reconnect'),
+  // Hedge config endpoints
+  getHedgeConfig: () => apiClient.get('/config/hedge'),
+  saveHedgeConfig: (data: Record<string, string>) => apiClient.post('/config/hedge', data),
 }
 
 // Control endpoints

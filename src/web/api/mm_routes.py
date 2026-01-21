@@ -15,8 +15,11 @@ from decimal import Decimal
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+import os
+
 from src.strategy.market_maker_executor import MarketMakerExecutor, MMConfig, ExecutorStatus
 from src.strategy.hedge_engine import HedgeEngine
+from src.strategy.standx_hedge_engine import StandXHedgeEngine
 from src.utils.mm_config_manager import get_mm_config
 from src.web.schemas import (
     MMStartRequest,
@@ -104,13 +107,28 @@ def register_mm_routes(app, dependencies):
                 return JSONResponse({'success': False, 'error': 'StandX 未連接'})
 
             standx = adapters['STANDX']
-            grvt = adapters.get('GRVT')  # 可選，沒有則不對沖
+
+            # 根據 HEDGE_TARGET 決定對沖適配器和交易對
+            hedge_target = os.getenv('HEDGE_TARGET', 'grvt')
+            hedge_adapter = None
+            hedge_symbol = "BTC_USDT_Perp"
+            hedge_exchange = "grvt"
+
+            if hedge_target == 'standx_hedge':
+                hedge_adapter = adapters.get('STANDX_HEDGE')
+                hedge_symbol = "BTC-USD"  # StandX 使用相同交易對
+                hedge_exchange = "standx_hedge"
+            elif hedge_target == 'grvt':
+                hedge_adapter = adapters.get('GRVT')
+                hedge_symbol = "BTC_USDT_Perp"
+                hedge_exchange = "grvt"
+            # hedge_target == 'none' 時 hedge_adapter 保持 None
 
             # 創建配置（使用保存的報價參數）
             config = MMConfig(
                 symbol="BTC-USD",
-                hedge_symbol="BTC_USDT_Perp",
-                hedge_exchange="grvt",
+                hedge_symbol=hedge_symbol,
+                hedge_exchange=hedge_exchange,
                 order_size_btc=order_size,
                 order_distance_bps=order_distance,
                 cancel_distance_bps=cancel_distance,
@@ -137,25 +155,36 @@ def register_mm_routes(app, dependencies):
                 f"vol_pause={volatility_threshold}bps, vol_resume={volatility_resume}bps"
             )
 
-            # 創建對沖引擎 (如果有 GRVT)
+            # 根據 HEDGE_TARGET 創建對沖引擎
             hedge_engine = None
-            if grvt:
+            if hedge_target == 'standx_hedge' and hedge_adapter:
+                # StandX → StandX 對沖
+                hedge_engine = StandXHedgeEngine(
+                    hedge_adapter=hedge_adapter,
+                    fallback_adapter=standx,  # 主帳戶作為 fallback
+                )
+                logger.info("使用 StandX 對沖帳戶對沖")
+            elif hedge_target == 'grvt' and hedge_adapter:
+                # StandX → GRVT 對沖
                 hedge_engine = HedgeEngine(
-                    hedge_adapter=grvt,
+                    hedge_adapter=hedge_adapter,
                     standx_adapter=standx,
                 )
+                logger.info("使用 GRVT 對沖")
+            elif hedge_target == 'none':
+                logger.info("對沖已禁用 (HEDGE_TARGET=none)")
 
             # 創建執行器
             mm_executor = MarketMakerExecutor(
                 standx_adapter=standx,
-                hedge_adapter=grvt,
+                hedge_adapter=hedge_adapter,
                 hedge_engine=hedge_engine,
                 config=config,
             )
 
-            # 如果沒有 GRVT，警告但繼續
-            if not grvt:
-                logger.warning("GRVT 未連接，做市商將不會對沖")
+            # 如果沒有對沖適配器，警告但繼續
+            if not hedge_adapter and hedge_target != 'none':
+                logger.warning(f"對沖目標 {hedge_target} 未連接，做市商將不會對沖")
 
             # 設置回調
             async def on_status_change(status: ExecutorStatus):
