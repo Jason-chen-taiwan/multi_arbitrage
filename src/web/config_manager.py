@@ -163,6 +163,9 @@ class ConfigManager:
             'hedge_target': 'grvt' | 'standx_hedge' | 'none',
             'api_token': str (StandX 對沖帳戶 API Token),
             'ed25519_private_key': str (StandX 對沖帳戶 Ed25519 Key),
+            'proxy_url': str (代理 URL，例如 socks5://host:port),
+            'proxy_username': str (代理用戶名，可選),
+            'proxy_password': str (代理密碼，可選),
         }
         """
         hedge_target = config.get('hedge_target', 'grvt')
@@ -176,10 +179,37 @@ class ConfigManager:
             if config.get('ed25519_private_key'):
                 set_key(self.env_file, 'STANDX_HEDGE_ED25519_PRIVATE_KEY',
                         config['ed25519_private_key'], quote_mode='never')
+
+            # 保存代理配置（用於女巫防護）
+            # proxy_url: 空字串表示清除，None 表示不更新
+            if 'proxy_url' in config:
+                proxy_url = config.get('proxy_url', '')
+                if proxy_url:
+                    set_key(self.env_file, 'STANDX_HEDGE_PROXY_URL', proxy_url, quote_mode='never')
+                else:
+                    unset_key(self.env_file, 'STANDX_HEDGE_PROXY_URL')
+
+            if 'proxy_username' in config:
+                proxy_username = config.get('proxy_username', '')
+                if proxy_username:
+                    set_key(self.env_file, 'STANDX_HEDGE_PROXY_USERNAME', proxy_username, quote_mode='never')
+                else:
+                    unset_key(self.env_file, 'STANDX_HEDGE_PROXY_USERNAME')
+
+            if 'proxy_password' in config:
+                proxy_password = config.get('proxy_password', '')
+                if proxy_password:
+                    set_key(self.env_file, 'STANDX_HEDGE_PROXY_PASSWORD', proxy_password, quote_mode='never')
+                else:
+                    unset_key(self.env_file, 'STANDX_HEDGE_PROXY_PASSWORD')
+
         elif hedge_target == 'none':
             # 不對沖，清除對沖帳戶配置
             unset_key(self.env_file, 'STANDX_HEDGE_API_TOKEN')
             unset_key(self.env_file, 'STANDX_HEDGE_ED25519_PRIVATE_KEY')
+            unset_key(self.env_file, 'STANDX_HEDGE_PROXY_URL')
+            unset_key(self.env_file, 'STANDX_HEDGE_PROXY_USERNAME')
+            unset_key(self.env_file, 'STANDX_HEDGE_PROXY_PASSWORD')
 
         load_dotenv(self.env_file, override=True)
 
@@ -201,6 +231,16 @@ class ConfigManager:
             if result['configured']:
                 result['api_token_masked'] = self._mask_key(hedge_token)
                 result['ed25519_key_masked'] = self._mask_key(hedge_key)
+
+            # 代理配置（用於女巫防護）
+            proxy_url = os.getenv('STANDX_HEDGE_PROXY_URL', '')
+            proxy_username = os.getenv('STANDX_HEDGE_PROXY_USERNAME', '')
+            result['proxy_configured'] = bool(proxy_url)
+            if proxy_url:
+                result['proxy_url_masked'] = self._mask_proxy_url(proxy_url)
+            if proxy_username:
+                result['proxy_username'] = proxy_username  # 用戶名不遮罩
+
         elif hedge_target == 'grvt':
             result['configured'] = bool(os.getenv('GRVT_API_KEY'))
         elif hedge_target == 'none':
@@ -208,12 +248,35 @@ class ConfigManager:
 
         return result
 
+    @staticmethod
+    def _mask_proxy_url(url: str) -> str:
+        """遮罩代理 URL 的敏感部分（保留協議和端口）"""
+        # 例如: socks5://1.2.3.4:1080 -> socks5://1.2.***:1080
+        if '://' in url:
+            protocol, rest = url.split('://', 1)
+            if ':' in rest:
+                host, port = rest.rsplit(':', 1)
+                # 遮罩 IP 中間部分
+                if '.' in host:
+                    parts = host.split('.')
+                    if len(parts) == 4:
+                        masked_host = f"{parts[0]}.{parts[1]}.***.{parts[3]}"
+                    else:
+                        masked_host = host[:4] + '***' + host[-4:] if len(host) > 8 else '***'
+                else:
+                    masked_host = host[:4] + '***' if len(host) > 4 else '***'
+                return f"{protocol}://{masked_host}:{port}"
+        return url[:10] + '***' if len(url) > 10 else '***'
+
     def delete_hedge_config(self):
         """刪除對沖帳戶配置"""
         keys = [
             'HEDGE_TARGET',
             'STANDX_HEDGE_API_TOKEN',
             'STANDX_HEDGE_ED25519_PRIVATE_KEY',
+            'STANDX_HEDGE_PROXY_URL',
+            'STANDX_HEDGE_PROXY_USERNAME',
+            'STANDX_HEDGE_PROXY_PASSWORD',
         ]
         for key in keys:
             unset_key(self.env_file, key)

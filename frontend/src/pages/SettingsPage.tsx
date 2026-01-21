@@ -53,6 +53,13 @@ function SettingsPage() {
   const [hedgeMaskedToken, setHedgeMaskedToken] = useState('')
   const [hedgeMaskedKey, setHedgeMaskedKey] = useState('')
 
+  // Proxy config state (for Sybil protection)
+  const [proxyUrl, setProxyUrl] = useState('')
+  const [proxyUsername, setProxyUsername] = useState('')
+  const [proxyPassword, setProxyPassword] = useState('')
+  const [proxyConfigured, setProxyConfigured] = useState(false)
+  const [proxyUrlMasked, setProxyUrlMasked] = useState('')
+
   const loadConfigs = async () => {
     try {
       const response = await configApi.list()
@@ -85,6 +92,11 @@ function SettingsPage() {
         setHedgeConfigured(response.data.configured || false)
         setHedgeMaskedToken(response.data.api_token_masked || '')
         setHedgeMaskedKey(response.data.ed25519_key_masked || '')
+
+        // Load proxy config
+        setProxyConfigured(response.data.proxy_configured || false)
+        setProxyUrlMasked(response.data.proxy_url_masked || '')
+        // Note: proxy_username is not masked, password is never returned
       }
     } catch (error) {
       console.error('Failed to load hedge config:', error)
@@ -232,6 +244,12 @@ function SettingsPage() {
       if (hedgeTarget === 'standx_hedge') {
         if (hedgeApiToken) hedgeConfig.api_token = hedgeApiToken
         if (hedgePrivateKey) hedgeConfig.ed25519_private_key = hedgePrivateKey
+
+        // Proxy config (for Sybil protection)
+        // Only include if user entered something (empty string means clear)
+        if (proxyUrl !== undefined) hedgeConfig.proxy_url = proxyUrl
+        if (proxyUsername !== undefined) hedgeConfig.proxy_username = proxyUsername
+        if (proxyPassword !== undefined) hedgeConfig.proxy_password = proxyPassword
       }
 
       await configApi.saveHedgeConfig(hedgeConfig)
@@ -240,6 +258,9 @@ function SettingsPage() {
       // Reset form and reload config
       setHedgeApiToken('')
       setHedgePrivateKey('')
+      setProxyUrl('')
+      setProxyUsername('')
+      setProxyPassword('')
       loadHedgeConfig()
     } catch (error) {
       setMessage({ type: 'error', text: '保存對沖配置失敗' })
@@ -508,6 +529,62 @@ function SettingsPage() {
                     onChange={(e) => setHedgePrivateKey(e.target.value)}
                     placeholder={hedgeConfigured ? '留空保留現有 Key' : 'StandX 對沖帳戶的 Ed25519 Private Key'}
                   />
+                </div>
+
+                {/* Proxy Settings for Sybil Protection */}
+                <div className="form-group" style={{ marginTop: 'var(--spacing-lg)', borderTop: '1px solid var(--border-color)', paddingTop: 'var(--spacing-md)' }}>
+                  <label style={{ fontWeight: 'bold' }}>代理設定（女巫防護）</label>
+                  <small className="form-hint">
+                    讓對沖帳戶走不同 IP，避免項目方識別兩個帳戶為同一人
+                  </small>
+                </div>
+
+                {/* Show current proxy config */}
+                {proxyConfigured && proxyUrlMasked && (
+                  <div className="form-group">
+                    <label>目前代理配置</label>
+                    <div className="configured-info">
+                      <div><strong>Proxy URL:</strong> <code>{proxyUrlMasked}</code></div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Proxy URL {proxyConfigured && '(留空清除代理)'}</label>
+                  <input
+                    type="text"
+                    value={proxyUrl}
+                    onChange={(e) => setProxyUrl(e.target.value)}
+                    placeholder="socks5://host:port 或 http://host:port"
+                  />
+                  <small className="form-hint">支援 HTTP/HTTPS/SOCKS5 代理</small>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Proxy Username (可選)</label>
+                    <input
+                      type="text"
+                      value={proxyUsername}
+                      onChange={(e) => setProxyUsername(e.target.value)}
+                      placeholder="代理用戶名"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Proxy Password (可選)</label>
+                    <input
+                      type="password"
+                      value={proxyPassword}
+                      onChange={(e) => setProxyPassword(e.target.value)}
+                      placeholder="代理密碼"
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <span className={`status-badge ${proxyConfigured ? 'status-success' : 'status-muted'}`}>
+                    {proxyConfigured ? '代理已配置' : '未配置代理'}
+                  </span>
                 </div>
               </>
             )}
