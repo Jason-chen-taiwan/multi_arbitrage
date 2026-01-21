@@ -168,9 +168,15 @@ class SystemManager:
         # === 健康檢查 ===
         await self._perform_health_checks()
 
-        # 創建監控器
+        # 創建監控器（排除對沖帳戶，避免女巫偵測）
+        # STANDX_HEDGE 只用於對沖執行，不需要 orderbook 監控
+        monitor_adapters = {
+            name: adapter
+            for name, adapter in self.adapters.items()
+            if name != 'STANDX_HEDGE'
+        }
         self.monitor = MultiExchangeMonitor(
-            adapters=self.adapters,
+            adapters=monitor_adapters,
             symbols=unified_symbols,
             update_interval=2.0,
             min_profit_pct=0.1
@@ -571,9 +577,14 @@ class SystemManager:
         logger.info("  🔄 切換到新連接...")
         self.adapters = new_adapters
 
-        # 更新 monitor 的 adapters
+        # 更新 monitor 的 adapters（排除對沖帳戶，避免女巫偵測）
         if self.monitor:
-            self.monitor.adapters = self.adapters
+            monitor_adapters = {
+                name: adapter
+                for name, adapter in self.adapters.items()
+                if name != 'STANDX_HEDGE'
+            }
+            self.monitor.adapters = monitor_adapters
 
         # === 第三步：斷開舊的連接（已不再被引用）===
         logger.info("  🔌 斷開舊連接...")
