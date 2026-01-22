@@ -1,6 +1,6 @@
 # StandX Market Maker
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/Jason-chen-taiwan/multi_arbitrage)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/Jason-chen-taiwan/multi_arbitrage)
 
 專為 **StandX Uptime Program** 優化的自動化做市商系統。
 
@@ -11,9 +11,12 @@
 - **實時監控**：React Dashboard 即時顯示倉位、PnL、訂單狀態
 - **智能風控**：庫存管理、最大倉位限制、智能波動率暫停（雙閾值 + 穩定期確認）
 - **多帳戶對沖**：支援 StandX 多帳戶對沖
-- **運行時控制**：對沖開關、即時平倉開關可在運行中即時切換
+- **運行時控制**：對沖開關、即時平倉開關可在運行中即時切換，重啟後保留設定
 - **自動淨敞口對沖**：開啟對沖模式後自動檢測並平衡兩帳戶倉位
 - **雙邊 PnL 監控**：即時顯示主帳戶、對沖帳戶的 Unrealized PnL 和合計淨利潤
+- **清算保護**：監控保證金比率，接近清算時自動緊急平倉
+- **女巫防護**：對沖帳戶支援獨立代理 (SOCKS5/HTTP)，避免 IP 關聯
+- **完整交易日誌**：所有交易和對沖操作記錄於 `logs/mm_trades_*.log`
 
 ## 系統架構
 
@@ -103,7 +106,26 @@ start.bat
 1. 在 Settings 頁面的「對沖帳戶配置」區塊
 2. 選擇「StandX 對沖帳戶」
 3. 填入對沖帳戶的 API Token 和 Ed25519 Private Key
-4. 保存後重新連接交易所
+4. （可選）配置代理以實現女巫防護
+5. 保存後重新連接交易所
+
+#### 女巫防護（代理設定）
+
+讓對沖帳戶走不同 IP，避免項目方識別兩個帳戶為同一人：
+
+1. 在對沖配置區塊填入 Proxy URL（例如 `socks5://host:port`）
+2. 如需認證，填入用戶名和密碼
+3. 支援 HTTP/HTTPS/SOCKS5 代理
+
+健康檢查會顯示對沖帳戶的外部 IP，驗證代理是否生效。
+
+#### 清算保護
+
+自動監控帳戶保證金狀態，接近清算時緊急平倉：
+
+- **保證金比率閾值**：低於此值觸發保護（預設 15%）
+- **清算距離閾值**：價格距清算價低於此比例觸發（預設 5%）
+- 觸發後自動市價平倉所有持倉
 
 #### 運行時對沖控制
 
