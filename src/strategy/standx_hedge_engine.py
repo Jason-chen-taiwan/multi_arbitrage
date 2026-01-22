@@ -23,6 +23,9 @@ from .base_hedge_engine import (
 
 logger = logging.getLogger(__name__)
 
+# 獲取 mm_trades 日誌（與做市策略共用同一個日誌文件）
+trade_log = logging.getLogger("mm_trade")
+
 
 @dataclass
 class StandXHedgeConfig(BaseHedgeConfig):
@@ -102,12 +105,20 @@ class StandXHedgeEngine(BaseHedgeEngine):
 
         # 記錄代理狀態
         proxy_info = ""
+        via_proxy = False
         if hasattr(self.hedge_adapter, 'proxy_url') and self.hedge_adapter.proxy_url:
             proxy_info = f" [VIA PROXY: {self.hedge_adapter.proxy_url[:30]}...]"
+            via_proxy = True
 
         logger.info(
             f"[StandX Hedge] Starting: {source_symbol} → {hedge_symbol}, "
             f"{hedge_side} {fill_qty} (fill_price: {fill_price}){proxy_info}"
+        )
+
+        # 寫入 mm_trades 日誌
+        trade_log.info(
+            f"HEDGE_START | exchange=standx_hedge | side={hedge_side} | qty={fill_qty} | "
+            f"source_price={fill_price} | symbol={hedge_symbol} | via_proxy={via_proxy}"
         )
 
         # 重試執行
@@ -157,6 +168,13 @@ class StandXHedgeEngine(BaseHedgeEngine):
                         f"[StandX Hedge] Success: {hedge_side} {fill_qty} @ {result.fill_price} "
                         f"(slippage: {result.slippage_bps:.1f} bps, latency: {latency:.0f}ms)"
                     )
+
+                    # 寫入 mm_trades 日誌
+                    trade_log.info(
+                        f"HEDGE_SUCCESS | exchange=standx_hedge | side={hedge_side} | qty={fill_qty} | "
+                        f"price={result.fill_price} | slippage_bps={result.slippage_bps:.1f} | "
+                        f"latency_ms={latency:.0f} | attempts={attempt} | order_id={result.order_id}"
+                    )
                     return result
                 else:
                     result.error_message = "Order returned None"
@@ -179,6 +197,12 @@ class StandXHedgeEngine(BaseHedgeEngine):
         logger.error(f"[StandX Hedge] All {self.config.max_retries} attempts failed")
         result.status = HedgeStatus.FAILED
         self._total_failed += 1
+
+        # 寫入 mm_trades 日誌
+        trade_log.info(
+            f"HEDGE_FAILED | exchange=standx_hedge | side={hedge_side} | qty={fill_qty} | "
+            f"symbol={hedge_symbol} | attempts={self.config.max_retries} | error={result.error_message}"
+        )
 
         # 風控處理
         return await self._handle_hedge_failure(result, fill_side, fill_qty, source_symbol)
@@ -234,9 +258,22 @@ class StandXHedgeEngine(BaseHedgeEngine):
                 result.status = HedgeStatus.PARTIAL_FALLBACK
                 self._total_fallback += 1
                 logger.info(f"[StandX Hedge] Fallback success: order_id={fallback_result.get('order_id')}")
+
+                # 寫入 mm_trades 日誌
+                trade_log.info(
+                    f"HEDGE_FALLBACK | exchange=standx_main | status=success | side={fill_side} | "
+                    f"qty={reduce_qty} | symbol={source_symbol} | position_before={current_position} | "
+                    f"order_id={fallback_result.get('order_id')}"
+                )
             else:
                 result.status = HedgeStatus.FALLBACK_FAILED
                 logger.error(f"[StandX Hedge] Fallback failed: {fallback_result.get('error')}")
+
+                # 寫入 mm_trades 日誌
+                trade_log.info(
+                    f"HEDGE_FALLBACK | exchange=standx_main | status=failed | side={fill_side} | "
+                    f"qty={reduce_qty} | symbol={source_symbol} | error={fallback_result.get('error')}"
+                )
         else:
             # 倉位在可接受範圍，等待恢復
             logger.info(
@@ -244,6 +281,12 @@ class StandXHedgeEngine(BaseHedgeEngine):
                 "waiting for recovery"
             )
             result.status = HedgeStatus.WAITING_RECOVERY
+
+            # 寫入 mm_trades 日誌
+            trade_log.info(
+                f"HEDGE_WAIT | exchange=standx_hedge | status=waiting_recovery | "
+                f"position={current_position} | hard_limit={hard_limit} | symbol={source_symbol}"
+            )
 
         result.completed_at = datetime.now()
         return result
