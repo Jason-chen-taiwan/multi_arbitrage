@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 import os
-from typing import Optional, Callable, Awaitable, Dict
+from typing import Optional, Callable, Awaitable, Dict, List
 from decimal import Decimal
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -198,12 +198,13 @@ class MMConfig:
     cancel_distance_bps: int = 5         # 價格靠近時撤單（防止成交，~$46 緩衝）
     rebalance_distance_bps: int = 18     # 價格遠離時撤單重掛
 
-    # ==================== Inventory Skew 參數 ====================
-    inventory_skew_enabled: bool = True
-    inventory_skew_max_bps: Decimal = Decimal("6")     # 偏倉方向拉遠 6 bps
-    inventory_skew_pull_bps: Decimal = Decimal("4.5")  # 回補方向拉近 4.5 bps
-    min_quote_bps: Decimal = Decimal("0.5")            # 最小報價距離 (防止貼盤太近)
-    min_reversion_quote_bps: Decimal = Decimal("0")    # 回補方向最小距離 (允許貼盤)
+    # ==================== Fill Skew 參數（成交後推遠保護）====================
+    # 成交後將該側訂單推遠，防止單邊行情連續被吃
+    fill_skew_enabled: bool = True
+    fill_skew_bps: Decimal = Decimal("15")      # 每次成交推遠 15 bps
+    fill_skew_max_bps: Decimal = Decimal("80")  # 最多累積 80 bps (0.8%)
+    fill_skew_decay_sec: float = 3.0            # 半衰期 3 秒（指數衰減）
+    min_quote_bps: Decimal = Decimal("0.5")     # 最小報價距離 (防止貼盤太近)
 
     # ==================== 倉位參數 ====================
     order_size_btc: Decimal = Decimal("0.001")   # 單邊訂單量
@@ -332,7 +333,12 @@ class MarketMakerExecutor:
         self._ws_connected = False
 
         # 【新增】Skew 日誌去重（只在值變化時記錄）
-        self._last_skew_log: Optional[tuple] = None  # (pos_ratio, bid_bps, ask_bps)
+        self._last_skew_log: Optional[tuple] = None  # (bid_bps, ask_bps)
+
+        # 【新增】Fill Skew 追蹤 - 記錄各側最近成交時間和累積 skew
+        # 用於計算成交後的指數衰減推遠
+        self._fill_skew_bid: List[float] = []  # bid 成交時間戳列表
+        self._fill_skew_ask: List[float] = []  # ask 成交時間戳列表
 
         # 【新增】事件去重器 - 防止 WebSocket 重複成交事件
         self._event_deduplicator = EventDeduplicator(ttl_sec=60.0)
@@ -395,9 +401,10 @@ class MarketMakerExecutor:
             f"order_size={self.config.order_size_btc} | max_pos={self.config.max_position_btc}"
         )
         trade_log.info(
-            f"CONFIG | skew_enabled={self.config.inventory_skew_enabled} | "
-            f"push_bps={self.config.inventory_skew_max_bps} | "
-            f"pull_bps={self.config.inventory_skew_pull_bps}"
+            f"CONFIG | fill_skew_enabled={self.config.fill_skew_enabled} | "
+            f"fill_skew_bps={self.config.fill_skew_bps} | "
+            f"fill_skew_max_bps={self.config.fill_skew_max_bps} | "
+            f"decay_sec={self.config.fill_skew_decay_sec}"
         )
         trade_log.info(
             f"CONFIG | hard_stop={self.config.hard_stop_position_btc} | "
@@ -1012,7 +1019,8 @@ class MarketMakerExecutor:
         # rebate 模式不撤單 - 讓訂單成交以獲得 maker rebate
         if self.config.cancel_on_approach and self.config.strategy_mode == "uptime":
             orders_to_cancel = self.state.get_orders_to_cancel(
-                mid_price,
+                best_bid,
+                best_ask,
                 self.config.cancel_distance_bps
             )
             for client_order_id in orders_to_cancel:
@@ -1077,8 +1085,10 @@ class MarketMakerExecutor:
                                 )
 
         # 檢查是否需要重掛 (價格太遠)
+        # 使用 best_bid/best_ask 而非 mid_price，確保與下單計算基準一致
         should_rebalance = self.state.should_rebalance_orders(
-            mid_price,
+            best_bid,
+            best_ask,
             self.config.rebalance_distance_bps
         )
         if should_rebalance:
@@ -1412,80 +1422,68 @@ class MarketMakerExecutor:
             # Uptime 模式
             base_bps = Decimal(self.config.order_distance_bps)
 
-        # ==================== Step 2: Inventory Skew 計算 ====================
-        current_pos = self._get_primary_position()
-        max_pos = self.config.max_position_btc
-        order_size = self.config.order_size_btc
+        # ==================== Step 2: Fill Skew 計算（成交後推遠保護）====================
+        # 根據近期成交計算每側的 skew，使用指數衰減
+        now = time.time()
+        bid_bps = base_bps
+        ask_bps = base_bps
 
-        # 防止 max_pos 太小導致 ratio 飽和
-        effective_max_pos = max(
-            max_pos,
-            order_size * Decimal("3"),
-            self.config.min_effective_max_pos_btc
-        )
+        if self.config.fill_skew_enabled:
+            half_life = self.config.fill_skew_decay_sec
+            skew_per_fill = float(self.config.fill_skew_bps)
+            max_skew = float(self.config.fill_skew_max_bps)
 
-        # 【診斷】打印 skew 計算輸入（改為 debug 減少噪音）
-        logger.debug(
-            f"[Skew Input] current_pos={current_pos}, max_pos={max_pos}, "
-            f"effective_max_pos={effective_max_pos}, base_bps={base_bps}"
-        )
+            # 清理過期的成交記錄（超過 5 個半衰期基本無效）
+            cutoff = now - (half_life * 5)
+            self._fill_skew_bid = [t for t in self._fill_skew_bid if t > cutoff]
+            self._fill_skew_ask = [t for t in self._fill_skew_ask if t > cutoff]
 
-        if self.config.inventory_skew_enabled and effective_max_pos > 0:
-            # pos_ratio: -1 (max short) ~ +1 (max long)
-            pos_ratio = current_pos / effective_max_pos
-            pos_ratio = max(Decimal("-1"), min(Decimal("1"), pos_ratio))
+            # 計算 bid 側 skew（指數衰減累積）
+            bid_skew = 0.0
+            for fill_time in self._fill_skew_bid:
+                elapsed = now - fill_time
+                # 指數衰減：skew = skew_per_fill * 0.5^(elapsed / half_life)
+                decay = 0.5 ** (elapsed / half_life)
+                bid_skew += skew_per_fill * decay
+            bid_skew = min(bid_skew, max_skew)  # 上限
 
-            # 雙向 skew：一邊拉遠、另一邊拉近
-            push_bps = self.config.inventory_skew_max_bps   # 偏倉方向拉遠
-            pull_bps = self.config.inventory_skew_pull_bps  # 回補方向拉近
+            # 計算 ask 側 skew（指數衰減累積）
+            ask_skew = 0.0
+            for fill_time in self._fill_skew_ask:
+                elapsed = now - fill_time
+                decay = 0.5 ** (elapsed / half_life)
+                ask_skew += skew_per_fill * decay
+            ask_skew = min(ask_skew, max_skew)  # 上限
 
-            # 限制 pull 生效範圍，避免極端庫存時被 adverse selection 打穿
-            max_pull_ratio = Decimal("0.7")  # pull 只在 70% 庫存內生效
-            effective_ratio_for_pull = min(abs(pos_ratio), max_pull_ratio)
+            # 應用 skew（只推遠被成交的那側）
+            bid_bps = base_bps + Decimal(str(bid_skew))
+            ask_bps = base_bps + Decimal(str(ask_skew))
 
-            if pos_ratio > 0:  # long 偏多
-                bid_bps = base_bps + (pos_ratio * push_bps)                    # bid 更遠（用完整 ratio）
-                ask_bps = base_bps - (effective_ratio_for_pull * pull_bps)    # ask 更近（用限制 ratio）
-            else:  # short 偏多 (pos_ratio <= 0)
-                bid_bps = base_bps - (effective_ratio_for_pull * pull_bps)    # bid 更近（用限制 ratio）
-                ask_bps = base_bps + (abs(pos_ratio) * push_bps)              # ask 更遠（用完整 ratio）
-
-            # 確保不低於最小距離（回補方向可用更近的 min）
+            # 確保不低於最小距離
             min_bps = self.config.min_quote_bps
-            min_reversion_bps = self.config.min_reversion_quote_bps
-
-            if pos_ratio > 0:  # long → ask 是回補方向
-                bid_bps = max(min_bps, bid_bps)
-                ask_bps = max(min_reversion_bps, ask_bps)
-            else:  # short → bid 是回補方向
-                bid_bps = max(min_reversion_bps, bid_bps)
-                ask_bps = max(min_bps, ask_bps)
+            bid_bps = max(min_bps, bid_bps)
+            ask_bps = max(min_bps, ask_bps)
 
             # ==================== Skew 日誌去重（只在值變化時記錄）====================
-            # 四捨五入以避免微小變化導致大量日誌
-            rounded_ratio = round(float(pos_ratio), 2)
             rounded_bid_bps = round(float(bid_bps), 1)
             rounded_ask_bps = round(float(ask_bps), 1)
-            current_skew = (rounded_ratio, rounded_bid_bps, rounded_ask_bps)
+            current_skew = (rounded_bid_bps, rounded_ask_bps)
 
             if self._last_skew_log != current_skew:
                 self._last_skew_log = current_skew
 
                 logger.info(
-                    f"[Skew Result] pos={current_pos}, ratio={rounded_ratio:.2f}, "
-                    f"bid_bps={rounded_bid_bps:.1f}, ask_bps={rounded_ask_bps:.1f}, "
-                    f"push={self.config.inventory_skew_max_bps}, pull={self.config.inventory_skew_pull_bps}"
+                    f"[Fill Skew] bid_skew={bid_skew:.1f}, ask_skew={ask_skew:.1f}, "
+                    f"bid_bps={rounded_bid_bps:.1f}, ask_bps={rounded_ask_bps:.1f}"
                 )
 
-                # 交易日誌 - Skew 計算（只在變化時記錄）
+                # 交易日誌
                 trade_log.info(
-                    f"SKEW | exchange={self.config.primary_exchange} | pos={current_pos} | max_pos={max_pos} | ratio={rounded_ratio:.3f} | "
-                    f"bid_bps={rounded_bid_bps:.2f} | ask_bps={rounded_ask_bps:.2f} | "
-                    f"base_bps={float(base_bps):.1f}"
+                    f"FILL_SKEW | exchange={self.config.primary_exchange} | "
+                    f"bid_fills={len(self._fill_skew_bid)} | ask_fills={len(self._fill_skew_ask)} | "
+                    f"bid_skew={bid_skew:.1f} | ask_skew={ask_skew:.1f} | "
+                    f"bid_bps={rounded_bid_bps:.1f} | ask_bps={rounded_ask_bps:.1f}"
                 )
-        else:
-            bid_bps = base_bps
-            ask_bps = base_bps
 
         # ==================== Step 3: 保本回補覆蓋 ====================
         # 如果啟用保本回補且有建倉記錄，回補方向直接用 entry price
@@ -2640,6 +2638,16 @@ class MarketMakerExecutor:
         # 更新狀態
         self.state.record_fill()
 
+        # 【Fill Skew】記錄成交時間，用於計算推遠保護
+        if self.config.fill_skew_enabled:
+            fill_time = time.time()
+            if fill.side == "buy":
+                self._fill_skew_bid.append(fill_time)
+                logger.info(f"[Fill Skew] Recorded bid fill, total bid fills: {len(self._fill_skew_bid)}")
+            else:
+                self._fill_skew_ask.append(fill_time)
+                logger.info(f"[Fill Skew] Recorded ask fill, total ask fills: {len(self._fill_skew_ask)}")
+
         # 記錄成交事件（含詳細資訊，供前端顯示）
         self.state.record_fill_event(
             side=fill.side,
@@ -3076,6 +3084,25 @@ class MarketMakerExecutor:
 
     def to_dict(self) -> dict:
         """序列化"""
+        state_dict = self.state.to_dict()
+
+        # 計算訂單的 distance_bps（使用 best_bid/best_ask 為基準，與下單邏輯一致）
+        # 這樣前端不需要自己計算，確保資料唯一性
+        best_bid = self._last_best_bid
+        best_ask = self._last_best_ask
+
+        if state_dict.get("bid_order") and best_bid:
+            bid_price = Decimal(str(state_dict["bid_order"]["price"]))
+            # bid 訂單距離 best_bid 的 bps
+            distance_bps = float((best_bid - bid_price) / best_bid * 10000)
+            state_dict["bid_order"]["distance_bps"] = round(distance_bps, 1)
+
+        if state_dict.get("ask_order") and best_ask:
+            ask_price = Decimal(str(state_dict["ask_order"]["price"]))
+            # ask 訂單距離 best_ask 的 bps
+            distance_bps = float((ask_price - best_ask) / best_ask * 10000)
+            state_dict["ask_order"]["distance_bps"] = round(distance_bps, 1)
+
         return {
             "config": {
                 "symbol": self.config.symbol,
@@ -3093,17 +3120,18 @@ class MarketMakerExecutor:
                 "post_only": self.config.post_only,
                 "cancel_on_approach": self.config.cancel_on_approach,
                 "min_spread_ticks": self.config.min_spread_ticks,
-                # 止血策略參數
+                # Fill Skew 參數
                 "primary_exchange": self.config.primary_exchange,
-                "inventory_skew_enabled": self.config.inventory_skew_enabled,
-                "inventory_skew_max_bps": float(self.config.inventory_skew_max_bps),
-                "inventory_skew_pull_bps": float(self.config.inventory_skew_pull_bps),
+                "fill_skew_enabled": self.config.fill_skew_enabled,
+                "fill_skew_bps": float(self.config.fill_skew_bps),
+                "fill_skew_max_bps": float(self.config.fill_skew_max_bps),
+                "fill_skew_decay_sec": self.config.fill_skew_decay_sec,
                 "min_quote_bps": float(self.config.min_quote_bps),
                 "hard_stop_position_btc": float(self.config.hard_stop_position_btc),
                 "resume_position_btc": float(self.config.resume_position_btc),
                 "fill_cancel_policy": self.config.fill_cancel_policy,
             },
-            "state": self.state.to_dict(),
+            "state": state_dict,
             "stats": self.get_stats(),
             # 運行時控制開關狀態
             "runtime_controls": {

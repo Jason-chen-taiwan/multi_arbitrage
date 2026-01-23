@@ -552,51 +552,69 @@ class MMState:
 
     def get_orders_to_cancel(
         self,
-        current_price: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
         cancel_distance_bps: int
     ) -> List[str]:
         """
         獲取需要撤銷的訂單
 
-        當訂單價格距離當前價格太近時，撤銷以避免成交
+        當訂單價格距離 best_bid/best_ask 太近時，撤銷以避免成交
+
+        注意：檢查基準必須與下單計算基準一致
+        - 訂單是從 best_bid/best_ask 計算的
+        - 所以檢查也要用 best_bid/best_ask，而非 mid_price
         """
         to_cancel = []
-        threshold = current_price * Decimal(cancel_distance_bps) / Decimal("10000")
 
         with self._lock:
-            # 檢查買單 - 如果買單價格 >= current - threshold，太近了
+            # 檢查買單 - 如果 best_bid 下跌接近訂單價格，太近了
             if self._bid_order and self._bid_order.status in ["pending", "open"]:
-                if self._bid_order.price >= current_price - threshold:
+                threshold = best_bid * Decimal(cancel_distance_bps) / Decimal("10000")
+                if best_bid - self._bid_order.price <= threshold:
                     to_cancel.append(self._bid_order.client_order_id)
 
-            # 檢查賣單 - 如果賣單價格 <= current + threshold，太近了
+            # 檢查賣單 - 如果 best_ask 上漲接近訂單價格，太近了
             if self._ask_order and self._ask_order.status in ["pending", "open"]:
-                if self._ask_order.price <= current_price + threshold:
+                threshold = best_ask * Decimal(cancel_distance_bps) / Decimal("10000")
+                if self._ask_order.price - best_ask <= threshold:
                     to_cancel.append(self._ask_order.client_order_id)
 
         return to_cancel
 
     def should_rebalance_orders(
         self,
-        current_price: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
         rebalance_distance_bps: int
     ) -> bool:
         """
         是否需要重新掛單
 
-        當訂單價格距離當前價格太遠時，重新掛更優價格
+        當訂單價格距離 best_bid/best_ask 太遠時，重新掛更優價格
+
+        注意：
+        1. 檢查基準必須與下單計算基準一致（都用 best_bid/best_ask）
+        2. 添加 1 bps 容差，避免因 tick size 取整導致的邊界值循環
+           - 例如：order_distance=8, rebalance=10, inventory skew=2
+           - 計算 10 bps，但 floor 取整後變成 10.05 bps
+           - 若無容差：10.05 > 10 → 永遠觸發重掛
+           - 加容差後：10.05 > 11 → 不觸發
         """
-        threshold = current_price * Decimal(rebalance_distance_bps) / Decimal("10000")
+        # 容差：防止 tick size 取整導致的邊界值問題
+        TOLERANCE_BPS = Decimal("1")
 
         with self._lock:
-            # 檢查買單
+            # 檢查買單：如果 best_bid 上漲導致訂單太遠
             if self._bid_order and self._bid_order.status in ["pending", "open"]:
-                if current_price - self._bid_order.price > threshold:
+                threshold = best_bid * (Decimal(rebalance_distance_bps) + TOLERANCE_BPS) / Decimal("10000")
+                if best_bid - self._bid_order.price > threshold:
                     return True
 
-            # 檢查賣單
+            # 檢查賣單：如果 best_ask 下跌導致訂單太遠
             if self._ask_order and self._ask_order.status in ["pending", "open"]:
-                if self._ask_order.price - current_price > threshold:
+                threshold = best_ask * (Decimal(rebalance_distance_bps) + TOLERANCE_BPS) / Decimal("10000")
+                if self._ask_order.price - best_ask > threshold:
                     return True
 
         return False

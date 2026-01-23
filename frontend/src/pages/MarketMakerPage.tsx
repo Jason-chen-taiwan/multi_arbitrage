@@ -311,9 +311,9 @@ function MarketMakerPage() {
   const askQueueCancels = (stats?.ask_queue_cancels as number) || 0
   const askRebalances = (stats?.ask_rebalances as number) || 0
 
-  // Current orders (bid/ask)
-  const bidOrder = state?.bid_order as { price: number; qty: number; status: string } | null
-  const askOrder = state?.ask_order as { price: number; qty: number; status: string } | null
+  // Current orders (bid/ask) - distance_bps 由後端計算（基於 best_bid/best_ask）
+  const bidOrder = state?.bid_order as { price: number; qty: number; status: string; distance_bps?: number } | null
+  const askOrder = state?.ask_order as { price: number; qty: number; status: string; distance_bps?: number } | null
 
   // Calculate distance from mid price
   const getMidPrice = () => {
@@ -323,6 +323,7 @@ function MarketMakerPage() {
   }
   const midPrice = getMidPrice()
 
+  // 後端會計算 distance_bps（基於 best_bid/best_ask），此函數作為 fallback
   const calcDistanceBps = (orderPrice: number) => {
     if (!midPrice || !orderPrice) return null
     return Math.abs((midPrice - orderPrice) / midPrice * 10000)
@@ -836,11 +837,10 @@ function MarketMakerPage() {
                 <>
                   <span className="order-price text-positive">${bidOrder.price.toFixed(2)}</span>
                   <span className="order-qty">{bidOrder.qty} BTC</span>
-                  {midPrice && (
-                    <span className={`order-bps ${(calcDistanceBps(bidOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
-                      {calcDistanceBps(bidOrder.price)?.toFixed(1)} bps
-                    </span>
-                  )}
+                  {/* 優先使用後端計算的 distance_bps（基於 best_bid），fallback 到本地計算 */}
+                  <span className={`order-bps ${(bidOrder.distance_bps ?? calcDistanceBps(bidOrder.price) ?? 0) <= 10 ? 'in-range' : 'out-range'}`}>
+                    {(bidOrder.distance_bps ?? calcDistanceBps(bidOrder.price))?.toFixed(1)} bps
+                  </span>
                 </>
               ) : (
                 <span className="order-none">--</span>
@@ -852,11 +852,10 @@ function MarketMakerPage() {
                 <>
                   <span className="order-price text-negative">${askOrder.price.toFixed(2)}</span>
                   <span className="order-qty">{askOrder.qty} BTC</span>
-                  {midPrice && (
-                    <span className={`order-bps ${(calcDistanceBps(askOrder.price) || 0) <= 30 ? 'in-range' : 'out-range'}`}>
-                      {calcDistanceBps(askOrder.price)?.toFixed(1)} bps
-                    </span>
-                  )}
+                  {/* 優先使用後端計算的 distance_bps（基於 best_ask），fallback 到本地計算 */}
+                  <span className={`order-bps ${(askOrder.distance_bps ?? calcDistanceBps(askOrder.price) ?? 0) <= 10 ? 'in-range' : 'out-range'}`}>
+                    {(askOrder.distance_bps ?? calcDistanceBps(askOrder.price))?.toFixed(1)} bps
+                  </span>
                 </>
               ) : (
                 <span className="order-none">--</span>
