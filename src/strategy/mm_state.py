@@ -593,27 +593,18 @@ class MMState:
 
         當訂單價格距離 best_bid/best_ask 太遠時，重新掛更優價格
 
-        注意：
-        1. 檢查基準必須與下單計算基準一致（都用 best_bid/best_ask）
-        2. 添加 1 bps 容差，避免因 tick size 取整導致的邊界值循環
-           - 例如：order_distance=8, rebalance=10, inventory skew=2
-           - 計算 10 bps，但 floor 取整後變成 10.05 bps
-           - 若無容差：10.05 > 10 → 永遠觸發重掛
-           - 加容差後：10.05 > 11 → 不觸發
+        注意：檢查基準必須與下單計算基準一致（都用 best_bid/best_ask）
         """
-        # 容差：防止 tick size 取整導致的邊界值問題
-        TOLERANCE_BPS = Decimal("1")
-
         with self._lock:
             # 檢查買單：如果 best_bid 上漲導致訂單太遠
             if self._bid_order and self._bid_order.status in ["pending", "open"]:
-                threshold = best_bid * (Decimal(rebalance_distance_bps) + TOLERANCE_BPS) / Decimal("10000")
+                threshold = best_bid * Decimal(rebalance_distance_bps) / Decimal("10000")
                 if best_bid - self._bid_order.price > threshold:
                     return True
 
             # 檢查賣單：如果 best_ask 下跌導致訂單太遠
             if self._ask_order and self._ask_order.status in ["pending", "open"]:
-                threshold = best_ask * (Decimal(rebalance_distance_bps) + TOLERANCE_BPS) / Decimal("10000")
+                threshold = best_ask * Decimal(rebalance_distance_bps) / Decimal("10000")
                 if self._ask_order.price - best_ask > threshold:
                     return True
 
