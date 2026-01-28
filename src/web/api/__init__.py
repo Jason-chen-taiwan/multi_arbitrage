@@ -14,6 +14,7 @@ from .control_routes import register_control_routes
 from .mm_routes import register_mm_routes
 from .simulation_routes import register_simulation_routes
 from .referral_routes import register_referral_routes
+from .accounts_routes import register_accounts_routes
 
 
 def register_all_routes(app, dependencies):
@@ -35,9 +36,11 @@ def register_all_routes(app, dependencies):
             - remove_exchange: 移除交易所的異步函數
             - serialize_for_json: JSON 序列化函數
             - logger: 日誌記錄器
+            - system_manager_getter: 返回 SystemManager 的函數
     """
     register_config_routes(app, dependencies)
     register_control_routes(app, dependencies)
     register_mm_routes(app, dependencies)
     register_simulation_routes(app, dependencies)
     register_referral_routes(app, dependencies)
+    register_accounts_routes(app, dependencies)

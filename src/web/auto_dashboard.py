@@ -240,6 +240,77 @@ async def broadcast_data():
                 # 添加爆倉保護狀態 (直接從 config 讀取，避免模組重導入問題)
                 data['mm_status']['liquidation_protection_enabled'] = config_manager.get_liquidation_protection()
 
+                # ==================== 多帳號模式資料（策略模式）====================
+                if system_status.get('multi_account_mode'):
+                    # 彙總狀態
+                    summary = system_manager.get_strategies_summary()
+                    data['multi_account'] = {
+                        'enabled': True,
+                        'summary': {
+                            'total_pairs': summary.get('total_strategies', 0),
+                            'active_pairs': summary.get('active_strategies', 0),
+                            'total_pnl': summary.get('total_pnl', 0),
+                            'total_main_btc': summary.get('total_main_btc', 0),
+                            'total_hedge_btc': summary.get('total_hedge_btc', 0),
+                            'total_net_btc': summary.get('total_net_btc', 0),
+                        },
+                        'pairs': {},
+                    }
+
+                    # 每個策略的資料
+                    for strategy_id, strategy in system_manager.running_strategies.items():
+                        strategy_data = {
+                            'id': strategy.id,
+                            'name': strategy.name,
+                            'enabled': strategy.config.enabled if strategy.config else True,
+                            'running': strategy.status.get('running', False),
+                            'main_btc': 0,
+                            'hedge_btc': 0,
+                            'net_btc': 0,
+                            'pnl': 0,
+                            'fill_count': 0,
+                            'uptime_pct': 0,
+                            'trading': {
+                                'symbol': strategy.config.trading.symbol if strategy.config else 'BTC-USD',
+                                'order_size_btc': str(strategy.config.trading.order_size_btc) if strategy.config else '0.01',
+                                'max_position_btc': str(strategy.config.trading.max_position_btc) if strategy.config else '0.05',
+                                'order_distance_bps': strategy.config.trading.order_distance_bps if strategy.config else 8,
+                            },
+                            'main_account_name': strategy.main_account.name if strategy.main_account else '未知帳號',
+                            'hedge_account_name': strategy.hedge_account.name if strategy.hedge_account else '未知帳號',
+                        }
+
+                        # 倉位資料
+                        if strategy.state:
+                            # 支援新舊兩種 state 介面
+                            if hasattr(strategy.state, 'get_main_position'):
+                                main_btc = float(strategy.state.get_main_position())
+                            elif hasattr(strategy.state, 'get_standx_position'):
+                                main_btc = float(strategy.state.get_standx_position())
+                            else:
+                                main_btc = 0
+
+                            if hasattr(strategy.state, 'get_hedge_position'):
+                                hedge_btc = float(strategy.state.get_hedge_position())
+                            else:
+                                hedge_btc = 0
+
+                            strategy_data['main_btc'] = main_btc
+                            strategy_data['hedge_btc'] = hedge_btc
+                            strategy_data['net_btc'] = main_btc + hedge_btc
+                            strategy_data['pnl'] = float(strategy.state.get_pnl_usd())
+
+                            if hasattr(strategy.state, 'fill_count'):
+                                strategy_data['fill_count'] = strategy.state.fill_count
+
+                        # 執行器狀態
+                        if strategy.executor and hasattr(strategy.executor, 'to_dict'):
+                            strategy_data['executor'] = serialize_for_json(strategy.executor.to_dict())
+
+                        data['multi_account']['pairs'][strategy_id] = strategy_data
+                else:
+                    data['multi_account'] = {'enabled': False}
+
                 # 做市商實時倉位 (統一從 executor.state 讀取)
                 import time as time_module
                 positions = {

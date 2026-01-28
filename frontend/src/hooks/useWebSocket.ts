@@ -85,6 +85,38 @@ export interface WebSocketData {
     qty: number
     value: number
   }>
+  multi_account?: {
+    enabled: boolean
+    summary: {
+      total_pairs: number
+      active_pairs: number
+      total_pnl: number
+      total_main_btc: number
+      total_hedge_btc: number
+      total_net_btc: number
+    }
+    pairs: Record<string, {
+      id: string
+      name: string
+      enabled: boolean
+      running: boolean
+      main_btc: number
+      hedge_btc: number
+      net_btc: number
+      pnl: number
+      fill_count: number
+      uptime_pct: number
+      main_account_name?: string
+      hedge_account_name?: string
+      trading: {
+        symbol: string
+        order_size_btc: string
+        max_position_btc: string
+        order_distance_bps: number
+      }
+      executor?: Record<string, unknown>
+    }>
+  }
 }
 
 interface UseWebSocketOptions {

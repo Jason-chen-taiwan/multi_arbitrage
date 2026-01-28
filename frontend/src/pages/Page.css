@@ -1700,3 +1700,150 @@
     opacity: 0.7;
   }
 }
+
+/* Multi-Account Panel */
+.multi-account-panel {
+  margin-bottom: var(--spacing-lg);
+  border: 1px solid var(--accent-blue);
+  background: linear-gradient(135deg, var(--bg-card) 0%, rgba(55, 66, 250, 0.05) 100%);
+}
+
+.multi-account-panel h3 {
+  color: var(--accent-blue);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.multi-account-panel h3::before {
+  content: "👥";
+}
+
+.multi-account-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.multi-account-summary .summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  min-width: 120px;
+}
+
+.multi-account-summary .stat-label {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.multi-account-summary .stat-value {
+  font-size: var(--font-lg);
+  font-weight: 600;
+}
+
+/* Account Pairs Grid */
+.account-pairs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.account-pair-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  border: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.account-pair-card.running {
+  border-color: var(--accent-green);
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.2);
+}
+
+.account-pair-card.stopped {
+  border-color: var(--border-color);
+  opacity: 0.7;
+}
+
+.account-pair-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.pair-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.pair-name {
+  font-weight: 600;
+  font-size: var(--font-md);
+}
+
+.pair-status {
+  font-size: var(--font-sm);
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.pair-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.pair-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pair-stat .label {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+}
+
+.pair-stat span:last-child {
+  font-weight: 600;
+  font-size: var(--font-md);
+}
+
+.pair-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  padding-top: var(--spacing-sm);
+  border-top: 1px solid var(--border-color);
+}
+
+.pair-config .config-item {
+  font-size: var(--font-xs);
+  padding: 2px 6px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+@media (max-width: 768px) {
+  .multi-account-summary {
+    flex-direction: column;
+    gap: var(--spacing-md);
+  }
+
+  .account-pairs-grid {
+    grid-template-columns: 1fr;
+  }
+}

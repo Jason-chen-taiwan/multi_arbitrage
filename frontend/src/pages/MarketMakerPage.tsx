@@ -80,6 +80,7 @@ function MarketMakerPage() {
   const mmPositions = lastMessage?.mm_positions
   const fillHistory = lastMessage?.fill_history || []
   const orderbooks = lastMessage?.orderbooks
+  const multiAccount = lastMessage?.multi_account
 
   // Load config on mount
   useEffect(() => {
@@ -399,6 +400,92 @@ function MarketMakerPage() {
       {message && (
         <div className={`alert ${message.type === 'success' ? 'alert-success' : 'alert-error'}`}>
           {message.text}
+        </div>
+      )}
+
+      {/* Multi-Account Summary */}
+      {multiAccount?.enabled && (
+        <div className="panel multi-account-panel">
+          <h3>多帳號狀態總覽</h3>
+
+          {/* Summary Stats */}
+          <div className="multi-account-summary">
+            <div className="summary-stat">
+              <span className="stat-label">帳號組</span>
+              <span className="stat-value">
+                <span className="text-positive">{multiAccount.summary.active_pairs}</span>
+                <span className="text-muted"> / {multiAccount.summary.total_pairs} 運行中</span>
+              </span>
+            </div>
+            <div className="summary-stat">
+              <span className="stat-label">總 PnL</span>
+              <span className={`stat-value ${multiAccount.summary.total_pnl >= 0 ? 'text-positive' : 'text-negative'}`}>
+                ${multiAccount.summary.total_pnl.toFixed(2)}
+              </span>
+            </div>
+            <div className="summary-stat">
+              <span className="stat-label">主帳號總倉位</span>
+              <span className="stat-value">{multiAccount.summary.total_main_btc.toFixed(6)} BTC</span>
+            </div>
+            <div className="summary-stat">
+              <span className="stat-label">對沖帳號總倉位</span>
+              <span className="stat-value">{multiAccount.summary.total_hedge_btc.toFixed(6)} BTC</span>
+            </div>
+            <div className="summary-stat">
+              <span className="stat-label">淨敞口</span>
+              <span className={`stat-value ${Math.abs(multiAccount.summary.total_net_btc) < 0.0001 ? 'text-positive' : 'text-warning'}`}>
+                {multiAccount.summary.total_net_btc.toFixed(6)} BTC
+              </span>
+            </div>
+          </div>
+
+          {/* Per-Strategy Cards */}
+          <div className="account-pairs-grid">
+            {Object.entries(multiAccount.pairs).map(([strategyId, strategy]) => (
+              <div key={strategyId} className={`account-pair-card ${strategy.running ? 'running' : 'stopped'}`}>
+                <div className="pair-header">
+                  <span className="pair-name">{strategy.name}</span>
+                  <span className={`pair-status ${strategy.running ? 'text-positive' : 'text-muted'}`}>
+                    {strategy.running ? '運行中' : '已停止'}
+                  </span>
+                </div>
+                {/* Account Names */}
+                {(strategy.main_account_name || strategy.hedge_account_name) && (
+                  <div className="pair-accounts" style={{ fontSize: '0.75em', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    <span>主帳號: {strategy.main_account_name || '未知'}</span>
+                    <span style={{ marginLeft: '8px' }}>對沖: {strategy.hedge_account_name || '未知'}</span>
+                  </div>
+                )}
+                <div className="pair-stats">
+                  <div className="pair-stat">
+                    <span className="label">PnL</span>
+                    <span className={strategy.pnl >= 0 ? 'text-positive' : 'text-negative'}>
+                      ${strategy.pnl.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="pair-stat">
+                    <span className="label">成交</span>
+                    <span>{strategy.fill_count}</span>
+                  </div>
+                  <div className="pair-stat">
+                    <span className="label">Uptime</span>
+                    <span>{strategy.uptime_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="pair-stat">
+                    <span className="label">淨敞口</span>
+                    <span className={Math.abs(strategy.net_btc) < 0.0001 ? 'text-positive' : 'text-warning'}>
+                      {strategy.net_btc.toFixed(6)}
+                    </span>
+                  </div>
+                </div>
+                <div className="pair-config">
+                  <span className="config-item">{strategy.trading.symbol}</span>
+                  <span className="config-item">{strategy.trading.order_size_btc} BTC</span>
+                  <span className="config-item">{strategy.trading.order_distance_bps} bps</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
