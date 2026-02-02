@@ -2337,15 +2337,31 @@ class MarketMakerExecutor:
                 ) or hedge_symbol
 
             positions = await self.hedge_adapter.get_positions(hedge_symbol)
+
+            # 【診斷日誌】打印所有倉位詳細信息
+            logger.info(f"[Sync] Hedge account found {len(positions)} positions for {hedge_symbol}")
+
             for pos in positions:
+                # 【診斷日誌】打印原始倉位數據
+                logger.info(
+                    f"[Sync] Raw position: symbol={pos.symbol}, side={pos.side}, "
+                    f"size={pos.size}, entry_price={pos.entry_price}, upnl={pos.unrealized_pnl}"
+                )
+
                 if hedge_symbol in pos.symbol or pos.symbol == hedge_symbol:
                     position_qty = Decimal(str(pos.size)) if pos.side == "long" else -Decimal(str(pos.size))
+
+                    # 【診斷日誌】打印轉換結果
+                    logger.info(
+                        f"[Sync] Converted hedge position: {position_qty} "
+                        f"(side={pos.side}, size={pos.size})"
+                    )
+
                     self.state.set_hedge_position(position_qty)
-                    logger.debug(f"[Sync] Hedge (GRVT) position: {position_qty}")
                     return position_qty
             # 沒有找到倉位，設為 0
             self.state.set_hedge_position(Decimal("0"))
-            logger.debug("[Sync] Hedge (GRVT) position: 0 (no position found)")
+            logger.info("[Sync] Hedge position: 0 (no matching position found)")
             return Decimal("0")
         except Exception as e:
             logger.error(f"Failed to sync hedge position: {e}")
